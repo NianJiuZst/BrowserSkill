@@ -101,7 +101,6 @@ export interface DocumentIdentity {
   attachmentId: string;
   target: CdpTarget;
   frameId: string;
-  loaderId: string;
   documentElementBackendNodeId: number;
 }
 

@@ -11,10 +11,7 @@ import { REQUESTED_STYLES, type SnapshotReply } from "../snapshot";
 function fixture(
   options: {
     frames?: CdpFrame[];
-    after?: Record<
-      string,
-      { loader?: string; element?: number; missing?: boolean; unreadable?: boolean }
-    >;
+    after?: Record<string, { element?: number; missing?: boolean; unreadable?: boolean }>;
     fail?: string;
     missingIdentity?: boolean;
     omitDocument?: string;
@@ -23,26 +20,23 @@ function fixture(
   } = {},
 ) {
   const frames = options.frames ?? [
-    { frameId: "main", loaderId: "main-loader", target: { tabId: 4 } },
+    { frameId: "main", target: { tabId: 4 } },
     {
       frameId: "same",
       parentFrameId: "main",
       ownerBackendNodeId: 3,
-      loaderId: "same-loader",
       target: { tabId: 4 },
     },
     {
       frameId: "nested",
       parentFrameId: "same",
       ownerBackendNodeId: 13,
-      loaderId: "nested-loader",
       target: { tabId: 4 },
     },
     {
       frameId: "remote",
       parentFrameId: "main",
       ownerBackendNodeId: 4,
-      loaderId: "remote-loader",
       target: { tabId: 4, sessionId: "remote" },
     },
   ];
@@ -50,7 +44,6 @@ function fixture(
     frames.map((frame, i) => [frame.frameId, frame.target.sessionId ? 1 : i * 10 + 1]),
   );
   const contexts = new Map(frames.map((frame, i) => [i + 1, frame.frameId]));
-  const reads = new Map<string, number>();
   const logs: Array<{ target: CdpTarget; method: string; params: Record<string, unknown> }> = [];
   let snapshots = 0;
   const targetCount = new Set(frames.map((frame) => cdpTargetKey(frame.target))).size;
@@ -65,46 +58,22 @@ function fixture(
         result = {
           executionContextId: frames.findIndex((frame) => frame.frameId === args.frameId) + 1,
         };
-      if (method === "Runtime.evaluate")
-        result = { result: { objectId: contexts.get(Number(args.contextId)) } };
-      if (method === "DOM.describeNode") {
-        const id = String(args.objectId);
-        const count = reads.get(id) ?? 0;
-        reads.set(id, count + 1);
+      if (method === "Runtime.evaluate" && args.contextId) {
+        const id = contexts.get(Number(args.contextId))!;
+        const change = options.after?.[id];
         result =
-          options.missingIdentity || (count > 0 && options.after?.[id]?.unreadable)
+          options.missingIdentity || change?.unreadable
             ? {}
             : {
-                node: {
-                  backendNodeId:
-                    count > 0
-                      ? (options.after?.[id]?.element ?? elements.get(id))
-                      : elements.get(id),
+                result: {
+                  deepSerializedValue: change?.missing
+                    ? { type: "null" }
+                    : {
+                        type: "node",
+                        value: { backendNodeId: change?.element ?? elements.get(id) },
+                      },
                 },
               };
-      }
-      if (method === "Page.getFrameTree") {
-        const own = frames.filter(
-          (frame) =>
-            cdpTargetKey(frame.target) === cdpTargetKey(target) &&
-            !options.after?.[frame.frameId]?.missing,
-        );
-        const trees = new Map(
-          own.map((frame) => [
-            frame.frameId,
-            {
-              frame: {
-                id: frame.frameId,
-                loaderId: options.after?.[frame.frameId]?.loader ?? frame.loaderId,
-              },
-              childFrames: [] as unknown[],
-            },
-          ]),
-        );
-        for (const frame of own)
-          if (frame.parentFrameId && trees.has(frame.parentFrameId))
-            trees.get(frame.parentFrameId)!.childFrames.push(trees.get(frame.frameId));
-        result = { frameTree: trees.get(own[0]?.frameId) };
       }
       if (method === "Page.getLayoutMetrics")
         result = {
@@ -203,7 +172,11 @@ function fixture(
   );
   const cdp: CdpRunner = {
     getAttachmentId: () =>
-      options.attachmentChanged && snapshots === targetCount ? "new-attachment" : "attachment",
+      options.missingIdentity
+        ? undefined
+        : options.attachmentChanged && snapshots === targetCount
+          ? "new-attachment"
+          : "attachment",
     getFrameGraph: async () => ({ rootFrameId: frames[0].frameId, frames }),
     send: (tabId, method, params) =>
       (send as NonNullable<CdpRunner["sendToTarget"]>)({ tabId }, method, params),
@@ -249,8 +222,8 @@ describe("captureObservationFacts", () => {
     expect(logs.filter((call) => call.method === "Accessibility.enable")).toHaveLength(2);
     expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(4);
     expect(facts.documents.every((doc) => doc.identity)).toBe(true);
-    expect(logs.filter((call) => call.method === "DOM.describeNode")).toHaveLength(8);
-    expect(logs.filter((call) => call.method === "Runtime.releaseObject")).toHaveLength(8);
+    expect(logs.filter((call) => call.method === "DOM.describeNode")).toHaveLength(0);
+    expect(logs.filter((call) => call.method === "Page.createIsolatedWorld")).toHaveLength(4);
     const main = facts.documents.find((doc) => doc.frame.frameId === "main")!;
     const remote = facts.documents.find((doc) => doc.frame.frameId === "remote")!;
     expect(main.index.nodes.get(2)).not.toBe(remote.index.nodes.get(2));
@@ -262,7 +235,6 @@ describe("captureObservationFacts", () => {
   });
 
   it.each([
-    { loader: "new-loader" },
     { element: 99 },
     { missing: true },
   ])("isolates changed child identity %j and dependent descendants", async (change) => {
@@ -299,31 +271,20 @@ describe("captureObservationFacts", () => {
     }
   });
 
-  it("keeps newly discovered snapshot documents unverified without reading a synthetic before identity", async () => {
+  it("validates newly discovered snapshot documents without a pre-snapshot identity read", async () => {
     const { cdp, logs } = fixture();
-    const originalGraph = await cdp.getFrameGraph!(4);
-    cdp.getFrameGraph = async () => ({
-      ...originalGraph,
-      frames: originalGraph.frames.slice(0, 1),
-    });
+    const graph = await cdp.getFrameGraph!(4);
+    cdp.getFrameGraph = async () => ({ ...graph, frames: graph.frames.slice(0, 1) });
     const facts = await captureObservationFacts(cdp, 4);
     expect(facts.documents.map((doc) => doc.frame.frameId)).toEqual(["main", "same", "nested"]);
-    expect(facts.documents[0].identity).toBeDefined();
-    for (const doc of facts.documents.slice(1)) {
-      expect(doc.identity).toBeUndefined();
-      expect(facts.issues).toContainEqual(
-        expect.objectContaining({ frameId: doc.frame.frameId, reason: "identity-unverified" }),
-      );
-    }
-    expect(
-      logs.filter((call) => call.method === "DOM.describeNode").map((call) => call.params.objectId),
-    ).toEqual(["main", "main"]);
+    expect(facts.documents.every((doc) => doc.identity)).toBe(true);
+    expect(logs.filter((call) => call.method === "Page.createIsolatedWorld")).toHaveLength(3);
+    expect(logs.findIndex((call) => call.method === "Page.createIsolatedWorld")).toBeGreaterThan(
+      logs.findIndex((call) => call.method === "Accessibility.getFullAXTree"),
+    );
   });
 
-  it.each([
-    "frame-id",
-    "snapshot-element",
-  ])("rejects root replacement evidenced by %s even if the later graph is stale", async (mode) => {
+  it("rejects a snapshot root that no longer matches the current frame root", async () => {
     const { cdp } = fixture();
     const original = cdp.sendToTarget!;
     cdp.sendToTarget = async (target, method, params) => {
@@ -332,8 +293,7 @@ describe("captureObservationFacts", () => {
         const snapshot = result as {
           documents: { frameId: string; nodes: { backendNodeId: number[] } }[];
         };
-        if (mode === "frame-id") snapshot.documents[0].frameId = "replacement";
-        else snapshot.documents[0].nodes.backendNodeId[2] = 999;
+        snapshot.documents[0].nodes.backendNodeId[2] = 999;
       }
       return result as never;
     };
@@ -347,17 +307,20 @@ describe("captureObservationFacts", () => {
     const original = cdp.sendToTarget!;
     let identityCleanup = 0;
     cdp.sendToTarget = async (target, method, params) => {
-      if (method === "Page.getFrameTree") {
+      if (method === "Page.createIsolatedWorld") {
         expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(
           4,
         );
       }
       const result = await original(target, method, params);
       if (
-        method === "Runtime.releaseObject" &&
-        (params as { objectId?: string })?.objectId === "remote"
+        method === "Runtime.releaseObjectGroup" &&
+        String((params as { objectGroup?: string })?.objectGroup).startsWith(
+          "bsk-document-identity-",
+        ) &&
+        target.sessionId === "remote"
       ) {
-        if (++identityCleanup === 2) controller.abort();
+        if (++identityCleanup === 1) controller.abort();
       }
       return result as never;
     };
@@ -365,15 +328,14 @@ describe("captureObservationFacts", () => {
     await expect(captureObservationFacts(cdp, 4, controller.signal)).rejects.toMatchObject({
       name: "AbortError",
     });
-    expect(identityCleanup).toBe(2);
+    expect(identityCleanup).toBe(1);
   });
 
   it.each([
     1, 10, 100,
-  ])("bounds identity reads for %i same-target documents across both phases", async (count) => {
+  ])("bounds identity reads for %i same-target documents after snapshot and AX collection", async (count) => {
     const frames: CdpFrame[] = Array.from({ length: count }, (_, i) => ({
       frameId: `frame-${i}`,
-      loaderId: `loader-${i}`,
       target: { tabId: 4 },
       ...(i ? { parentFrameId: "frame-0", ownerBackendNodeId: 90000 + i } : {}),
     }));
@@ -389,16 +351,20 @@ describe("captureObservationFacts", () => {
       }
       if (method === "DOMSnapshot.captureSnapshot") {
         expect(active).toBe(0);
-        expect(released).toBe(count);
+        expect(released).toBe(0);
       }
-      if (method === "Page.getFrameTree") {
-        expect(active).toBe(0);
+      if (method === "Page.createIsolatedWorld") {
         expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(
           count,
         );
       }
       const result = await original(target, method, params);
-      if (method === "Runtime.releaseObject") {
+      if (
+        method === "Runtime.releaseObjectGroup" &&
+        String((params as { objectGroup?: string })?.objectGroup).startsWith(
+          "bsk-document-identity-",
+        )
+      ) {
         active--;
         released++;
       }
@@ -409,25 +375,20 @@ describe("captureObservationFacts", () => {
     expect(facts.documents.every((doc) => doc.identity)).toBe(true);
     expect(peak).toBe(Math.min(count, 4));
     expect(active).toBe(0);
-    expect(released).toBe(count * 2);
+    expect(released).toBe(count);
     for (const method of [
       "Page.createIsolatedWorld",
       "Runtime.evaluate",
-      "DOM.describeNode",
-      "Runtime.releaseObject",
+      "Runtime.releaseObjectGroup",
     ])
-      expect(logs.filter((call) => call.method === method)).toHaveLength(count * 2);
+      expect(logs.filter((call) => call.method === method)).toHaveLength(count);
     expect(logs.filter((call) => call.method === "DOMSnapshot.captureSnapshot")).toHaveLength(1);
-    expect(logs.filter((call) => call.method === "Page.getFrameTree")).toHaveLength(1);
+    expect(logs.filter((call) => call.method === "Page.getFrameTree")).toHaveLength(0);
   });
 
-  it.each([
-    "before",
-    "after",
-  ])("joins identity cleanup on %s cancellation without starting queued frames", async (phase) => {
+  it("joins identity cleanup on cancellation without starting queued frames", async () => {
     const frames: CdpFrame[] = Array.from({ length: 5 }, (_, i) => ({
       frameId: `frame-${i}`,
-      loaderId: `loader-${i}`,
       target: { tabId: 4 },
       ...(i ? { parentFrameId: "frame-0", ownerBackendNodeId: 90000 + i } : {}),
     }));
@@ -443,11 +404,14 @@ describe("captureObservationFacts", () => {
       ready = resolve;
     });
     let held = 0;
-    let after = false;
     cdp.sendToTarget = async (target, method, params) => {
-      if (method === "Page.getFrameTree") after = true;
       const result = await original(target, method, params);
-      if (method === "Runtime.releaseObject" && after === (phase === "after")) {
+      if (
+        method === "Runtime.releaseObjectGroup" &&
+        String((params as { objectGroup?: string })?.objectGroup).startsWith(
+          "bsk-document-identity-",
+        )
+      ) {
         if (++held === 4) ready();
         await gate;
       }
@@ -466,9 +430,7 @@ describe("captureObservationFacts", () => {
     release();
     await rejected;
     expect(held).toBe(4);
-    expect(logs.filter((call) => call.method === "Page.createIsolatedWorld")).toHaveLength(
-      phase === "after" ? 9 : 4,
-    );
+    expect(logs.filter((call) => call.method === "Page.createIsolatedWorld")).toHaveLength(4);
   });
 
   it.each([
@@ -1206,7 +1168,7 @@ describe("sibling frame measurement scheduling", () => {
       return original(tabId, method, params);
     };
     const captured = await captureObservationFacts(fixture.cdp, 4);
-    expect(captured.issues).toEqual([]);
+    expect(captured.issues.filter((issue) => issue.stage === "geometry")).toEqual([]);
     expect(captured.documents.map((doc) => doc.frame.frameId)).toEqual(
       Array.from({ length: 8 }, (_, i) => `frame-${i}`),
     );

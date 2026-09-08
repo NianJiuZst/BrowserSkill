@@ -1,71 +1,53 @@
-import type { CdpFrame } from "@/browser-driver/frame-graph";
 import type { CdpRunner } from "../shared";
 import { sendToCdpTarget } from "../shared";
-import {
-  isAbortError as isCaptureAbort,
-  throwIfAborted as throwCaptureAborted,
-} from "./capture-abort";
+import { isAbortError, throwIfAborted } from "./capture-abort";
 import type { DocumentIdentity } from "./facts";
 
-/** Fresh, frame-scoped identity read. An isolated world supplies the owning
- * document without querying each node or installing a page observer. */
-export async function readDocumentIdentity(
+/** Compare the snapshot root with the current root in that exact frame.
+ * Deep serialization supplies the backend ID without a separate describeNode. */
+export async function verifyDocumentIdentity(
   cdp: CdpRunner,
-  frame: CdpFrame,
+  identity: DocumentIdentity,
   signal?: AbortSignal,
-): Promise<DocumentIdentity | undefined> {
-  const attachmentId = cdp.getAttachmentId?.(frame.target.tabId);
-  if (!attachmentId || !frame.loaderId) return undefined;
-  let objectId: string | undefined;
+): Promise<"current" | "changed" | "unavailable"> {
+  const attached = () => cdp.getAttachmentId?.(identity.target.tabId) === identity.attachmentId;
+  throwIfAborted(signal);
+  if (!attached()) return "changed";
+  const objectGroup = `bsk-document-identity-${crypto.randomUUID()}`;
   const send = <T>(method: string, params: object) => {
-    throwCaptureAborted(signal);
-    return sendToCdpTarget<T>(cdp, frame.target, method, params);
+    throwIfAborted(signal);
+    return sendToCdpTarget<T>(cdp, identity.target, method, params);
   };
   try {
     const world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", {
-      frameId: frame.frameId,
+      frameId: identity.frameId,
       worldName: "bsk-document-identity",
     });
-    const element = await send<{ result?: { objectId?: string } }>("Runtime.evaluate", {
+    const reply = await send<{
+      result?: { deepSerializedValue?: { type: string; value?: { backendNodeId?: number } } };
+    }>("Runtime.evaluate", {
       expression: "document.documentElement",
       contextId: world.executionContextId,
+      objectGroup,
+      serializationOptions: {
+        serialization: "deep",
+        additionalParameters: { maxNodeDepth: 0, includeShadowTree: "none" },
+      },
     });
-    objectId = element.result?.objectId;
-    if (!objectId) return undefined;
-    const reply = await send<{ node?: { backendNodeId?: number } }>("DOM.describeNode", {
-      objectId,
-      depth: 0,
-    });
-    const backendNodeId = reply.node?.backendNodeId;
-    if (!backendNodeId || cdp.getAttachmentId?.(frame.target.tabId) !== attachmentId)
-      return undefined;
-    return {
-      attachmentId,
-      target: frame.target,
-      frameId: frame.frameId,
-      loaderId: frame.loaderId,
-      documentElementBackendNodeId: backendNodeId,
-    };
+    if (!attached()) return "changed";
+    const root = reply.result?.deepSerializedValue;
+    if (root?.type === "null") return "changed";
+    const id = root?.type === "node" ? root.value?.backendNodeId : undefined;
+    if (id === undefined) return "unavailable";
+    return id === identity.documentElementBackendNodeId ? "current" : "changed";
   } catch (error) {
-    throwCaptureAborted(signal);
-    if (isCaptureAbort(error)) throw error;
-    return undefined;
+    throwIfAborted(signal);
+    if (isAbortError(error)) throw error;
+    return attached() ? "unavailable" : "changed";
   } finally {
-    if (objectId)
-      await sendToCdpTarget(cdp, frame.target, "Runtime.releaseObject", { objectId }).catch(
-        () => {},
-      );
-    throwCaptureAborted(signal);
+    await sendToCdpTarget(cdp, identity.target, "Runtime.releaseObjectGroup", {
+      objectGroup,
+    }).catch(() => {});
+    throwIfAborted(signal);
   }
-}
-
-export function sameDocument(a: DocumentIdentity, b: DocumentIdentity): boolean {
-  return (
-    a.attachmentId === b.attachmentId &&
-    a.target.tabId === b.target.tabId &&
-    a.target.sessionId === b.target.sessionId &&
-    a.frameId === b.frameId &&
-    a.loaderId === b.loaderId &&
-    a.documentElementBackendNodeId === b.documentElementBackendNodeId
-  );
 }
