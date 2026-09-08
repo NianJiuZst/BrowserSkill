@@ -79,6 +79,96 @@ describe("measurement geometry context", () => {
     ).toHaveLength(1);
   });
 
+  it("falls back only for missing or invalid batch entries and does not reuse sizes across contexts", async () => {
+    const cdp = driver();
+    const original = cdp.send;
+    const calls: string[] = [];
+    cdp.send = async (tabId, method, params) => {
+      calls.push(method);
+      if (method === "Runtime.evaluate")
+        return {
+          result: {
+            deepSerializedValue: {
+              type: "array",
+              value: [
+                {
+                  type: "array",
+                  value: [
+                    { type: "node", value: { backendNodeId: 10 } },
+                    { type: "string", value: '{"width":300,"height":200}' },
+                  ],
+                },
+                {
+                  type: "array",
+                  value: [
+                    { type: "node", value: { backendNodeId: 11 } },
+                    { type: "string", value: '{"width":0,"height":200}' },
+                  ],
+                },
+              ],
+            },
+          },
+        } as never;
+      if (method === "Runtime.releaseObjectGroup") return {} as never;
+      return original(tabId, method, params);
+    };
+    const context = new GeometryContext(cdp, 4);
+    context.registerSnapshotOwners(target, new Set([10, 11]));
+    const values = await Promise.all(
+      [10, 11].map((id) =>
+        context.snapshotProjection({ target, frameId: String(id) }, id, [], {
+          width: 1000,
+          height: 1000,
+        }),
+      ),
+    );
+    expect(values.every((value) => value.status === "available")).toBe(true);
+    expect(calls.filter((method) => method === "DOM.resolveNode")).toHaveLength(1);
+    expect(calls.filter((method) => method === "Runtime.evaluate")).toHaveLength(1);
+    await new GeometryContext(cdp, 4).snapshotProjection({ target, frameId: "child" }, 10, [], {
+      width: 1000,
+      height: 1000,
+    });
+    expect(calls.filter((method) => method === "DOM.resolveNode")).toHaveLength(2);
+  });
+
+  it("waits for batch object cleanup and propagates cancellation", async () => {
+    const cdp = driver();
+    const original = cdp.send;
+    const controller = new AbortController();
+    let release!: () => void;
+    let cleanup!: () => void;
+    const started = new Promise<void>((resolve) => {
+      cleanup = resolve;
+    });
+    cdp.send = async (tabId, method, params) => {
+      if (method === "Runtime.evaluate") return {} as never;
+      if (method === "Runtime.releaseObjectGroup") {
+        cleanup();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return {} as never;
+      }
+      return original(tabId, method, params);
+    };
+    const context = new GeometryContext(cdp, 4, undefined, controller.signal);
+    context.registerSnapshotOwners(target, new Set([10, 11]));
+    let settled = false;
+    const operation = context
+      .snapshotProjection({ target, frameId: "child" }, 10, [], { width: 1000, height: 1000 })
+      .finally(() => {
+        settled = true;
+      });
+    const rejected = expect(operation).rejects.toMatchObject({ name: "AbortError" });
+    await started;
+    controller.abort();
+    expect(settled).toBe(false);
+    release();
+    await rejected;
+    expect(cdp.calls.mock.calls.some(([, method]) => method === "DOM.resolveNode")).toBe(false);
+  });
+
   it("rejects owner mismatches and invalid numeric bounds", () => {
     const input = snapshotViewportRect(
       [30, 50, 120, 40],

@@ -1173,6 +1173,14 @@ export async function captureViewModel(
   const nodes = mainParsed.nodes;
   const excludedBackendNodeIds = new Set(mainParsed.excludedBackendNodeIds);
 
+  const ownerIds = new Set<number>();
+  for (const document of documents) {
+    for (const index of document.nodes?.contentDocumentIndex?.index ?? []) {
+      const id = document.nodes?.backendNodeId?.[index];
+      if (id !== undefined) ownerIds.add(id);
+    }
+  }
+  geometry.registerSnapshotOwners(target, ownerIds);
   const frameParsed = await parseChildFrameDocuments(
     documents,
     strings,

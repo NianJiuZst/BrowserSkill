@@ -15,6 +15,8 @@ import {
 import { type CdpRunner, sendToCdpTarget } from "../shared";
 import type { CoordinateOwner, CssViewport, SnapshotProjectionResult } from "./coordinate-types";
 
+import { readSnapshotOwnerSizes } from "./snapshot-owner-sizes";
+
 export interface LayoutMetrics {
   cssVisualViewport?: { zoom?: number };
   visualViewport?: { zoom?: number };
@@ -45,6 +47,7 @@ export class GeometryContext {
   private readonly owners = new Map<string, Promise<Quad | null>>();
   private readonly projections = new Map<string, Promise<GeometryProjection | null>>();
   private readonly snapshotOwners = new Map<string, Promise<{ quad: Quad; size: Size } | null>>();
+  private readonly sizeBatches = new Map<string, () => Promise<Map<number, Size>>>();
   private active = 0;
   private readonly waiting: Array<() => void> = [];
   private graphPromise?: Promise<CdpFrameGraph | null>;
@@ -186,12 +189,34 @@ export class GeometryContext {
       : { status: "unavailable", source, ownerBackendNodeId };
   }
 
+  /** Register one target's snapshot owners; the batch starts only when a
+   * projection actually needs a size. Single owners keep the cheaper old path. */
+  registerSnapshotOwners(target: CdpTarget, owners: ReadonlySet<number>): void {
+    const key = cdpTargetKey(target);
+    if (owners.size < 2 || this.sizeBatches.has(key)) return;
+    let pending: Promise<Map<number, Size>> | undefined;
+    this.sizeBatches.set(key, () => {
+      pending ??= readSnapshotOwnerSizes(
+        (method, params, cleanup) => this.request(target, method, params, cleanup),
+        owners,
+      ).catch((error) => {
+        if (error && typeof error === "object" && "name" in error && error.name === "AbortError")
+          throw error;
+        return new Map<number, Size>();
+      });
+      return pending;
+    });
+  }
+
   private async snapshotOwner(
     target: CdpTarget,
     backendNodeId: number,
   ): Promise<{ quad: Quad; size: Size } | null> {
     const quad = await this.ownerContent(target, backendNodeId);
     if (!quad) return null;
+    const batchSize = (await this.sizeBatches.get(cdpTargetKey(target))?.())?.get(backendNodeId);
+    if (this.signal?.aborted) throw new DOMException("geometry aborted", "AbortError");
+    if (batchSize) return { quad, size: batchSize };
     const resolved = await this.request<{ object?: { objectId?: string } }>(
       target,
       "DOM.resolveNode",

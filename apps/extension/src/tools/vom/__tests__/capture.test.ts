@@ -1324,6 +1324,40 @@ function siblingCaptureFixture(
 }
 
 describe("sibling frame measurement scheduling", () => {
+  it("batches same-target owner sizes without changing projected results", async () => {
+    const fixture = siblingCaptureFixture();
+    const original = fixture.cdp.send;
+    const methods: string[] = [];
+    fixture.cdp.send = async (tabId, method, params) => {
+      methods.push(method);
+      if (method === "Runtime.evaluate")
+        return {
+          result: {
+            deepSerializedValue: {
+              type: "array",
+              value: [100, 101, 102, 103, 104, 105, 200].map((backendNodeId) => ({
+                type: "array",
+                value: [
+                  { type: "node", value: { backendNodeId } },
+                  { type: "string", value: JSON.stringify({ width: 200, height: 100 }) },
+                ],
+              })),
+            },
+          },
+        } as never;
+      return original(tabId, method, params);
+    };
+    const captured = await captureViewModel(fixture.cdp, 4);
+    expect(captured.frameGeometryIssues).toEqual([]);
+    expect([...captured.iframeNodes.keys()]).toEqual([100, 200, 101, 102, 103, 104, 105]);
+    expect(captured.iframeNodes.get(200)?.[0].rect).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    expect(methods.filter((method) => method === "DOM.getBoxModel")).toHaveLength(7);
+    expect(methods.filter((method) => method === "Runtime.evaluate")).toHaveLength(1);
+    expect(methods.filter((method) => method === "Runtime.releaseObjectGroup")).toHaveLength(1);
+    expect(methods).not.toContain("DOM.resolveNode");
+    expect(methods).not.toContain("Runtime.callFunctionOn");
+  });
+
   it("bounds concurrent reads, fills free slots and preserves depth-first output despite reordered replies", async () => {
     const pending = new Map<number, () => void>();
     const fixture = siblingCaptureFixture(async (method, params) => {
