@@ -56,27 +56,16 @@ export interface CapturedSceneInput {
   excludedBackendNodeIds: ReadonlySet<number>;
 }
 
-/** Snapshot client/offset rectangles retain their protocol units. In particular,
- * transformed bounds cannot be combined with unscaled client offsets. */
+/** Bounds retain their snapshot document CSS units until normalization. */
 export interface SnapshotLayout {
   readonly boundsSpace: "snapshot-document-css";
-  readonly clientSpace: "unscaled-client-offset-css";
   bounds?: number[];
-  clientRect?: number[];
-  offsetRect?: number[];
-  scrollRect?: number[];
   styles: Readonly<Record<string, string>>;
 }
 
 export interface DecodedNode extends Omit<CapturedNode, "rect" | "localRect" | "rendered"> {
   nodeType?: number;
-  parentMissing?: boolean;
   layout?: SnapshotLayout;
-}
-
-export interface AncestorState {
-  complete: boolean;
-  overlay: boolean;
 }
 
 export interface NodeFacts extends CapturedNode {
@@ -86,8 +75,6 @@ export interface NodeFacts extends CapturedNode {
 
 export interface DocumentIndex<T extends DecodedNode = NodeFacts> {
   readonly nodes: ReadonlyMap<number, T>;
-  readonly children: ReadonlyMap<number, readonly number[]>;
-  readonly ancestry: ReadonlyMap<number, AncestorState>;
   readonly excludedBackendNodeIds: ReadonlySet<number>;
 }
 
@@ -144,67 +131,53 @@ export async function captureCheckpoint(signal?: AbortSignal): Promise<void> {
 }
 
 /** All snapshot nodes participate, including document and shadow roots. This
- * preserves ancestry evidence even when the semantic adapter omits those nodes. */
+ * preserves overlay propagation when the semantic adapter omits those nodes. */
 export async function buildDocumentIndex<T extends DecodedNode>(
   input: readonly T[],
   signal?: AbortSignal,
 ): Promise<DocumentIndex<T>> {
   const nodes = new Map<number, T>();
-  const children = new Map<number, number[]>();
-  const ancestry = new Map<number, AncestorState>();
+  const overlayByNode = new Map<number, boolean>();
   const excludedBackendNodeIds = new Set<number>();
   for (let i = 0; i < input.length; i++) {
     if (i % 256 === 0) await captureCheckpoint(signal);
     const node = input[i];
     nodes.set(node.backendNodeId, node);
-    if (node.parentBackendNodeId !== null) {
-      const siblings = children.get(node.parentBackendNodeId);
-      if (siblings) siblings.push(node.backendNodeId);
-      else children.set(node.parentBackendNodeId, [node.backendNodeId]);
-    }
   }
   let work = 0;
   for (const node of input) {
     if (work++ % 256 === 0) await captureCheckpoint(signal);
-    if (ancestry.has(node.backendNodeId)) continue;
+    if (overlayByNode.has(node.backendNodeId)) continue;
     const path: DecodedNode[] = [];
     const visiting = new Set<number>();
     let current: DecodedNode | undefined = node;
-    let state: AncestorState = { complete: true, overlay: false };
-    while (current && !ancestry.has(current.backendNodeId)) {
+    let overlay = false;
+    while (current && !overlayByNode.has(current.backendNodeId)) {
       if (work++ % 256 === 0) await captureCheckpoint(signal);
       if (visiting.has(current.backendNodeId)) {
-        // No member of a malformed cycle supplies complete ancestry evidence.
-        state = {
-          complete: false,
-          overlay: path
-            .slice(path.findIndex((item) => item.backendNodeId === current!.backendNodeId))
-            .some((item) => isOverlayHostNode(item.tag, Object.keys(item.attrs))),
-        };
+        // Only an overlay inside the cycle may mark the cycle and its descendants.
+        overlay = path
+          .slice(path.findIndex((item) => item.backendNodeId === current!.backendNodeId))
+          .some((item) => isOverlayHostNode(item.tag, Object.keys(item.attrs)));
         break;
       }
       visiting.add(current.backendNodeId);
       path.push(current);
-      if (current.parentMissing) state = { complete: false, overlay: false };
       if (current.parentBackendNodeId === null) {
         current = undefined;
         break;
       }
       current = nodes.get(current.parentBackendNodeId);
-      if (!current) state = { complete: false, overlay: false };
     }
-    if (current && ancestry.has(current.backendNodeId))
-      state = ancestry.get(current.backendNodeId)!;
+    if (current && overlayByNode.has(current.backendNodeId))
+      overlay = overlayByNode.get(current.backendNodeId)!;
     for (let i = path.length - 1; i >= 0; i--) {
       if (work++ % 256 === 0) await captureCheckpoint(signal);
       const item = path[i];
-      state = {
-        complete: state.complete,
-        overlay: state.overlay || isOverlayHostNode(item.tag, Object.keys(item.attrs)),
-      };
-      ancestry.set(item.backendNodeId, state);
-      if (state.overlay) excludedBackendNodeIds.add(item.backendNodeId);
+      overlay = overlay || isOverlayHostNode(item.tag, Object.keys(item.attrs));
+      overlayByNode.set(item.backendNodeId, overlay);
+      if (overlay) excludedBackendNodeIds.add(item.backendNodeId);
     }
   }
-  return { nodes, children, ancestry, excludedBackendNodeIds };
+  return { nodes, excludedBackendNodeIds };
 }

@@ -6,13 +6,6 @@ export const REQUESTED_STYLES = [
   "cursor",
   "visibility",
   "opacity",
-  "display",
-  "overflow-x",
-  "overflow-y",
-  "transform",
-  "zoom",
-  "clip-path",
-  "mask-image",
 ] as const;
 const STYLE_COL = Object.fromEntries(
   REQUESTED_STYLES.map((name, index) => [name, index]),
@@ -54,9 +47,6 @@ export interface SnapshotDocument {
     styles?: number[][];
     bounds?: number[][];
     paintOrders?: number[];
-    clientRects?: number[][];
-    offsetRects?: number[][];
-    scrollRects?: number[][];
   };
 }
 
@@ -173,11 +163,7 @@ export async function decodeDocument(
         ? undefined
         : {
             boundsSpace: "snapshot-document-css" as const,
-            clientSpace: "unscaled-client-offset-css" as const,
             bounds: dl?.bounds?.[li],
-            clientRect: dl?.clientRects?.[li],
-            offsetRect: dl?.offsetRects?.[li],
-            scrollRect: dl?.scrollRects?.[li],
             styles,
           };
 
@@ -201,9 +187,6 @@ export async function decodeDocument(
       backendNodeId,
       nodeType: dn.nodeType?.[n],
       parentBackendNodeId,
-      ...(parentIdx >= 0 && dn.backendNodeId[parentIdx] === undefined
-        ? { parentMissing: true }
-        : {}),
 
       tag,
       attrs,

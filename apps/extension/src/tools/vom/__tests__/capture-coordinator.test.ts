@@ -126,7 +126,7 @@ describe("captureObservationFacts", () => {
     const main = facts.documents.find((doc) => doc.frame.frameId === "main")!;
     const remote = facts.documents.find((doc) => doc.frame.frameId === "remote")!;
     expect(main.index.nodes.get(2)).not.toBe(remote.index.nodes.get(2));
-    expect(main.index.children.get(1)).toEqual([2]);
+    expect(main.index.nodes.get(2)?.parentBackendNodeId).toBe(1);
     expect(main.index.nodes.get(10001)?.nodeType).toBe(10);
     expect(remote.axNodes[0].frameId).toBe("remote");
     expect(main.index.nodes.get(2)).toBe(main.domNodes.find((node) => node.backendNodeId === 2));

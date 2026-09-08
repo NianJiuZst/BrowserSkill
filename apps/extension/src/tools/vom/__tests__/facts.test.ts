@@ -23,6 +23,7 @@ describe("document facts", () => {
       let reads = 0;
       const input = Array.from({ length: count }, (_, i) => {
         const item = node(i, i ? (wide ? 0 : i - 1) : null);
+        if (i === 0) item.attrs[OVERLAY_HOST_MARKER_ATTR] = "";
         Object.defineProperty(item, "parentBackendNodeId", {
           get: () => {
             reads++;
@@ -33,14 +34,13 @@ describe("document facts", () => {
       }).reverse(); // parent need not precede child
       const index = await buildDocumentIndex(input);
       expect(index.nodes.size).toBe(count);
-      expect(index.ancestry.get(count - 1)).toEqual({ complete: true, overlay: false });
-      expect(index.children.get(0)?.length).toBe(wide ? count - 1 : 1);
+      expect(index.excludedBackendNodeIds.size).toBe(count);
       expect(reads).toBeLessThanOrEqual(count * 8);
       expect(index.nodes.get(count - 1)).toBe(input[0]);
     }
   });
 
-  it("marks cycles and orphans incomplete and propagates overlay through shadow roots", async () => {
+  it("handles cycles and orphans and propagates overlay through shadow roots", async () => {
     const host = { ...node(1, null), attrs: { [OVERLAY_HOST_MARKER_ATTR]: "" } };
     const input = [
       node(3, 2),
@@ -53,7 +53,7 @@ describe("document facts", () => {
     ];
     const index = await buildDocumentIndex(input);
     expect([...index.excludedBackendNodeIds].sort()).toEqual([1, 2, 3]);
-    for (const id of [4, 5, 6, 7]) expect(index.ancestry.get(id)?.complete).toBe(false);
+    expect(index.nodes.size).toBe(input.length);
   });
 
   it("does not propagate a descendant overlay backwards into a cycle", async () => {
@@ -62,74 +62,28 @@ describe("document facts", () => {
     expect([...index.excludedBackendNodeIds]).toEqual([3]);
   });
 
-  it("does not treat a missing snapshot parent as a complete root", async () => {
-    const { nodes } = await decodeDocument(
-      { nodes: { backendNodeId: [1], nodeName: [0], parentIndex: [99] } },
-      ["div"],
-    );
-    const index = await buildDocumentIndex(nodes);
-    expect(index.ancestry.get(1)?.complete).toBe(false);
-  });
-
-  it("retains raw box units and independent style/interaction evidence", async () => {
-    const strings = [
-      "html",
-      "canvas",
-      "aria-hidden",
-      "true",
-      "inert",
-      "",
-      "hidden",
-      "visible",
-      "0",
-      "auto",
-      "scroll",
-      "matrix(2,0,0,2,0,0)",
-    ];
+  it("decodes current observation bounds, styles and attributes without projecting coordinates", async () => {
+    const strings = ["div", "aria-hidden", "true", "inert", "", "visible", "0", "static", "auto"];
     const styles = REQUESTED_STYLES.map((style) =>
-      style === "visibility"
-        ? 7
-        : style === "opacity"
-          ? 8
-          : style === "overflow-x"
-            ? 10
-            : style === "transform"
-              ? 11
-              : 9,
+      style === "visibility" ? 5 : style === "opacity" ? 6 : style === "position" ? 7 : 8,
     );
     const { nodes } = await decodeDocument(
       {
-        nodes: {
-          backendNodeId: [1, 2],
-          parentIndex: [-1, 0],
-          nodeName: [0, 1],
-          attributes: [[2, 3, 4, 5], []],
-        },
-        layout: {
-          nodeIndex: [0, 1],
-          bounds: [
-            [0, 0, 200, 100],
-            [10, 20, 120, 40],
-          ],
-          clientRects: [
-            [5, 5, 90, 40],
-            [0, 0, 120, 40],
-          ],
-          styles: [styles, styles],
-        },
+        nodes: { backendNodeId: [1], parentIndex: [-1], nodeName: [0], attributes: [[1, 2, 3, 4]] },
+        layout: { nodeIndex: [0], bounds: [[10, 20, 120, 40]], styles: [styles] },
       },
       strings,
     );
     expect(nodes[0].attrs).toEqual({ "aria-hidden": "true", inert: "" });
-    expect(nodes[0].layout).toMatchObject({
+    expect(nodes[0].layout).toEqual({
       boundsSpace: "snapshot-document-css",
-      clientSpace: "unscaled-client-offset-css",
-      clientRect: [5, 5, 90, 40],
+      bounds: [10, 20, 120, 40],
       styles: {
+        position: "static",
+        "pointer-events": "auto",
+        cursor: "auto",
         visibility: "visible",
         opacity: "0",
-        "overflow-x": "scroll",
-        transform: "matrix(2,0,0,2,0,0)",
       },
     });
     expect(nodes[0]).not.toHaveProperty("rect");
