@@ -170,6 +170,104 @@ describe("captureObservationFacts", () => {
     ).toBe(false);
   });
 
+  it.each([
+    "cancel",
+    "worker-abort",
+  ] as const)("joins target cleanup and stops claiming targets after %s", async (mode) => {
+    const frames = Array.from({ length: 5 }, (_, i) => ({
+      frameId: `f${i}`,
+      target: { tabId: 4, ...(i ? { sessionId: `s${i}` } : {}) },
+    }));
+    const { cdp } = fixture({ frames });
+    const original = cdp.sendToTarget!;
+    const pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+    const calls: Array<{ target: string; method: string }> = [];
+    let release: (() => void) | undefined;
+    let released = false;
+    const send: NonNullable<CdpRunner["sendToTarget"]> = async <T>(
+      target: CdpTarget,
+      method: string,
+      params?: object,
+    ) => {
+      calls.push({ target: target.sessionId ?? "main", method });
+      if (method === "DOMSnapshot.captureSnapshot" && target.sessionId) {
+        await new Promise<void>((resolve, reject) =>
+          pending.set(target.sessionId!, { resolve, reject }),
+        );
+      }
+      if (method === "Runtime.releaseObjectGroup") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        released = true;
+      }
+      const result = await original<T>(target, method, params);
+      if (method === "DOMSnapshot.captureSnapshot" && !target.sessionId)
+        (result as { strings: string[] }).strings[2] = "input";
+      return result;
+    };
+    cdp.sendToTarget = send;
+    cdp.send = (tabId, method, params) => send({ tabId }, method, params);
+    const controller = new AbortController();
+    let settled = false;
+    const capture = captureObservationFacts(cdp, 4, controller.signal);
+    const rejected = expect(capture).rejects.toMatchObject({ name: "AbortError" });
+    void capture.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => {
+      expect(pending.size).toBe(3);
+      expect(release).toBeDefined();
+    });
+    if (mode === "cancel") controller.abort();
+    // Cancellation may race with an ordinary transport rejection. Without an
+    // external signal, an escaping AbortError still terminates the worker pool.
+    pending
+      .get("s1")!
+      .reject(
+        mode === "cancel"
+          ? new Error("transport closed")
+          : new DOMException("target aborted", "AbortError"),
+      );
+    pending.get("s2")!.resolve();
+    pending.get("s3")!.resolve();
+    await vi.waitFor(() => {
+      if (mode === "worker-abort")
+        expect(
+          calls.some(
+            (call) => call.target === "s3" && call.method === "Accessibility.getFullAXTree",
+          ),
+        ).toBe(true);
+      else
+        expect(
+          calls.some(
+            (call) => call.target === "s3" && call.method === "DOMSnapshot.captureSnapshot",
+          ),
+        ).toBe(true);
+    });
+    // Allow worker rejection and the outer promise chain to run while cleanup
+    // is deliberately held. The old fail-fast pool settles here.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    expect(released).toBe(false);
+    expect(calls.some((call) => call.target === "s4")).toBe(false);
+    if (mode === "cancel")
+      expect(
+        calls.some(
+          (call) => call.method === "Accessibility.enable" || call.method === "DOM.getDocument",
+        ),
+      ).toBe(false);
+    release!();
+    await rejected;
+    expect(released).toBe(true);
+    expect(calls.some((call) => call.target === "s4")).toBe(false);
+  });
+
   it("bounds collection across many targets and stops scheduling after cancellation", async () => {
     const frames = Array.from({ length: 12 }, (_, i) => ({
       frameId: `f${i}`,

@@ -41,15 +41,25 @@ async function collectTargets<T>(
   signal?: AbortSignal,
 ): Promise<void> {
   let cursor = 0;
+  let failed = false;
+  let failure: unknown;
   await Promise.all(
     Array.from({ length: Math.min(4, items.length) }, async () => {
-      while (cursor < items.length) {
-        throwCaptureAborted(signal);
-        const item = items[cursor++];
-        await collect(item);
+      try {
+        while (cursor < items.length && !failed && !signal?.aborted) {
+          const item = items[cursor++];
+          await collect(item);
+        }
+      } catch (error) {
+        if (!failed) failure = error;
+        failed = true;
       }
     }),
   );
+  // A worker's rejection must not let the capture outlive its own task scope.
+  // In-flight reads and their finally blocks settle before cancellation/failure.
+  throwCaptureAborted(signal);
+  if (failed) throw failure;
 }
 
 /** When topology discovery is unavailable, snapshot documents still carry
@@ -91,6 +101,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
   } catch (error) {
     if (isCaptureAbort(error)) throw error;
   }
+  throwCaptureAborted(signal);
   const geometry = new GeometryContext(cdp, tabId, graph, signal);
   const issues: CaptureIssue[] = [];
   const groups = new Map<string, TargetBatch<T>>();
@@ -144,19 +155,19 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
           issues,
           signal,
         );
-        if (
-          !(await enrichFormControlStates(
-            scoped,
-            tabId,
-            batch.documents.map((doc) => doc.domNodes),
-            signal,
-          ))
-        )
-          unavailable(batch, "forms");
+        const formsAvailable = await enrichFormControlStates(
+          scoped,
+          tabId,
+          batch.documents.map((doc) => doc.domNodes),
+          signal,
+        );
+        throwCaptureAborted(signal);
+        if (!formsAvailable) unavailable(batch, "forms");
         const present = new Set(batch.documents.map((doc) => doc.frame.frameId));
         for (const frame of batch.frames)
           if (!present.has(frame.frameId)) unavailable(batch, "dom", frame.frameId);
       } catch (error) {
+        throwCaptureAborted(signal);
         if (isCaptureAbort(error)) throw error;
         firstFailure ??= error;
         unavailable(batch, "dom");
@@ -168,6 +179,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
         throwCaptureAborted(signal);
         await scoped.send(tabId, "Accessibility.enable", {});
       } catch (error) {
+        throwCaptureAborted(signal);
         if (isCaptureAbort(error)) throw error;
         firstFailure ??= error;
         unavailable(batch, "ax");
@@ -181,8 +193,10 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
             "Accessibility.getFullAXTree",
             frame.frameId === "root" ? {} : { frameId: frame.frameId },
           );
+          throwCaptureAborted(signal);
           batch.ax.push({ frame, nodes: result.nodes ?? [] });
         } catch (error) {
+          throwCaptureAborted(signal);
           if (isCaptureAbort(error)) throw error;
           firstFailure ??= error;
           unavailable(batch, "ax", frame.frameId);

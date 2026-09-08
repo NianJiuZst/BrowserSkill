@@ -150,5 +150,6 @@ export async function enrichFormControlStates(
     return false;
   } finally {
     await cdp.send(tabId, "Runtime.releaseObjectGroup", { objectGroup }).catch(() => undefined);
+    throwIfAborted(signal);
   }
 }
