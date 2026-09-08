@@ -103,3 +103,39 @@ jobs:
           fi
           pnpm publish --access public --no-git-checks
           echo "Published ${PACKAGE_NAME}@${{ needs.resolve.outputs.version }}"
+
+      - name: Verify published version and README
+        working-directory: ${{ env.PACKAGE_DIR }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFile } from "node:fs/promises";
+          import { setTimeout } from "node:timers/promises";
+
+          const { name, version } = JSON.parse(await readFile("package.json", "utf8"));
+          const readme = await readFile("README.md", "utf8");
+          const url = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
+
+          for (let attempt = 1; attempt <= 6; attempt++) {
+            try {
+              const response = await fetch(url, {
+                headers: { "Cache-Control": "no-cache" },
+                signal: AbortSignal.timeout(10_000),
+              });
+              assert.ok(response.ok, `npm registry returned HTTP ${response.status}`);
+              const metadata = await response.json();
+              assert.equal(metadata.versions?.[version]?.version, version, "Published version is missing");
+              assert.equal(metadata["dist-tags"]?.latest, version, "npm latest does not match the release");
+              assert.ok(metadata.readme === readme, "npm README does not match the release");
+              console.log(`Verified ${name}@${version}: latest tag and README match`);
+              break;
+            } catch (error) {
+              if (attempt === 6) {
+                console.error("Publication succeeded, but registry verification failed. Check npm before retrying the workflow.");
+                throw error;
+              }
+              console.log(`Registry verification attempt ${attempt} failed; retrying in 10 seconds`);
+              await setTimeout(10_000);
+            }
+          }
+          NODE
