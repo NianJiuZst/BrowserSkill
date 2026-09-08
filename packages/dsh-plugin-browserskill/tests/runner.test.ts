@@ -133,6 +133,8 @@ describe("Windows parent cancellation", () => {
     expect(child.stdin.writableEnded).toBe(true);
     expect(child.killedWith).toEqual([]);
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(child.killedWith).toEqual([]);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(child.killedWith).toEqual(["SIGKILL"]);
     expect(await result).toMatchObject({ timedOut: true });
   });

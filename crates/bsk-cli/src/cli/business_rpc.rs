@@ -78,7 +78,7 @@ where
         return Err(CliError::from_rpc(RpcError {
             code: ErrorCode::Cancelled,
             message: "parent closed the cancellation pipe".into(),
-            data: None,
+            data: Some(serde_json::json!({"reason": "cancelled_before_dispatch"})),
         }));
     }
     let rpc_id: RpcId = format!("{}-{}", rpc_id_prefix, random_short_id());
@@ -118,6 +118,46 @@ where
     };
 
     outcome.map_err(CliError::from_rpc)
+}
+
+/// Release caller-owned staging even after cancellation. This deliberately
+/// exposes only transfer.release, not a general bypass for business RPCs.
+/// The entire batch, including connection setup, shares one bounded budget.
+pub fn release_transfers<'a>(
+    sock: &Path,
+    transfer_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<(), CliError> {
+    use bsk_protocol::tools::{TransferIdParams, TransferReleaseResult};
+    const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+    let ids: Vec<_> = transfer_ids.into_iter().collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build runtime for transfer cleanup")?;
+    rt.block_on(async {
+        tokio::time::timeout(CLEANUP_TIMEOUT, async {
+            let mut client = IpcClient::connect(sock).await?;
+            for id in ids {
+                client
+                    .call::<_, TransferReleaseResult>(
+                        "transfer-release",
+                        Method::TransferRelease,
+                        Some(TransferIdParams {
+                            transfer_id: id.to_string(),
+                        }),
+                        CLEANUP_TIMEOUT,
+                    )
+                    .await?
+                    .map_err(CliError::from_rpc)?;
+            }
+            Ok::<_, CliError>(())
+        })
+        .await
+        .context("transfer cleanup exceeded its total time budget")?
+    })
 }
 
 /// Send a `cancel { rpc_id }` frame over a fresh connection so it

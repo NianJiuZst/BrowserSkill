@@ -71,8 +71,9 @@ export interface BskRunner {
 // Business RPCs translate Ctrl-C / opt-in stdin EOF into cancel(rpc_id).
 // Allow reconciliation before hard-killing an old or unresponsive CLI.
 const KILL_GRACE_MS = 3000;
-// Windows IPC may spend 5s connecting, then 2s cancelling and 2s settling.
-const WINDOWS_KILL_GRACE_MS = 10_000;
+// Windows IPC may spend 5s connecting, 2s cancelling, 2s settling,
+// and up to 5s releasing the entire batch of caller-owned transfers.
+const WINDOWS_KILL_GRACE_MS = 15_000;
 const SESSION_BUSY_RETRY_DELAY_MS = 100;
 
 export function createBskRunner(bskPath: string, spawnImpl: SpawnImpl = spawn): BskRunner {
