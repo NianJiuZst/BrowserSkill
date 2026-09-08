@@ -976,6 +976,7 @@ async function parseChildFrameDocuments(
   parentDocIndex: number,
   parentContext: FrameContext,
   geometry: GeometryContext,
+  signal?: AbortSignal,
   visited = new Set<number>(),
 ): Promise<ParseFrameDocumentsResult> {
   const iframeNodes: CapturedIframeNodes = new Map();
@@ -990,34 +991,57 @@ async function parseChildFrameDocuments(
 
   const parentBackendIds = parentDoc?.nodes?.backendNodeId ?? [];
 
-  for (const [nodeArrayIdx, childDocIndex] of cdi) {
-    if (visited.has(childDocIndex)) continue;
+  const children = [...cdi].flatMap(([nodeArrayIdx, childDocIndex]) => {
     const childDoc = documents[childDocIndex];
-    if (!childDoc) continue;
     const iframeBackendId = parentBackendIds[nodeArrayIdx];
-    if (iframeBackendId === undefined) continue;
-    let projection: SnapshotProjection | null = null;
-    const source = { target: parentContext.target, frameId: snapshotFrameId(childDoc, strings) };
-    const parentProjection = parentContext.projection?.geometry;
-    if (parentProjection) {
-      // Each owner quad is target-relative; do not apply the parent's transform twice.
-      const edge = parentProjection.edges[0];
-      const clips = edge
-        ? [edge.destinationQuad, ...(edge.destinationClips ?? [])]
-        : parentProjection.sourceClips;
-      try {
-        projection = await geometry.snapshotProjection(
-          source,
-          iframeBackendId,
-          clips,
-          parentProjection.topViewport,
-        );
-      } catch (error) {
-        if (isAbortError(error)) throw error;
-        console.debug("[bsk capture] frame owner geometry unavailable", error);
-      }
-    }
+    if (visited.has(childDocIndex) || !childDoc || iframeBackendId === undefined) return [];
+    return [
+      {
+        childDocIndex,
+        childDoc,
+        iframeBackendId,
+        source: { target: parentContext.target, frameId: snapshotFrameId(childDoc, strings) },
+        projection: null as SnapshotProjection | null,
+      },
+    ];
+  });
+  const parentProjection = parentContext.projection?.geometry;
+  if (parentProjection) {
+    // Measure only direct siblings. Recursion starts after these workers finish,
+    // so descendants never hold or recursively acquire a measurement slot.
+    const edge = parentProjection.edges[0];
+    const clips = edge
+      ? [edge.destinationQuad, ...(edge.destinationClips ?? [])]
+      : parentProjection.sourceClips;
+    let cursor = 0;
+    let aborted: unknown;
+    await Promise.all(
+      Array.from({ length: Math.min(4, children.length) }, async () => {
+        while (cursor < children.length && !signal?.aborted && !aborted) {
+          const child = children[cursor++];
+          try {
+            // Owner quads are target-relative; do not apply the parent transform twice.
+            child.projection = await geometry.snapshotProjection(
+              child.source,
+              child.iframeBackendId,
+              clips,
+              parentProjection.topViewport,
+            );
+          } catch (error) {
+            if (isAbortError(error)) aborted = error;
+            else console.debug("[bsk capture] frame owner geometry unavailable", error);
+          }
+        }
+      }),
+    );
+    // Join all active reads, including object cleanup, before propagating abort.
+    if (aborted) throw aborted;
+  }
+  throwIfAborted(signal);
 
+  // Completion order must not change document traversal or result insertion order.
+  for (const { childDocIndex, childDoc, iframeBackendId, source, projection } of children) {
+    throwIfAborted(signal);
     const childContext: FrameContext = {
       frameId: source.frameId,
       target: source.target,
@@ -1042,6 +1066,7 @@ async function parseChildFrameDocuments(
       childDocIndex,
       childContext,
       geometry,
+      signal,
       nextVisited,
     );
     for (const [nestedFrameId, nestedNodes] of nested.iframeNodes) {
@@ -1116,7 +1141,14 @@ export async function captureViewModel(
   const nodes = mainParsed.nodes;
   const excludedBackendNodeIds = new Set(mainParsed.excludedBackendNodeIds);
 
-  const frameParsed = await parseChildFrameDocuments(documents, strings, 0, topContext, geometry);
+  const frameParsed = await parseChildFrameDocuments(
+    documents,
+    strings,
+    0,
+    topContext,
+    geometry,
+    options.signal,
+  );
   const iframeNodes = frameParsed.iframeNodes;
   for (const id of frameParsed.excludedBackendNodeIds) {
     excludedBackendNodeIds.add(id);

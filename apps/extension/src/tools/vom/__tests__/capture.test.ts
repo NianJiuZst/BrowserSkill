@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { OVERLAY_HOST_MARKER_ATTR, OVERLAY_HOST_NAME } from "../../../lib/overlay-bridge";
+import type { CdpRunner } from "../../shared";
 import { captureViewModel, collectOverlayExcludedBackendIds, probeHoverSurfaces } from "../capture";
 
 // Minimal but format-accurate captureSnapshot reply: a body with one
@@ -1260,5 +1261,149 @@ describe("captureViewModel", () => {
     };
     const excluded = await collectOverlayExcludedBackendIds(cdp, 4);
     expect(excluded).toEqual(new Set([200, 201, 202]));
+  });
+});
+
+// Six sibling frames and one nested frame exercise scheduling through the real capture entry.
+function siblingCaptureFixture(
+  beforeReply: (method: string, params: Record<string, unknown>) => Promise<void> = async () => {},
+) {
+  const document = (id: number, owners: number[], childIndexes: number[]) => ({
+    frameId: `frame-${id}`,
+    nodes: {
+      parentIndex: [-1, ...owners.map(() => 0)],
+      nodeName: [0, ...owners.map(() => 1)],
+      backendNodeId: [1000 + id, ...owners],
+      attributes: [[], ...owners.map(() => [])],
+      contentDocumentIndex: { index: owners.map((_, i) => i + 1), value: childIndexes },
+    },
+    layout: {
+      nodeIndex: [0, ...owners.map((_, i) => i + 1)],
+      bounds: [[0, 0, 200, 100], ...owners.map(() => [0, 0, 200, 100])],
+    },
+  });
+  const snapshot = {
+    strings: ["body", "iframe"],
+    documents: [
+      document(0, [100, 101, 102, 103, 104, 105], [1, 2, 3, 4, 5, 6]),
+      document(1, [200], [7]),
+      ...Array.from({ length: 6 }, (_, i) => document(i + 2, [], [])),
+    ],
+  };
+  let active = 0;
+  let peak = 0;
+  const send = vi.fn(async (_tabId: number, method: string, params: object = {}) => {
+    const args = params as Record<string, unknown>;
+    active++;
+    peak = Math.max(peak, active);
+    try {
+      await beforeReply(method, args);
+      if (method === "DOMSnapshot.captureSnapshot") return snapshot;
+      if (method === "Page.getLayoutMetrics")
+        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
+      if (method === "DOM.getBoxModel")
+        return { model: { content: [0, 0, 200, 0, 200, 100, 0, 100] } };
+      if (method === "DOM.resolveNode") return { object: { objectId: String(args.backendNodeId) } };
+      if (method === "Runtime.callFunctionOn")
+        return { result: { value: { width: 200, height: 100 } } };
+      return {};
+    } finally {
+      active--;
+    }
+  });
+  return {
+    cdp: { send: send as CdpRunner["send"] },
+    send,
+    peak: () => peak,
+    active: () => active,
+    measured: () =>
+      send.mock.calls
+        .filter(([, method]) => method === "DOM.getBoxModel")
+        .map(([, , params]) => (params as { backendNodeId: number }).backendNodeId),
+  };
+}
+
+describe("sibling frame measurement scheduling", () => {
+  it("bounds concurrent reads, fills free slots and preserves depth-first output despite reordered replies", async () => {
+    const pending = new Map<number, () => void>();
+    const fixture = siblingCaptureFixture(async (method, params) => {
+      if (method === "DOM.getBoxModel" && Number(params.backendNodeId) < 200)
+        await new Promise<void>((resolve) => pending.set(Number(params.backendNodeId), resolve));
+    });
+    const capture = captureViewModel(fixture.cdp, 4);
+    await vi.waitFor(() => expect(pending.size).toBe(4));
+    expect(fixture.measured()).toEqual([100, 101, 102, 103]);
+    pending.get(103)!();
+    await vi.waitFor(() => expect(pending.has(104)).toBe(true));
+    pending.get(104)!();
+    await vi.waitFor(() => expect(pending.has(105)).toBe(true));
+    expect(fixture.measured()).not.toContain(200);
+    for (const id of [105, 102, 101, 100]) pending.get(id)!();
+    const captured = await capture;
+    expect(fixture.peak()).toBe(4);
+    expect(fixture.active()).toBe(0);
+    expect(fixture.measured()).toEqual([100, 101, 102, 103, 104, 105, 200]);
+    expect([...captured.iframeNodes.keys()]).toEqual([100, 200, 101, 102, 103, 104, 105]);
+    expect(captured.iframeNodes.get(200)?.[0].rect).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    for (const method of [
+      "DOM.getBoxModel",
+      "DOM.resolveNode",
+      "Runtime.callFunctionOn",
+      "Runtime.releaseObject",
+    ])
+      expect(fixture.send.mock.calls.filter(([, name]) => name === method)).toHaveLength(7);
+  });
+
+  it("does not measure descendants of a failed owner and retains sibling geometry and local nodes", async () => {
+    const fixture = siblingCaptureFixture(async (method, params) => {
+      if (method === "DOM.resolveNode" && params.backendNodeId === 100)
+        throw new Error("owner replaced");
+    });
+    const captured = await captureViewModel(fixture.cdp, 4);
+    expect(fixture.measured()).not.toContain(200);
+    expect(captured.iframeNodes.get(200)?.[0]).toMatchObject({
+      tag: "body",
+      rect: null,
+      localRect: { x: 0, y: 0, w: 200, h: 100 },
+    });
+    expect(captured.iframeNodes.get(101)?.[0].rect).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    expect([...captured.iframeNodes.keys()]).toEqual([100, 200, 101, 102, 103, 104, 105]);
+  });
+
+  it("stops scheduling on cancellation and waits for resolved objects to be released", async () => {
+    const controller = new AbortController();
+    const resolutions = new Map<string, () => void>();
+    const releases = new Map<string, () => void>();
+    const fixture = siblingCaptureFixture(async (method, params) => {
+      if (method === "DOM.resolveNode")
+        await new Promise<void>((resolve) =>
+          resolutions.set(String(params.backendNodeId), resolve),
+        );
+      if (method === "Runtime.releaseObject")
+        await new Promise<void>((resolve) => releases.set(String(params.objectId), resolve));
+    });
+    let settled = false;
+    const capture = captureViewModel(fixture.cdp, 4, { signal: controller.signal });
+    const rejected = expect(capture).rejects.toMatchObject({ name: "AbortError" });
+    void capture.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(resolutions.size).toBe(4));
+    controller.abort();
+    for (const resolve of resolutions.values()) resolve();
+    await vi.waitFor(() => expect(releases.size).toBe(4));
+    expect(settled).toBe(false);
+    expect(fixture.measured()).toEqual([100, 101, 102, 103]);
+    for (const release of releases.values()) release();
+    await rejected;
+    expect(fixture.active()).toBe(0);
+    expect(fixture.send.mock.calls.some(([, method]) => method === "Runtime.callFunctionOn")).toBe(
+      false,
+    );
   });
 });
