@@ -25,6 +25,12 @@ missing supported browser tools before embedding the Markdown. Registration and 
 catalog snapshot are pure in-memory reads (no disk/process/daemon); compositions without the skill
 seam degrade silently.
 
+With `lazyTools: true`, the six tool schemas stay out of the system prompt until
+the skill is successfully invoked. Registration happens once and lasts until the
+plugin is unloaded. Repeated invocations do not register duplicate tools. Entering
+a resumed conversation whose history contains a successful skill invocation also
+registers the tools. Setting `lazyTools: false` registers them at plugin startup.
+
 ## Observation subscriptions and routes
 
 - **Screenshot demand**: the client requests periodic screenshots while an observation view is

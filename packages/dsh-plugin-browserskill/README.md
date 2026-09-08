@@ -17,10 +17,10 @@ Before installing the plugin:
   Follow the [BrowserSkill setup guide](https://github.com/Tencent/BrowserSkill#quick-start).
 - Make sure `bsk` is on the `PATH` used to start dsh, or set `bskPath` in the plugin configuration.
 
-Install the latest published version into the `web` profile, then start it:
+Install the plugin into the `web` profile, then start it:
 
 ```sh
-dsh plugin --profile web add @wxg-prc-cpg/browser-skill-dsh-plugin@latest
+dsh plugin --profile web add @wxg-prc-cpg/browser-skill-dsh-plugin
 dsh --profile web
 ```
 
@@ -37,8 +37,8 @@ By default, the browser tools become available when the skill is invoked.
 
 ## Updating
 
-`@latest` selects npm's latest published version when you install. Installed plugins
-do not update automatically. To upgrade this plugin in your profile:
+Installed plugins do not update automatically. To upgrade this plugin to npm's
+`latest` version, including versions outside the profile's saved dependency range:
 
 ```sh
 dsh plugin --profile web update @wxg-prc-cpg/browser-skill-dsh-plugin --latest
@@ -79,7 +79,30 @@ can never touch a session owned by another program.
 
 ## Configuration
 
-All plugin configuration fields are optional:
+After installing the plugin, edit your profile's `cordis.patch.yml`. For the `web`
+profile, the default location is `~/.dsh/profiles/web/cordis.patch.yml`. If you set
+`DSH_HOME`, use `$DSH_HOME/profiles/web/cordis.patch.yml` instead. Replace `web` with
+your profile name as needed.
+
+Add the following entry to the file's patch list, or edit the existing
+`id: browserskill` entry. This overrides the plugin registered by the installed bundle:
+
+```yaml
+- id: browserskill
+  config:
+    bskPath: bsk
+    defaultTimeoutMs: 120000
+    maxSessions: 5
+    observationEnabled: true
+    thumbnailIntervalMs: 1500
+    idleIntervalMs: 8000
+    lazyTools: true
+```
+
+Change `bskPath` to the full path of your CLI binary if it is not on dsh's `PATH`.
+A patch replaces the entry's entire `config` object, so keep all overrides you need
+together in that object. Restart the profile to apply the configuration.
+All fields are optional; omitted fields use the defaults below:
 
 | Option | Default | Purpose |
 | --- | --- | --- |
@@ -90,6 +113,11 @@ All plugin configuration fields are optional:
 | `thumbnailIntervalMs` | `1500` | Screenshot interval for active sessions, in milliseconds. |
 | `idleIntervalMs` | `8000` | Screenshot interval for idle sessions and the recent-activity window, in milliseconds. |
 | `lazyTools` | `true` | Reveal the browser tools when the skill is invoked. Set `false` to register them at startup. |
+
+With `lazyTools: true`, only the skill's catalog entry is initially advertised to
+the model. The six `browser_*` tool schemas are added to the system prompt after
+the `browser-skill` skill is successfully invoked, either by the model or through
+`/browser-skill`. Set `lazyTools: false` to make the tools available immediately.
 
 ## Live browser view
 
@@ -127,22 +155,30 @@ The [Release dsh plugin workflow](https://github.com/Tencent/BrowserSkill/blob/m
 publishes the package and this README to npm. Pushing a `dsh-plugin-vX.Y.Z` tag
 triggers it; ordinary commits to `main` do not.
 
-1. Update this README and prepare a new stable version using the repository's
-   [release script](https://github.com/Tencent/BrowserSkill/blob/main/scripts/release.mjs).
-   CLI, extension, and DSH plugin versions are coordinated by that script.
-2. Commit the release changes before tagging. From the repository root, derive the
-   tag from the plugin's `package.json` so the versions match:
+1. Commit this README and any other changes intended for the release.
+2. From the repository root, run the
+   [release script](https://github.com/Tencent/BrowserSkill/blob/main/scripts/release.mjs)
+   with a new stable version, replacing `<version>` below. The script updates the
+   CLI, extension, and DSH plugin versions, commits the version changes, and creates
+   their release tags:
 
    ```sh
-   version=$(node -p "require('./packages/dsh-plugin-browserskill/package.json').version")
-   git tag "dsh-plugin-v${version}"
-   git push origin "dsh-plugin-v${version}"
+   node scripts/release.mjs <version>
    ```
 
-   If the release script already created the tag, run the version assignment and
-   push command, skipping `git tag`.
-3. The workflow checks the version, runs typechecks and tests, builds the package,
-   publishes it, and verifies npm's `latest` version and README.
+3. Push the version commit to the release branch, then push the DSH plugin tag
+   created by the script, using the same `<version>`:
+
+   ```sh
+   git push origin HEAD
+   git push origin dsh-plugin-v<version>
+   ```
+
+   This publishes the DSH plugin. Push the CLI and extension tags separately when
+   those components are ready for release.
+
+The workflow checks the version, runs typechecks and tests, builds the package,
+and publishes it to npm.
 
 You can also run the workflow manually from GitHub Actions on the intended release
 ref. Both triggers require an unpublished version and the `NPM_TOKEN` secret in the

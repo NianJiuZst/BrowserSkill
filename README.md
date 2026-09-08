@@ -150,11 +150,11 @@ BrowserSkill ships a first-class dsh plugin on npm as
 It gives the agent native `browser_*` tools and a live view of its browser sessions
 in the Web UI. The plugin runs `bsk` on the agent's behalf.
 
-Install the `bsk` CLI and connect the browser extension first. Then add the latest
-published plugin to a dsh profile and start it (replace `web` with your profile name):
+Install the `bsk` CLI and connect the browser extension first. Then add the plugin
+to a dsh profile and start it (replace `web` with your profile name):
 
 ```sh
-dsh plugin --profile web add @wxg-prc-cpg/browser-skill-dsh-plugin@latest
+dsh plugin --profile web add @wxg-prc-cpg/browser-skill-dsh-plugin
 dsh --profile web
 ```
 
