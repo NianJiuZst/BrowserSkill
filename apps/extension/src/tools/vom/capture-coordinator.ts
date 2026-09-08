@@ -35,7 +35,7 @@ interface TargetBatch<T extends FrameOwnedAxNode> {
 
 /** A fixed worker pool scoped to one capture; each worker issues at most one
  * collection request at a time. Geometry has its own measurement-phase bound. */
-async function collectTargets<T>(
+async function collectTasks<T>(
   items: readonly T[],
   collect: (item: T) => Promise<void>,
   signal?: AbortSignal,
@@ -112,7 +112,8 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
   const unavailable = (batch: TargetBatch<T>, stage: CaptureIssue["stage"], frameId?: string) =>
     issues.push({ target: batch.target, frameId, stage, reason: "capture-unavailable" });
   let firstFailure: unknown;
-  await collectTargets(
+  const axReady = new Set<TargetBatch<T>>();
+  await collectTasks(
     batches,
     async (batch) => {
       const scoped = cdpRunnerForTarget(cdp, batch.target);
@@ -179,26 +180,40 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
         unavailable(batch, "ax");
         return;
       }
-      for (const frame of batch.frames) {
-        try {
-          throwCaptureAborted(signal);
-          const result = await scoped.send<{ nodes?: T[] }>(
-            tabId,
-            "Accessibility.getFullAXTree",
-            frame.frameId === "root" ? {} : { frameId: frame.frameId },
-          );
-          throwCaptureAborted(signal);
-          batch.ax.push({ frame, nodes: result.nodes ?? [] });
-        } catch (error) {
-          throwCaptureAborted(signal);
-          if (isCaptureAbort(error)) throw error;
-          firstFailure ??= error;
-          unavailable(batch, "ax", frame.frameId);
-        }
+      axReady.add(batch);
+    },
+    signal,
+  );
+
+  // Schedule AX by frame across all ready targets, rather than nesting pools.
+  // Keep result slots in source order even when CDP replies arrive out of order.
+  const axTasks: { batch: TargetBatch<T>; frame: CdpFrame; result?: FrameAxBatch<T> }[] =
+    batches.flatMap((batch) =>
+      axReady.has(batch) ? batch.frames.map((frame) => ({ batch, frame })) : [],
+    );
+  await collectTasks(
+    axTasks,
+    async (task) => {
+      const { batch, frame } = task;
+      try {
+        throwCaptureAborted(signal);
+        const result = await cdpRunnerForTarget(cdp, batch.target).send<{ nodes?: T[] }>(
+          tabId,
+          "Accessibility.getFullAXTree",
+          frame.frameId === "root" ? {} : { frameId: frame.frameId },
+        );
+        throwCaptureAborted(signal);
+        task.result = { frame, nodes: result.nodes ?? [] };
+      } catch (error) {
+        throwCaptureAborted(signal);
+        if (isCaptureAbort(error)) throw error;
+        firstFailure ??= error;
+        unavailable(batch, "ax", frame.frameId);
       }
     },
     signal,
   );
+  for (const task of axTasks) if (task.result) task.batch.ax.push(task.result);
 
   let viewport = { width: 0, height: 0 };
   try {

@@ -172,6 +172,7 @@ export async function normalizeSnapshot(
       if (isCaptureAbort(error)) throw error;
     }
   }
+  const checkpoint = createCaptureCheckpoint(signal);
   const visited = new Set<string>();
   const remaining = frames[Symbol.iterator]();
   for (let cursor = 0; visited.size < frames.length; cursor++) {
@@ -181,7 +182,10 @@ export async function normalizeSnapshot(
       if (next.done) break;
       pending.push(next.value);
     }
-    if (cursor % 256 === 0) await captureCheckpoint(signal);
+    if (cursor % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     const frame = pending[cursor];
     if (visited.has(frame.frameId)) continue;
     visited.add(frame.frameId);

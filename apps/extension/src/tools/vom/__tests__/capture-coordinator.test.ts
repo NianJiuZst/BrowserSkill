@@ -262,9 +262,7 @@ describe("captureObservationFacts", () => {
     await vi.waitFor(() => {
       if (mode === "worker-abort")
         expect(
-          calls.some(
-            (call) => call.target === "s3" && call.method === "Accessibility.getFullAXTree",
-          ),
+          calls.some((call) => call.target === "s3" && call.method === "Accessibility.enable"),
         ).toBe(true);
       else
         expect(
@@ -821,6 +819,44 @@ describe("snapshot document provenance", () => {
 });
 
 describe("sibling frame measurement scheduling", () => {
+  it("batches same-target owner sizes without changing projected results", async () => {
+    const fixture = siblingCaptureFixture();
+    const original = fixture.cdp.send;
+    const methods: string[] = [];
+    fixture.cdp.send = async (tabId, method, params) => {
+      methods.push(method);
+      if (method === "Runtime.evaluate")
+        return {
+          result: {
+            deepSerializedValue: {
+              type: "array",
+              value: [100, 101, 102, 103, 104, 105, 200].map((backendNodeId) => ({
+                type: "array",
+                value: [
+                  { type: "node", value: { backendNodeId } },
+                  { type: "string", value: JSON.stringify({ width: 200, height: 100 }) },
+                ],
+              })),
+            },
+          },
+        } as never;
+      return original(tabId, method, params);
+    };
+    const captured = await captureObservationFacts(fixture.cdp, 4);
+    expect(captured.issues).toEqual([]);
+    expect(captured.documents.map((doc) => doc.frame.frameId)).toEqual(
+      Array.from({ length: 8 }, (_, i) => `frame-${i}`),
+    );
+    expect(
+      captured.documents.find((doc) => doc.frame.frameId === "frame-7")?.domNodes[0].rect,
+    ).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    expect(methods.filter((method) => method === "DOM.getBoxModel")).toHaveLength(7);
+    expect(methods.filter((method) => method === "Runtime.evaluate")).toHaveLength(1);
+    expect(methods.filter((method) => method === "Runtime.releaseObjectGroup")).toHaveLength(1);
+    expect(methods).not.toContain("DOM.resolveNode");
+    expect(methods).not.toContain("Runtime.callFunctionOn");
+  });
+
   it("bounds concurrent reads, fills free slots and preserves breadth-first output despite reordered replies", async () => {
     const pending = new Map<number, () => void>();
     const fixture = siblingCaptureFixture(async (method, params) => {
@@ -933,5 +969,71 @@ describe("sibling frame measurement scheduling", () => {
     expect(fixture.send.mock.calls.some(([, method]) => method === "Runtime.callFunctionOn")).toBe(
       false,
     );
+  });
+});
+
+describe("AX frame scheduling", () => {
+  it.each([
+    false,
+    true,
+  ])("shares four workers across frames and drains cancellation=%s", async (cancel) => {
+    const f = siblingCaptureFixture();
+    const original = f.cdp.send;
+    const pending = new Map<string, () => void>();
+    let active = 0,
+      peak = 0;
+    f.cdp.send = async (tabId, method, params) => {
+      if (method !== "Accessibility.getFullAXTree") return original(tabId, method, params);
+      const frameId = (params as { frameId: string }).frameId;
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise<void>((resolve) => pending.set(frameId, resolve));
+        if (frameId === "frame-2") throw new Error("one AX frame unavailable");
+        return { nodes: [{ nodeId: frameId, frameId }] } as never;
+      } finally {
+        active--;
+      }
+    };
+    const controller = new AbortController();
+    let settled = false;
+    const capture = captureObservationFacts(f.cdp, 4, controller.signal);
+    const outcome = capture.then(
+      (facts) => ({ facts, error: undefined }),
+      (error) => ({ facts: undefined, error }),
+    );
+    void outcome.then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(pending.size).toBe(4));
+    if (cancel) {
+      controller.abort();
+      pending.get("frame-3")!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(pending.size).toBe(4);
+      for (const release of pending.values()) release();
+      expect((await outcome).error).toMatchObject({ name: "AbortError" });
+    } else {
+      for (let i = 3; i < 7; i++) {
+        pending.get(`frame-${i}`)!();
+        await vi.waitFor(() => expect(pending.has(`frame-${i + 1}`)).toBe(true));
+      }
+      for (const release of pending.values()) release();
+      const { facts, error } = await outcome;
+      expect(error).toBeUndefined();
+      expect(facts?.documents.map((doc) => doc.frame.frameId)).toEqual(
+        Array.from({ length: 8 }, (_, i) => `frame-${i}`),
+      );
+      expect(facts?.documents.find((doc) => doc.frame.frameId === "frame-2")?.axNodes).toEqual([]);
+      expect(facts?.issues).toContainEqual(
+        expect.objectContaining({ stage: "ax", frameId: "frame-2" }),
+      );
+      expect(facts?.documents.find((doc) => doc.frame.frameId === "frame-7")?.axNodes).toHaveLength(
+        1,
+      );
+    }
+    expect(peak).toBe(4);
+    expect(active).toBe(0);
   });
 });
