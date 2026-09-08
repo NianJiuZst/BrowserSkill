@@ -1,3 +1,4 @@
+import type { CdpTarget } from "@/browser-driver/frame-graph";
 import { isOverlayHostNode } from "@/lib/overlay-bridge";
 import { createCaptureCheckpoint } from "./capture-abort";
 import type { CapturedNode } from "./capture-types";
@@ -91,4 +92,12 @@ export async function buildDocumentIndex<T extends DecodedNode>(
     }
   }
   return { nodes, excludedBackendNodeIds };
+}
+
+export interface DocumentIdentity {
+  attachmentId: string;
+  target: CdpTarget;
+  frameId: string;
+  loaderId: string;
+  documentElementBackendNodeId: number;
 }
