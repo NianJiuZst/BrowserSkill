@@ -1,233 +1,69 @@
-import type { Viewport } from "@browser-skill/vom";
-import { type CdpFrame, type CdpTarget, cdpTargetKey } from "@/browser-driver/frame-graph";
-import { type GeometryProjection, projectRectToViewport } from "../geometry";
+import type { CdpTarget } from "@/browser-driver/frame-graph";
 import {
   type FrameProjectionState,
   projectSnapshotRect,
   snapshotViewportRect,
 } from "../geometry/coordinate-types";
-import { cssViewport, GeometryContext } from "../geometry/frame-context";
-import type { CapturedNode } from "./facts";
-import {
-  buildDocumentIndex,
-  type CaptureIssue,
-  captureCheckpoint,
-  type DocumentIndex,
-  isCaptureAbort,
-  type NodeFacts,
-  throwCaptureAborted,
-} from "./facts";
-import {
-  decodeDocument,
-  type SnapshotDocument,
-  type SnapshotReply,
-  snapshotFrameId,
-} from "./snapshot";
+import { captureCheckpoint } from "./capture-abort";
+import { buildDocumentIndex, type DocumentIndex, type NodeFacts } from "./facts";
+import { decodeDocument, type SnapshotDocument } from "./snapshot";
 
-export interface NormalizedDocument {
-  index: DocumentIndex;
-  frame: CdpFrame;
-  domNodes: CapturedNode[];
+export interface FrameContext {
+  frameId?: string;
+  ownerFrameBackendNodeId: number | null;
+  projection: FrameProjectionState;
+  target: CdpTarget;
+  scrollX: number;
+  scrollY: number;
 }
 
-/** One target's snapshot. Source ownership is checked before interpreting any
- * coordinates. Snapshot and live quad coordinates are deliberately not conflated. */
-export async function normalizeSnapshot(
-  snapshot: SnapshotReply,
-  target: CdpTarget,
-  frames: readonly CdpFrame[],
-  geometry: GeometryContext,
-  issues: CaptureIssue[],
+export interface NormalizedDocument {
+  nodes: NodeFacts[];
+  index: DocumentIndex;
+}
+
+/** Interpret one document using a supplied projection. No live reads or frame scheduling. */
+export async function normalizeDocument(
+  doc: SnapshotDocument,
+  strings: string[],
+  context: FrameContext,
   signal?: AbortSignal,
-  rootFrameId?: string,
-): Promise<NormalizedDocument[]> {
-  const strings = snapshot.strings ?? [];
-  const raw = snapshot.documents ?? [];
-  const frameById = new Map(frames.map((frame) => [frame.frameId, frame]));
-  const sources = new Map<string, SnapshotDocument>();
-  for (const doc of raw) {
-    const id = snapshotFrameId(doc, strings);
-    if (!id || !frameById.has(id) || sources.has(id)) {
-      issues.push({
-        target,
-        frameId: id,
-        stage: "ownership",
-        reason: "frame-ownership-unresolved",
-      });
-      continue;
-    }
-    sources.set(id, doc);
-  }
-  let viewport: Viewport = { width: 0, height: 0 };
-  let scrollX = 0,
-    scrollY = 0;
-  try {
-    const measured = cssViewport(await geometry.layoutMetrics(target));
-    viewport = { width: measured.width, height: measured.height };
-    scrollX = measured.scrollX;
-    scrollY = measured.scrollY;
-  } catch (error) {
-    if (isCaptureAbort(error)) throw error;
-  }
-
-  const children = new Map<string, CdpFrame[]>();
-  const pending: CdpFrame[] = [];
-  for (const frame of frames) {
-    if (!frame.parentFrameId || !frameById.has(frame.parentFrameId)) pending.push(frame);
-    else {
-      const siblings = children.get(frame.parentFrameId);
-      if (siblings) siblings.push(frame);
-      else children.set(frame.parentFrameId, [frame]);
-    }
-  }
-  const projections = new Map<string, FrameProjectionState | null>();
-  const result: NormalizedDocument[] = [];
-  let targetProjection: GeometryProjection | null = null;
-  const targetRoot = rootFrameId ? frameById.get(rootFrameId) : undefined;
-  if (target.sessionId && targetRoot) {
-    try {
-      const known = await geometry.frame(targetRoot.frameId);
-      if (known && cdpTargetKey(known.target) === cdpTargetKey(target))
-        targetProjection = await geometry.targetProjection(targetRoot.frameId);
-    } catch (error) {
-      if (isCaptureAbort(error)) throw error;
-    }
-  }
-  const visited = new Set<string>();
-  const remaining = frames[Symbol.iterator]();
-  for (let cursor = 0; visited.size < frames.length; cursor++) {
-    if (cursor >= pending.length) {
-      let next = remaining.next();
-      while (!next.done && visited.has(next.value.frameId)) next = remaining.next();
-      if (next.done) break;
-      pending.push(next.value);
-    }
-    if (cursor % 256 === 0) await captureCheckpoint(signal);
-    const frame = pending[cursor];
-    if (visited.has(frame.frameId)) continue;
-    visited.add(frame.frameId);
-    for (const child of children.get(frame.frameId) ?? []) pending.push(child);
-    const doc = sources.get(frame.frameId);
-    if (!doc) continue;
-    const source = { target, frameId: frame.frameId };
-    const state: FrameProjectionState | null =
-      frame.frameId === rootFrameId
-        ? {
-            status: "available",
-            projection: { source, geometry: { sourceClips: [], edges: [], topViewport: viewport } },
-          }
-        : (projections.get(frame.frameId) ?? null);
-    if (!state && frame.frameId !== rootFrameId)
-      issues.push({
-        target,
-        frameId: frame.frameId,
-        stage: "ownership",
-        reason: "frame-ownership-unresolved",
-      });
-    projections.set(frame.frameId, state);
-    const projection = state?.status === "available" ? state.projection : null;
-    if (!projection || (target.sessionId && !targetProjection))
-      issues.push({
-        target,
-        frameId: frame.frameId,
-        stage: "geometry",
-        reason: "geometry-unavailable",
-        ...(state && state.status !== "available" ? { projectionIssue: state } : {}),
-      });
-
-    // Only direct siblings share this pool. Keep normalization in its existing
-    // breadth-first order, independent of owner read completion order.
-    const siblings = (children.get(frame.frameId) ?? []).filter((child) =>
-      sources.has(child.frameId),
+): Promise<NormalizedDocument> {
+  const decoded = await decodeDocument(doc, strings, signal);
+  const nodes: NodeFacts[] = [];
+  for (let i = 0; i < decoded.nodes.length; i++) {
+    if (i % 256 === 0) await captureCheckpoint(signal);
+    const node = decoded.nodes[i];
+    const input = snapshotViewportRect(
+      node.layout?.bounds ?? [],
+      { target: context.target, frameId: context.frameId },
+      { x: context.scrollX, y: context.scrollY },
     );
-    const edge = projection?.geometry.edges[0];
-    const clips = edge
-      ? [edge.destinationQuad, ...(edge.destinationClips ?? [])]
-      : (projection?.geometry.sourceClips ?? []);
-    let next = 0;
-    let failure: unknown;
-    await Promise.all(
-      Array.from({ length: Math.min(4, siblings.length) }, async () => {
-        while (next < siblings.length && !signal?.aborted && !failure) {
-          const child = siblings[next++];
-          const childSource = { target, frameId: child.frameId };
-          if (!projection) {
-            projections.set(
-              child.frameId,
-              state && state.status !== "available"
-                ? {
-                    status: "blocked",
-                    source: childSource,
-                    cause: state.status === "blocked" ? state.cause : state,
-                  }
-                : null,
-            );
-            continue;
-          }
-          if (child.ownerBackendNodeId === undefined) {
-            projections.set(child.frameId, null);
-            continue;
-          }
-          try {
-            projections.set(
-              child.frameId,
-              await geometry.snapshotProjection(
-                childSource,
-                child.ownerBackendNodeId,
-                clips,
-                viewport,
-              ),
-            );
-          } catch (error) {
-            failure ??= error;
-          }
-        }
-      }),
-    );
-    // Join active reads and their cleanup before returning cancellation.
-    if (failure) throw failure;
-    throwCaptureAborted(signal);
-    const decoded = await decodeDocument(doc, strings, signal);
-    const nodes: NodeFacts[] = [];
-    for (let i = 0; i < decoded.nodes.length; i++) {
-      if (i % 256 === 0) await captureCheckpoint(signal);
-      const node = decoded.nodes[i];
-      const input = snapshotViewportRect(node.layout?.bounds ?? [], source, {
-        x: doc.scrollOffsetX ?? (frame.frameId === rootFrameId ? scrollX : 0),
-        y: doc.scrollOffsetY ?? (frame.frameId === rootFrameId ? scrollY : 0),
-      });
-      const local = input?.rect;
-      let rect = input && projection ? projectSnapshotRect(input, projection) : null;
-      if (rect && target.sessionId)
-        rect = targetProjection
-          ? projectRectToViewport(
-              { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
-              targetProjection,
-            )
-          : null;
-      const styles = node.layout?.styles;
-      const visibility = styles?.visibility || "visible";
-      const opacity = styles?.opacity || "1";
-      nodes.push({
-        ...node,
-        frameId: frame.frameId,
-        ownerFrameBackendNodeId: frame.ownerBackendNodeId ?? null,
-        localRect: local ? { x: local.x, y: local.y, w: local.width, h: local.height } : null,
-        rect: rect ? { x: rect.x, y: rect.y, w: rect.width, h: rect.height } : null,
-        rendered:
-          !!local &&
-          visibility !== "hidden" &&
-          visibility !== "collapse" &&
-          (Number.parseFloat(opacity) || 0) > 0,
-      });
-    }
-    const index = await buildDocumentIndex(nodes, signal);
-    const domNodes = nodes.filter((node) => !node.tag.startsWith("#"));
-    result.push({
-      index,
-      frame,
-      domNodes,
+    const local = input?.rect;
+    const rect =
+      input && context.projection.status === "available"
+        ? projectSnapshotRect(input, context.projection.projection)
+        : null;
+    const visibility = node.layout?.styles.visibility || "visible";
+    const opacity = node.layout?.styles.opacity || "1";
+    nodes.push({
+      ...node,
+      ...(context.frameId ? { frameId: context.frameId } : {}),
+      ownerFrameBackendNodeId: context.ownerFrameBackendNodeId,
+      localRect: local ? { x: local.x, y: local.y, w: local.width, h: local.height } : null,
+      rect: rect ? { x: rect.x, y: rect.y, w: rect.width, h: rect.height } : null,
+      rendered:
+        !!local &&
+        visibility !== "hidden" &&
+        visibility !== "collapse" &&
+        (Number.parseFloat(opacity) || 0) > 0,
     });
   }
-  return result;
+  const index = await buildDocumentIndex(nodes, signal);
+  return {
+    nodes: nodes.filter(
+      (node) => !node.tag.startsWith("#") && !index.excludedBackendNodeIds.has(node.backendNodeId),
+    ),
+    index,
+  };
 }

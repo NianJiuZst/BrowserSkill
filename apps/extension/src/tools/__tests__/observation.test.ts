@@ -4,9 +4,9 @@ import { CAPTURE_SUPPRESS, type CaptureSuppressMessage } from "@/lib/capture-sup
 import { OVERLAY_HOST_MARKER_ATTR, OVERLAY_HOST_NAME } from "@/lib/overlay-bridge";
 import { SessionManager } from "@/session-manager/manager";
 import type { CdpRunner } from "@/tools/shared";
-import type { BuildVomSceneOptions, VomFrameDocument } from "../observation";
 import {
   buildFrameVomScene,
+  buildVomScene,
   type CdpAxNode,
   captureVomObservation,
   handleGetHtml,
@@ -17,35 +17,7 @@ import {
   type ScreenshotDeps,
   stripDataUrlPrefix,
 } from "../observation";
-import type { CapturedNode, CapturedSceneInput } from "../vom/facts";
-
-interface SceneFixture extends CapturedSceneInput {
-  documents?: VomFrameDocument[];
-}
-
-// Only supplies the common root fixture; child documents declare their own ownership.
-function buildTestScene(
-  axNodes: CdpAxNode[],
-  captured: SceneFixture,
-  options: BuildVomSceneOptions = {},
-) {
-  const rootFrameId = captured.rootFrameId ?? "root";
-  return buildFrameVomScene(
-    [
-      {
-        frameId: rootFrameId,
-        contextScopeId: rootFrameId,
-        target: { tabId: 7 },
-        url: options.pageUrl,
-        domNodes: captured.nodes,
-        axNodes,
-      },
-      ...(captured.documents ?? []),
-    ],
-    captured,
-    options,
-  );
-}
+import type { CapturedNode, CapturedViewModel } from "../vom/capture";
 
 function fakeAgentWindow(ids: number[]) {
   let i = 0;
@@ -554,10 +526,10 @@ describe("handleScreenshot overlay suppression", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Semantic scene fixtures
+// buildVomScene
 // ---------------------------------------------------------------------------
 
-describe("buildFrameVomScene", () => {
+describe("buildVomScene", () => {
   it("merges multiple sibling and nested frames without mixing their targets", () => {
     const node = (
       backendNodeId: number,
@@ -595,10 +567,25 @@ describe("buildFrameVomScene", () => {
       node(300, null, "nested", "body"),
       node(301, 300, "nested", "input", { placeholder: "Nested field" }),
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1200, height: 800 },
       nodes: mainNodes,
-
+      iframeNodes: new Map([
+        [10, firstNodes],
+        [20, secondNodes],
+        [210, nestedNodes],
+      ]),
+      frameNodes: new Map([
+        ["main", mainNodes],
+        ["first", firstNodes],
+        ["second", secondNodes],
+        ["nested", nestedNodes],
+      ]),
+      frameOwnerBackendNodeIds: new Map([
+        ["first", 10],
+        ["second", 20],
+        ["nested", 210],
+      ]),
       rootFrameId: "main",
       excludedBackendNodeIds: new Set(),
     };
@@ -685,6 +672,60 @@ describe("buildFrameVomScene", () => {
     expect(nestedInput?.parentId).toBe(result.nodes.find((item) => item.backendNodeId === 210)?.id);
   });
 
+  it("excludes an overlay only in its owning document when target backend ids collide", () => {
+    const owner = (id: number): CapturedNode => ({
+      backendNodeId: id,
+      parentBackendNodeId: null,
+      frameId: "main",
+      tag: "iframe",
+      attrs: {},
+      rect: { x: id * 10, y: 0, w: 200, h: 100 },
+      paintOrder: 0,
+      position: "static",
+      pointerEvents: "auto",
+    });
+    const owners = [owner(10), owner(20)];
+    const result = buildFrameVomScene(
+      [
+        {
+          frameId: "main",
+          contextScopeId: "main",
+          target: { tabId: 7 },
+          domNodes: owners,
+          axNodes: [],
+        },
+        ...["left", "right"].map((frameId, i) => ({
+          frameId,
+          contextScopeId: frameId,
+          parentFrameId: "main",
+          ownerBackendNodeId: owners[i].backendNodeId,
+          target: { tabId: 7, sessionId: frameId },
+          excludedBackendNodeIds: new Set(i === 0 ? [7] : []),
+          domNodes: [],
+          axNodes: [
+            {
+              nodeId: "button",
+              frameId,
+              backendDOMNodeId: 7,
+              role: { type: "role", value: "button" },
+              name: { type: "computedString", value: frameId + " action" },
+            },
+          ],
+        })),
+      ],
+      {
+        nodes: owners,
+        viewport: { width: 800, height: 600 },
+        iframeNodes: new Map(),
+        excludedBackendNodeIds: new Set(),
+      },
+    );
+    const rendered = renderVom(result);
+    expect(rendered.text).not.toContain("left action");
+    expect(rendered.text).toContain("right action");
+    expect(rendered.refs.find((ref) => ref.backendNodeId === 7)?.frameId).toBe("right");
+  });
+
   it("does not place a child document at the page root when its frame boundary is unresolved", () => {
     const childNode: CapturedNode = {
       backendNodeId: 101,
@@ -697,10 +738,11 @@ describe("buildFrameVomScene", () => {
       position: "static",
       pointerEvents: "auto",
     };
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 800, height: 600 },
       nodes: [],
-
+      iframeNodes: new Map(),
+      frameNodes: new Map([["child", [childNode]]]),
       rootFrameId: "main",
       excludedBackendNodeIds: new Set(),
     };
@@ -762,10 +804,14 @@ describe("buildFrameVomScene", () => {
         pointerEvents: "auto",
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 800, height: 600 },
       nodes: mainNodes,
-
+      iframeNodes: new Map(),
+      frameNodes: new Map([
+        ["main", mainNodes],
+        ["child", []],
+      ]),
       rootFrameId: "main",
       excludedBackendNodeIds: new Set(),
     };
@@ -841,8 +887,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 200,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -868,11 +915,11 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured);
+    const scene = buildVomScene(axNodes, captured);
     expect(scene.viewport).toEqual({ width: 1000, height: 800 });
     expect(scene.nodes[0]).toEqual(
       expect.objectContaining({
-        backendNodeId: 100,
+        id: 100,
         parentId: null,
         role: "RootWebArea",
         name: "Example",
@@ -884,14 +931,14 @@ describe("buildFrameVomScene", () => {
     );
     expect(scene.nodes[1]).toEqual(
       expect.objectContaining({
-        backendNodeId: 200,
-        parentId: scene.nodes.find((node) => node.backendNodeId === 100)!.id,
+        id: 200,
+        parentId: 100,
         role: "button",
         name: "Submit",
         tag: "button",
         rect: { x: 20, y: 20, w: 120, h: 40 },
-        domParentId: scene.nodes.find((node) => node.backendNodeId === 100)!.id,
-        domAncestorIds: [scene.nodes.find((node) => node.backendNodeId === 100)!.id],
+        domParentId: 100,
+        domAncestorIds: [100],
         attrs: {},
       }),
     );
@@ -920,8 +967,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 300,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -957,10 +1005,10 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured, { pageUrl: "https://app.example.test/home" });
+    const scene = buildVomScene(axNodes, captured, { pageUrl: "https://app.example.test/home" });
 
-    expect(scene.nodes.find((node) => node.backendNodeId === 200)?.href).toBe("docs.example.org");
-    expect(scene.nodes.find((node) => node.backendNodeId === 300)?.href).toBeUndefined();
+    expect(scene.nodes.find((node) => node.id === 200)?.href).toBe("docs.example.org");
+    expect(scene.nodes.find((node) => node.id === 300)?.href).toBeUndefined();
   });
 
   it("uses the nearest backend AX ancestor as parentId", () => {
@@ -985,8 +1033,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 30,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 400, height: 300 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1012,12 +1061,10 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured);
+    const scene = buildVomScene(axNodes, captured);
 
-    expect(scene.nodes.map((node) => node.backendNodeId)).toEqual([10, 30]);
-    expect(scene.nodes.find((node) => node.backendNodeId === 30)?.parentId).toBe(
-      scene.nodes.find((node) => node.backendNodeId === 10)!.id,
-    );
+    expect(scene.nodes.map((node) => node.id)).toEqual([10, 30]);
+    expect(scene.nodes.find((node) => node.id === 30)?.parentId).toBe(10);
   });
 
   it("maps iframe sub-document controls to VomNodes", () => {
@@ -1035,7 +1082,7 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 20,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
       nodes: [
         {
@@ -1059,15 +1106,10 @@ describe("buildFrameVomScene", () => {
           pointerEvents: "auto",
         },
       ],
-      documents: [
-        {
-          frameId: "child",
-          contextScopeId: "child",
-          parentFrameId: "root",
-          ownerBackendNodeId: 20,
-          target: { tabId: 7 },
-          axNodes: [],
-          domNodes: [
+      iframeNodes: new Map([
+        [
+          20,
+          [
             {
               backendNodeId: 101,
               parentBackendNodeId: null,
@@ -1089,25 +1131,26 @@ describe("buildFrameVomScene", () => {
               pointerEvents: "auto",
             },
           ],
-        },
-      ],
+        ],
+      ]),
       excludedBackendNodeIds: new Set(),
     };
 
-    const scene = buildTestScene(axNodes, captured);
-    const iframeControls = scene.nodes.filter((node) => [101, 102].includes(node.backendNodeId!));
+    const iframeControls = buildVomScene(axNodes, captured).nodes.filter((node) =>
+      [101, 102].includes(node.id),
+    );
 
     expect(iframeControls).toEqual([
       expect.objectContaining({
-        backendNodeId: 101,
-        parentId: scene.nodes.find((node) => node.backendNodeId === 20)!.id,
+        id: 101,
+        parentId: 20,
         role: "textbox",
         name: "请输入手机号",
         sensitive: false,
       }),
       expect.objectContaining({
-        backendNodeId: 102,
-        parentId: scene.nodes.find((node) => node.backendNodeId === 20)!.id,
+        id: 102,
+        parentId: 20,
         role: "textbox",
         name: "密码",
         sensitive: true,
@@ -1128,9 +1171,11 @@ describe("buildFrameVomScene", () => {
         parentId: "1",
         role: { type: "role", value: "Iframe" },
         backendDOMNodeId: 20,
+        childIds: ["3"],
       },
       {
         nodeId: "3",
+        parentId: "2",
         role: { type: "role", value: "textbox" },
         name: { type: "x", value: "输入密码" },
         value: { value: "iframe-secret" },
@@ -1138,7 +1183,7 @@ describe("buildFrameVomScene", () => {
         properties: [{ name: "inputType", value: { value: "password" } }],
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
       nodes: [
         {
@@ -1162,15 +1207,10 @@ describe("buildFrameVomScene", () => {
           pointerEvents: "auto",
         },
       ],
-      documents: [
-        {
-          frameId: "child",
-          contextScopeId: "child",
-          parentFrameId: "root",
-          ownerBackendNodeId: 20,
-          target: { tabId: 7 },
-          axNodes: [axNodes[2]],
-          domNodes: [
+      iframeNodes: new Map([
+        [
+          20,
+          [
             {
               backendNodeId: 102,
               parentBackendNodeId: null,
@@ -1182,27 +1222,25 @@ describe("buildFrameVomScene", () => {
               pointerEvents: "auto",
             },
           ],
-        },
-      ],
+        ],
+      ]),
       excludedBackendNodeIds: new Set(),
     };
 
-    const passwordNodes = buildTestScene(axNodes.slice(0, 2), captured).nodes.filter(
+    const passwordNodes = buildVomScene(axNodes, captured).nodes.filter(
       (node) => node.role === "textbox" && node.name === "输入密码",
     );
 
     expect(passwordNodes).toHaveLength(1);
-    expect(passwordNodes[0]).toEqual(
-      expect.objectContaining({ backendNodeId: 202, sensitive: true }),
-    );
+    expect(passwordNodes[0]).toEqual(expect.objectContaining({ id: 202, sensitive: true }));
     expect(passwordNodes[0].value).toBeUndefined();
-    const rendered = renderVom(buildTestScene(axNodes.slice(0, 2), captured)).text;
+    const rendered = renderVom(buildVomScene(axNodes, captured)).text;
     expect(rendered).toContain('textbox "输入密码" [filled] ="•••"');
     expect(rendered).not.toContain("iframe-secret");
   });
 
   it("keeps unnamed iframe controls but skips unnamed iframe links", () => {
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       [
         {
           nodeId: "1",
@@ -1241,15 +1279,10 @@ describe("buildFrameVomScene", () => {
             pointerEvents: "auto",
           },
         ],
-        documents: [
-          {
-            frameId: "child",
-            contextScopeId: "child",
-            parentFrameId: "root",
-            ownerBackendNodeId: 20,
-            target: { tabId: 7 },
-            axNodes: [],
-            domNodes: [
+        iframeNodes: new Map([
+          [
+            20,
+            [
               {
                 backendNodeId: 201,
                 parentBackendNodeId: null,
@@ -1271,25 +1304,25 @@ describe("buildFrameVomScene", () => {
                 pointerEvents: "auto",
               },
             ],
-          },
-        ],
+          ],
+        ]),
         excludedBackendNodeIds: new Set(),
       },
     );
 
-    expect(scene.nodes.find((node) => node.backendNodeId === 201)).toEqual(
+    expect(scene.nodes.find((node) => node.id === 201)).toEqual(
       expect.objectContaining({
-        backendNodeId: 201,
-        parentId: scene.nodes.find((node) => node.backendNodeId === 20)!.id,
+        id: 201,
+        parentId: 20,
         role: "button",
       }),
     );
-    expect(scene.nodes.find((node) => node.backendNodeId === 201)).not.toHaveProperty("name");
-    expect(scene.nodes.find((node) => node.backendNodeId === 202)).toBeUndefined();
+    expect(scene.nodes.find((node) => node.id === 201)).not.toHaveProperty("name");
+    expect(scene.nodes.find((node) => node.id === 202)).toBeUndefined();
   });
 
   it("preserves captured-only iframe anchors for iframe sub-document controls", () => {
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       [
         {
           nodeId: "1",
@@ -1322,15 +1355,10 @@ describe("buildFrameVomScene", () => {
             pointerEvents: "auto",
           },
         ],
-        documents: [
-          {
-            frameId: "child",
-            contextScopeId: "child",
-            parentFrameId: "root",
-            ownerBackendNodeId: 20,
-            target: { tabId: 7 },
-            axNodes: [],
-            domNodes: [
+        iframeNodes: new Map<number, CapturedNode[]>([
+          [
+            20,
+            [
               {
                 backendNodeId: 201,
                 parentBackendNodeId: null,
@@ -1352,16 +1380,16 @@ describe("buildFrameVomScene", () => {
                 pointerEvents: "auto",
               },
             ],
-          },
-        ],
+          ],
+        ]),
         excludedBackendNodeIds: new Set(),
       },
     );
 
-    expect(scene.nodes.find((node) => node.backendNodeId === 20)).toEqual(
+    expect(scene.nodes.find((node) => node.id === 20)).toEqual(
       expect.objectContaining({
-        backendNodeId: 20,
-        parentId: scene.nodes.find((node) => node.backendNodeId === 10)!.id,
+        id: 20,
+        parentId: 10,
         role: "Iframe",
         name: "支付验证",
       }),
@@ -1382,8 +1410,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 10,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 320, height: 240 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1404,9 +1433,9 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    expect(buildTestScene(axNodes, captured).nodes[0]).toEqual(
+    expect(buildVomScene(axNodes, captured).nodes[0]).toEqual(
       expect.objectContaining({
-        backendNodeId: 10,
+        id: 10,
         sensitive: true,
       }),
     );
@@ -1421,8 +1450,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 10,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1439,9 +1469,9 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    expect(buildTestScene(axNodes, captured).nodes[0]).toEqual(
+    expect(buildVomScene(axNodes, captured).nodes[0]).toEqual(
       expect.objectContaining({
-        backendNodeId: 10,
+        id: 10,
         role: "textbox",
         name: "+86",
         placeholder: "输入手机号",
@@ -1459,8 +1489,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 10,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1477,13 +1508,8 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    expect(buildTestScene(axNodes, captured).nodes[0]).toEqual(
-      expect.objectContaining({
-        backendNodeId: 10,
-        role: "textbox",
-        name: "Email",
-        value: "a@b.com",
-      }),
+    expect(buildVomScene(axNodes, captured).nodes[0]).toEqual(
+      expect.objectContaining({ id: 10, role: "textbox", name: "Email", value: "a@b.com" }),
     );
   });
 
@@ -1502,8 +1528,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 20,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1541,9 +1568,9 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    expect(
-      buildTestScene(axNodes, captured).nodes.find((node) => node.backendNodeId === 20),
-    ).toEqual(expect.objectContaining({ role: "textbox", name: "验证码" }));
+    expect(buildVomScene(axNodes, captured).nodes.find((node) => node.id === 20)).toEqual(
+      expect.objectContaining({ role: "textbox", name: "验证码" }),
+    );
   });
 
   it("uses preceding AX static text as a form control label", () => {
@@ -1567,8 +1594,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 20,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1585,13 +1613,13 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    expect(
-      buildTestScene(axNodes, captured).nodes.find((node) => node.backendNodeId === 20),
-    ).toEqual(expect.objectContaining({ role: "textbox", name: "验证码", inputState: "empty" }));
+    expect(buildVomScene(axNodes, captured).nodes.find((node) => node.id === 20)).toEqual(
+      expect.objectContaining({ role: "textbox", name: "验证码", inputState: "empty" }),
+    );
   });
 
   it("marks runtime default input values without treating them as ordinary filled input", () => {
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       [
         {
           nodeId: "1",
@@ -1601,6 +1629,7 @@ describe("buildFrameVomScene", () => {
       ],
       {
         viewport: { width: 1000, height: 800 },
+        iframeNodes: new Map(),
         excludedBackendNodeIds: new Set(),
         nodes: [
           {
@@ -1644,8 +1673,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 20,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1695,14 +1725,9 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured);
-    expect(scene.nodes.find((n) => n.backendNodeId === 20)).toEqual(
-      expect.objectContaining({
-        backendNodeId: 20,
-        role: "button",
-        name: "close",
-        cursor: "pointer",
-      }),
+    const scene = buildVomScene(axNodes, captured);
+    expect(scene.nodes.find((n) => n.id === 20)).toEqual(
+      expect.objectContaining({ id: 20, role: "button", name: "close", cursor: "pointer" }),
     );
     const rendered = renderVom(scene);
     expect(rendered.text).toContain('@e1 button "close"');
@@ -1736,8 +1761,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 30,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1776,9 +1802,9 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured);
-    expect(scene.nodes.find((n) => n.backendNodeId === 20)).toBeUndefined();
-    expect(scene.nodes.find((n) => n.backendNodeId === 30)?.role).toBe("link");
+    const scene = buildVomScene(axNodes, captured);
+    expect(scene.nodes.find((n) => n.id === 20)).toBeUndefined();
+    expect(scene.nodes.find((n) => n.id === 30)?.role).toBe("link");
   });
 
   it("promotes only the outermost clickable in a nested pointer chain", () => {
@@ -1803,8 +1829,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 30,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1843,15 +1870,11 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured);
-    expect(scene.nodes.find((n) => n.backendNodeId === 20)).toEqual(
-      expect.objectContaining({
-        backendNodeId: 20,
-        role: "button",
-        attrs: { "aria-label": "收藏" },
-      }),
+    const scene = buildVomScene(axNodes, captured);
+    expect(scene.nodes.find((n) => n.id === 20)).toEqual(
+      expect.objectContaining({ id: 20, role: "button", attrs: { "aria-label": "收藏" } }),
     );
-    expect(scene.nodes.find((n) => n.backendNodeId === 30)).toBeUndefined();
+    expect(scene.nodes.find((n) => n.id === 30)).toBeUndefined();
     const rendered = renderVom(scene);
     expect(rendered.text).toContain('@e1 button "收藏"');
     expect(rendered.refs.map(({ ref, backendNodeId }) => ({ ref, backendNodeId }))).toEqual([
@@ -1875,8 +1898,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 20,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -1924,10 +1948,10 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured);
+    const scene = buildVomScene(axNodes, captured);
     expect(scene.activeScopeBlocks).toEqual([
       {
-        triggerId: scene.nodes.find((node) => node.backendNodeId === 20)!.id,
+        triggerId: 20,
         label: "Reviews (12)",
         lines: ["Jane - ear cups are small", "Bob - great sound"],
       },
@@ -1951,10 +1975,11 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 20,
       },
     ];
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       axNodes,
       {
         viewport: { width: 1000, height: 800 },
+        iframeNodes: new Map(),
         excludedBackendNodeIds: new Set(),
         nodes: [
           {
@@ -1987,11 +2012,7 @@ describe("buildFrameVomScene", () => {
     );
 
     expect(scene.surfaces).toEqual([
-      {
-        triggerId: scene.nodes.find((node) => node.backendNodeId === 20)!.id,
-        triggerAction: "hover",
-        subItems: ["Shoes", "Bags"],
-      },
+      { triggerId: 20, triggerAction: "hover", subItems: ["Shoes", "Bags"] },
     ]);
     expect(renderVom(scene).text).toContain('@e1 button "Products" [hover first: Shoes | Bags]');
   });
@@ -2012,10 +2033,11 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 21,
       },
     ];
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       axNodes,
       {
         viewport: { width: 1000, height: 800 },
+        iframeNodes: new Map(),
         excludedBackendNodeIds: new Set(),
         nodes: [
           {
@@ -2076,10 +2098,11 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 21,
       },
     ];
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       axNodes,
       {
         viewport: { width: 1000, height: 800 },
+        iframeNodes: new Map(),
         excludedBackendNodeIds: new Set(),
         nodes: [
           {
@@ -2124,11 +2147,7 @@ describe("buildFrameVomScene", () => {
     );
 
     expect(scene.surfaces).toEqual([
-      {
-        triggerId: scene.nodes.find((node) => node.backendNodeId === 21)!.id,
-        triggerAction: "hover",
-        subItems: ["My profile"],
-      },
+      { triggerId: 21, triggerAction: "hover", subItems: ["My profile"] },
     ]);
   });
 
@@ -2148,10 +2167,11 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 21,
       },
     ];
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       axNodes,
       {
         viewport: { width: 1000, height: 800 },
+        iframeNodes: new Map(),
         excludedBackendNodeIds: new Set(),
         nodes: [
           {
@@ -2202,11 +2222,7 @@ describe("buildFrameVomScene", () => {
     );
 
     expect(scene.surfaces).toEqual([
-      {
-        triggerId: scene.nodes.find((node) => node.backendNodeId === 20)!.id,
-        triggerAction: "hover",
-        subItems: ["My profile", "Sign out"],
-      },
+      { triggerId: 20, triggerAction: "hover", subItems: ["My profile", "Sign out"] },
     ]);
     expect(renderVom(scene).text).toContain(
       '@e1 button "image" [hover first: My profile | Sign out]',
@@ -2229,10 +2245,11 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 42,
       },
     ];
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       axNodes,
       {
         viewport: { width: 1000, height: 800 },
+        iframeNodes: new Map(),
         excludedBackendNodeIds: new Set(),
         nodes: [
           {
@@ -2302,8 +2319,9 @@ describe("buildFrameVomScene", () => {
         properties: [{ name: "inputType", value: { value: "credit-card" } }],
       },
     ];
-    const scene = buildTestScene(axNodes, {
+    const scene = buildVomScene(axNodes, {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -2350,7 +2368,7 @@ describe("buildFrameVomScene", () => {
       ],
     });
 
-    expect(scene.nodes.find((node) => node.backendNodeId === 20)).toEqual(
+    expect(scene.nodes.find((node) => node.id === 20)).toEqual(
       expect.objectContaining({
         name: "Products [expanded]",
         attrs: expect.objectContaining({
@@ -2360,17 +2378,13 @@ describe("buildFrameVomScene", () => {
       }),
     );
     expect(scene.activeScopeBlocks).toEqual([
-      {
-        triggerId: scene.nodes.find((node) => node.backendNodeId === 20)!.id,
-        label: "Products [expanded]",
-        lines: ["Shoes Bags"],
-      },
+      { triggerId: 20, label: "Products [expanded]", lines: ["Shoes Bags"] },
     ]);
-    expect(scene.nodes.find((node) => node.backendNodeId === 30)?.sensitive).toBe(true);
+    expect(scene.nodes.find((node) => node.id === 30)?.sensitive).toBe(true);
   });
 
   it("aggregates AX virtual text into unnamed structural nodes", () => {
-    const scene = buildTestScene(
+    const scene = buildVomScene(
       [
         {
           nodeId: "1",
@@ -2394,6 +2408,7 @@ describe("buildFrameVomScene", () => {
       ],
       {
         viewport: { width: 1000, height: 800 },
+        iframeNodes: new Map(),
         excludedBackendNodeIds: new Set(),
         nodes: [
           {
@@ -2420,12 +2435,13 @@ describe("buildFrameVomScene", () => {
       },
     );
 
-    expect(scene.nodes.find((node) => node.backendNodeId === 20)?.name).toBe("Inline only text");
+    expect(scene.nodes.find((node) => node.id === 20)?.name).toBe("Inline only text");
   });
 
   it("marks captured dialog elements as modal without AX role or aria-modal", () => {
-    const scene = buildTestScene([], {
+    const scene = buildVomScene([], {
       viewport: { width: 640, height: 480 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set(),
       nodes: [
         {
@@ -2443,7 +2459,7 @@ describe("buildFrameVomScene", () => {
 
     expect(scene.nodes[0]).toEqual(
       expect.objectContaining({
-        backendNodeId: 50,
+        id: 50,
         modal: true,
       }),
     );
@@ -2472,8 +2488,9 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 202,
       },
     ];
-    const captured: SceneFixture = {
+    const captured: CapturedViewModel = {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set([200, 201, 202]),
       nodes: [
         {
@@ -2489,9 +2506,9 @@ describe("buildFrameVomScene", () => {
       ],
     };
 
-    const scene = buildTestScene(axNodes, captured);
-    expect(scene.nodes.find((n) => n.backendNodeId === 202)).toBeUndefined();
-    expect(scene.nodes.find((n) => n.backendNodeId === 2)).toEqual(
+    const scene = buildVomScene(axNodes, captured);
+    expect(scene.nodes.find((n) => n.id === 202)).toBeUndefined();
+    expect(scene.nodes.find((n) => n.id === 2)).toEqual(
       expect.objectContaining({ role: "button", name: "Real Button" }),
     );
   });
@@ -2519,12 +2536,13 @@ describe("buildFrameVomScene", () => {
         backendDOMNodeId: 203,
       },
     ];
-    const scene = buildTestScene(axNodes, {
+    const scene = buildVomScene(axNodes, {
       viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
       excludedBackendNodeIds: new Set([200]),
       nodes: [],
     });
-    expect(scene.nodes.find((n) => n.backendNodeId === 203)).toBeUndefined();
+    expect(scene.nodes.find((n) => n.id === 203)).toBeUndefined();
   });
 });
 
@@ -2637,7 +2655,6 @@ describe("handleSnapshot", () => {
           strings,
           documents: [
             {
-              frameId: "root",
               nodes: {
                 parentIndex: [-1, 0],
                 nodeName: [i("body"), i("button")],
@@ -2733,7 +2750,6 @@ describe("handleSnapshot", () => {
           strings,
           documents: [
             {
-              frameId: "root",
               nodes: {
                 parentIndex: [-1, 0],
                 nodeName: [i("body"), i("button")],
@@ -2832,7 +2848,6 @@ describe("handleSnapshot", () => {
           strings,
           documents: [
             {
-              frameId: "root",
               nodes: {
                 parentIndex: [-1, 0],
                 nodeName: [i("body"), i("button")],
@@ -3101,7 +3116,6 @@ describe("handleSnapshot", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 2],
             nodeName: [i("html"), i("body"), i("div"), i("input")],
@@ -3159,7 +3173,6 @@ describe("handleSnapshot", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 1, 1, 1],
             nodeName: [i("html"), i("body"), i("input"), i("input"), i("input"), i("input")],
@@ -3311,17 +3324,12 @@ describe("handleSnapshot", () => {
         if (method === "Runtime.releaseObject") return {};
       }
       if (method === "DOMSnapshot.enable" || method === "Accessibility.enable") return {};
-      if (method === "DOMSnapshot.captureSnapshot")
-        return { ...snapshot, documents: [snapshot.documents[0]] };
+      if (method === "DOMSnapshot.captureSnapshot") return snapshot;
       if (method === "Accessibility.getFullAXTree") return { nodes: mainAx };
       throw new Error(`unexpected root CDP method ${method}`);
     });
     const sendToTarget = vi.fn(async (_target, method: string) => {
-      if (method === "Page.getLayoutMetrics" && ownerGeometry !== "unavailable")
-        return { cssLayoutViewport: { clientWidth: 400, clientHeight: 300 } };
-      if (method === "Accessibility.enable" || method === "DOMSnapshot.enable") return {};
-      if (method === "DOMSnapshot.captureSnapshot")
-        return { ...snapshot, documents: [snapshot.documents[1]] };
+      if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes: childAx };
       throw new Error(`unexpected child CDP method ${method}`);
     });
@@ -3352,66 +3360,6 @@ describe("handleSnapshot", () => {
       },
     };
   }
-
-  it.each([
-    false,
-    true,
-  ])("preserves external-link hints without graph metadata (snapshot URL: %s)", async (hasSnapshotUrl) => {
-    const snapshot = {
-      strings: ["body", "a", "href", "//outside.test/docs", "https://page.test/start"],
-      documents: [
-        {
-          frameId: "main",
-          ...(hasSnapshotUrl ? { documentURL: 4 } : {}),
-          nodes: {
-            backendNodeId: [1, 2],
-            parentIndex: [-1, 0],
-            nodeName: [0, 1],
-            attributes: [[], [2, 3]],
-          },
-          layout: {
-            nodeIndex: [0, 1],
-            bounds: [
-              [0, 0, 1000, 800],
-              [10, 20, 100, 40],
-            ],
-          },
-        },
-      ],
-    };
-    const ax: CdpAxNode[] = [
-      {
-        nodeId: "root",
-        backendDOMNodeId: 1,
-        role: { type: "role", value: "RootWebArea" },
-        childIds: ["link"],
-      },
-      {
-        nodeId: "link",
-        parentId: "root",
-        backendDOMNodeId: 2,
-        role: { type: "role", value: "link" },
-        name: { type: "computedString", value: "Docs" },
-      },
-    ];
-    const deps = makeOverlayDeps(ax, snapshot, VP_METRICS);
-    const cdp: CdpRunner = {
-      ...deps.cdp,
-      getFrameGraph: async () => {
-        throw new Error("graph unavailable");
-      },
-    };
-    const result = await captureVomObservation(
-      cdp,
-      4,
-      hasSnapshotUrl ? undefined : "https://page.test/start",
-    );
-    expect(result.text).toContain("outside.test");
-    expect(result.text).toContain("Docs");
-    expect(
-      deps.send.mock.calls.filter(([, method]) => method === "DOMSnapshot.captureSnapshot"),
-    ).toHaveLength(1);
-  });
 
   it("exposes the frame-aware observation result for recording", async () => {
     const ax: CdpAxNode[] = [
@@ -3482,7 +3430,6 @@ describe("handleSnapshot", () => {
       strings,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 1, 3],
             nodeName: [index("html"), index("body"), index("button"), index("div"), index("#text")],
@@ -3807,7 +3754,6 @@ describe("handleSnapshot", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           scrollOffsetX: 0,
           scrollOffsetY: 0,
           nodes: {
@@ -3834,7 +3780,6 @@ describe("handleSnapshot", () => {
         },
         // documents[1]: cross-origin login form
         {
-          frameId: "child",
           scrollOffsetX: 0,
           scrollOffsetY: 0,
           nodes: {
@@ -4013,7 +3958,6 @@ describe("handleSnapshot", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 0, 3, 4, 5],
             nodeName: [

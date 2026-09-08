@@ -1,17 +1,59 @@
-// Browser-side hover probes and overlay exclusion fallback. Static collection
-// lives in capture-coordinator; snapshot decoding has no browser dependency.
+// Coordinate DOMSnapshot acquisition, frame geometry and hover probes.
+// Snapshot decoding and form enrichment live in their own modules.
+
+import type { Viewport } from "@browser-skill/vom";
+import type { CdpTarget } from "@/browser-driver/frame-graph";
 import { evaluateHoverTrigger } from "@/lib/hover-trigger-policy";
 import { OVERLAY_HOST_SELECTOR } from "../../lib/overlay-bridge";
+import { type FrameProjectionIssue, type FrameProjectionState } from "../geometry/coordinate-types";
+import { cssViewport, GeometryContext, type LayoutMetrics } from "../geometry/frame-context";
 import type { CdpRunner } from "../shared";
-import type { CapturedNode, CapturedSurfaceProbe } from "./facts";
-
-export type {
-  CapturedNode,
-  CapturedSurfaceProbe,
-} from "./facts";
-
-import { isCaptureAbort as isAbortError, throwCaptureAborted as throwIfAborted } from "./facts";
+import { isAbortError, throwIfAborted } from "./capture-abort";
+import type { CapturedNode } from "./capture-types";
+import { enrichFormControlStates } from "./form-capture";
 import { clearHover, ProbeBudget, waitForHover } from "./hover-perception";
+import { type FrameContext, normalizeDocument } from "./normalize";
+import {
+  REQUESTED_STYLES,
+  type SnapshotDocument,
+  type SnapshotReply,
+  snapshotFrameId,
+  sparseIndexMap,
+} from "./snapshot";
+
+export type { CapturedNode } from "./capture-types";
+
+export type CapturedIframeNodes = Map<number, CapturedNode[]>;
+
+export interface CapturedSurfaceProbe {
+  triggerBackendNodeId: number;
+  triggerPoint?: { x: number; y: number };
+  triggerAction: "hover" | "focus" | string;
+  subItems: string[];
+  confidence?: "high" | "medium" | "low";
+}
+
+export interface CapturedViewModel {
+  nodes: CapturedNode[];
+  viewport: Viewport;
+  iframeNodes: CapturedIframeNodes;
+  frameNodes?: Map<string, CapturedNode[]>;
+  frameExcludedBackendNodeIds?: Map<string, ReadonlySet<number>>;
+  frameOwnerBackendNodeIds?: Map<string, number>;
+  /** Explicit DOMSnapshot frame ancestry; never inferred from backend node ids. */
+  frameParentIds?: Map<string, string>;
+  rootFrameId?: string;
+  /** Failed boundaries and descendants blocked by them; clipping is not a failure. */
+  frameGeometryIssues?: FrameProjectionIssue[];
+  /** Backend node ids belonging to the agent overlay host + its shadow subtree. */
+  excludedBackendNodeIds: Set<number>;
+}
+
+export interface CaptureViewModelOptions {
+  signal?: AbortSignal;
+  geometry?: GeometryContext;
+  target?: CdpTarget;
+}
 
 interface RuntimeEvaluateReply {
   result?: {
@@ -443,194 +485,12 @@ export async function collectOverlayExcludedBackendIds(
   return excluded;
 }
 
-/**
- * Parse one DOMSnapshot document into CapturedNode[].
- *
- * @param doc   - the raw DOMSnapshot document object
- * @param strings - the shared string table for the whole snapshot
- * @param context - frame coordinate context; output rects are top viewport-relative
- */
-function parseDocumentNodes(
-  doc: SnapshotDocument,
-  strings: string[],
-  context: FrameContext,
-): ParseDocumentResult {
-  const dn = doc.nodes;
-  const dl = doc.layout;
-  if (!dn?.backendNodeId) {
-    return { nodes: [], excludedBackendNodeIds: new Set() };
-  }
-
-  const count = dn.backendNodeId.length;
-  const layoutByNode = new Map<number, number>();
-  (dl?.nodeIndex ?? []).forEach((nodeIdx, layoutIdx) => layoutByNode.set(nodeIdx, layoutIdx));
-
-  // The agent's own overlay (WXT shadow host, marked with OVERLAY_HOST_MARKER_ATTR)
-  // is injected into the page and its open shadow root
-  // is inlined by DOMSnapshot as descendants of the host. Its fixed
-  // full-viewport click-blocker would otherwise dominate occlusion detection
-  // and hide the real page, so mark the host + its whole subtree excluded.
-  // parentIndex always references an earlier node, so one forward pass suffices.
-  const excluded = new Array<boolean>(count).fill(false);
-  const excludedBackendNodeIds = new Set<number>();
-  for (let n = 0; n < count; n++) {
-    const parentIdx = dn.parentIndex?.[n] ?? -1;
-    const inherited = parentIdx >= 0 && excluded[parentIdx];
-    let isOverlayHost = inherited;
-    if (!isOverlayHost) {
-      const pairs = dn.attributes?.[n] ?? [];
-      const attrNames: string[] = [];
-      for (let a = 0; a + 1 < pairs.length; a += 2) {
-        attrNames.push(str(strings, pairs[a]));
-      }
-      isOverlayHost = isOverlayHostNode(str(strings, dn.nodeName?.[n]), attrNames);
-    }
-    if (!isOverlayHost) continue;
-    excluded[n] = true;
-    const backendNodeId = dn.backendNodeId[n];
-    if (backendNodeId !== undefined) {
-      excludedBackendNodeIds.add(backendNodeId);
-    }
-  }
-
-  const posCol = STYLE_COL.position;
-  const peCol = STYLE_COL["pointer-events"];
-  const cursorCol = STYLE_COL.cursor;
-  const visibilityCol = STYLE_COL.visibility;
-  const opacityCol = STYLE_COL.opacity;
-  const inputValues = sparseIndexMap(dn.inputValue);
-  const textValues = sparseIndexMap(dn.textValue);
-  const checkedInputs = new Set(dn.inputChecked?.index ?? []);
-  const selectedOptions = new Set(dn.optionSelected?.index ?? []);
-
-  // Collect visible text from #text child nodes so element CapturedNodes
-  // carry a textContent value usable as a button/link label fallback.
-  // nodeValue is a parallel array: string index for text nodes, -1 otherwise.
-  const nodeTextContent = new Map<number, string>();
-  if (dn.nodeValue) {
-    for (let n = 0; n < count; n++) {
-      const nvIdx = dn.nodeValue[n] ?? -1;
-      if (nvIdx < 0) continue;
-      const text = str(strings, nvIdx).trim();
-      if (!text) continue;
-      const parentIdx = dn.parentIndex?.[n] ?? -1;
-      if (parentIdx >= 0) {
-        const existing = nodeTextContent.get(parentIdx);
-        nodeTextContent.set(parentIdx, existing ? `${existing} ${text}` : text);
-      }
-    }
-  }
-
-  // Build CapturedNodes.
-  const nodes: CapturedNode[] = [];
-  for (let n = 0; n < count; n++) {
-    if (excluded[n]) continue;
-    const backendNodeId = dn.backendNodeId[n];
-    const parentIdx = dn.parentIndex?.[n] ?? -1;
-    const parentBackendNodeId = parentIdx >= 0 ? (dn.backendNodeId[parentIdx] ?? null) : null;
-    const tag = str(strings, dn.nodeName?.[n]).toLowerCase();
-
-    const attrs: Record<string, string> = {};
-    const pairs = dn.attributes?.[n] ?? [];
-    for (let a = 0; a + 1 < pairs.length; a += 2) {
-      attrs[str(strings, pairs[a]).toLowerCase()] = str(strings, pairs[a + 1]);
-    }
-
-    let rect: Rect | null = null;
-    let localRect: Rect | null = null;
-    let paintOrder = 0;
-    let position = "static";
-    let pointerEvents = "auto";
-    let cursor = "auto";
-    let rendered = false;
-    const li = layoutByNode.get(n);
-    if (li !== undefined) {
-      const b = dl?.bounds?.[li];
-      if (b && b.length >= 4 && b[2] > 0 && b[3] > 0) {
-        const input = snapshotViewportRect(
-          b,
-          { target: context.target, frameId: context.frameId },
-          { x: context.scrollX, y: context.scrollY },
-        );
-        if (input) {
-          const { x, y, width: w, height: h } = input.rect;
-          localRect = { x, y, w, h };
-        }
-        const bounds =
-          input && context.projection.status === "available"
-            ? projectSnapshotRect(input, context.projection.projection)
-            : null;
-        rect = bounds ? { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height } : null;
-      }
-      paintOrder = dl?.paintOrders?.[li] ?? 0;
-      const styleRow = dl?.styles?.[li] ?? [];
-      position = str(strings, styleRow[posCol]) || "static";
-      pointerEvents = str(strings, styleRow[peCol]) || "auto";
-      cursor = str(strings, styleRow[cursorCol]) || "auto";
-      const visibility = str(strings, styleRow[visibilityCol]) || "visible";
-      const opacity = str(strings, styleRow[opacityCol]) || "1";
-      rendered =
-        localRect !== null &&
-        visibility !== "hidden" &&
-        visibility !== "collapse" &&
-        (Number.parseFloat(opacity) || 0) > 0;
-    }
-
-    // Skip non-element nodes (#text, #cdata-section, etc.) — they carry no
-    // geometry and are never queried by callers.
-    if (tag.startsWith("#")) continue;
-
-    const textContent = nodeTextContent.get(n);
-
-    const rawFormValueIndex = tag === "textarea" ? textValues.get(n) : inputValues.get(n);
-    const rawFormValue =
-      rawFormValueIndex !== undefined ? str(strings, rawFormValueIndex) : undefined;
-    const sensitive = isSensitiveFormControl({ tag, attrs });
-    const formDefaultValue = attrs.value ?? "";
-    const formValue = sensitive ? undefined : rawFormValue;
-    const formState = snapshotFormState(
-      rawFormValue,
-      formDefaultValue,
-      Object.prototype.hasOwnProperty.call(attrs, "value"),
-      sensitive,
-    );
-    if (sensitive) delete attrs.value;
-
-    nodes.push({
-      backendNodeId,
-      parentBackendNodeId,
-      ...(context.frameId ? { frameId: context.frameId } : {}),
-      ownerFrameBackendNodeId: context.ownerFrameBackendNodeId,
-      tag,
-      attrs,
-      rect,
-      localRect,
-      paintOrder,
-      position,
-      pointerEvents,
-      cursor,
-      rendered,
-      textContent,
-      ...(formValue !== undefined ? { formValue } : {}),
-      ...(tag === "input" || tag === "textarea"
-        ? {
-            formPlaceholder: attrs.placeholder ?? "",
-            ...(!sensitive ? { formDefaultValue } : {}),
-            ...(formState ? { formState } : {}),
-          }
-        : {}),
-      ...(checkedInputs.has(n) ? { formValue: "true", formState: "filled" } : {}),
-      ...(selectedOptions.has(n) ? { formValue: attrs.value ?? textContent ?? "" } : {}),
-    });
-  }
-  return { nodes, excludedBackendNodeIds };
-}
-
 interface ParseFrameDocumentsResult {
   frameGeometryIssues: FrameProjectionIssue[];
   iframeNodes: CapturedIframeNodes;
   frameOwnerBackendNodeIds: Map<string, number>;
   frameParentIds: Map<string, string>;
+  frameExcludedBackendNodeIds: Map<string, ReadonlySet<number>>;
   excludedBackendNodeIds: Set<number>;
 }
 
@@ -647,6 +507,7 @@ async function parseChildFrameDocuments(
   const iframeNodes: CapturedIframeNodes = new Map();
   const frameOwnerBackendNodeIds = new Map<string, number>();
   const frameParentIds = new Map<string, string>();
+  const frameExcludedBackendNodeIds = new Map<string, ReadonlySet<number>>();
   const excludedBackendNodeIds = new Set<number>();
   const parentDoc = documents[parentDocIndex];
   const cdi = sparseIndexMap(parentDoc?.nodes?.contentDocumentIndex);
@@ -655,6 +516,7 @@ async function parseChildFrameDocuments(
       iframeNodes,
       frameOwnerBackendNodeIds,
       frameParentIds,
+      frameExcludedBackendNodeIds,
       excludedBackendNodeIds,
       frameGeometryIssues,
     };
@@ -732,13 +594,14 @@ async function parseChildFrameDocuments(
     };
     const nextVisited = new Set(visited);
     nextVisited.add(childDocIndex);
-    const parsed = parseDocumentNodes(childDoc, strings, childContext);
+    const parsed = await normalizeDocument(childDoc, strings, childContext, signal);
     iframeNodes.set(iframeBackendId, parsed.nodes);
     if (childContext.frameId) {
       frameOwnerBackendNodeIds.set(childContext.frameId, iframeBackendId);
+      frameExcludedBackendNodeIds.set(childContext.frameId, parsed.index.excludedBackendNodeIds);
       if (parentContext.frameId) frameParentIds.set(childContext.frameId, parentContext.frameId);
     }
-    for (const id of parsed.excludedBackendNodeIds) excludedBackendNodeIds.add(id);
+    for (const id of parsed.index.excludedBackendNodeIds) excludedBackendNodeIds.add(id);
 
     const nested = await parseChildFrameDocuments(
       documents,
@@ -759,6 +622,8 @@ async function parseChildFrameDocuments(
     for (const [frameId, parentFrameId] of nested.frameParentIds) {
       frameParentIds.set(frameId, parentFrameId);
     }
+    for (const [frameId, excluded] of nested.frameExcludedBackendNodeIds)
+      frameExcludedBackendNodeIds.set(frameId, excluded);
     for (const id of nested.excludedBackendNodeIds) excludedBackendNodeIds.add(id);
   }
 
@@ -766,6 +631,7 @@ async function parseChildFrameDocuments(
     iframeNodes,
     frameOwnerBackendNodeIds,
     frameParentIds,
+    frameExcludedBackendNodeIds,
     excludedBackendNodeIds,
     frameGeometryIssues,
   };
@@ -827,9 +693,9 @@ export async function captureViewModel(
     scrollX,
     scrollY,
   };
-  const mainParsed = parseDocumentNodes(doc0, strings, topContext);
+  const mainParsed = await normalizeDocument(doc0, strings, topContext, options.signal);
   const nodes = mainParsed.nodes;
-  const excludedBackendNodeIds = new Set(mainParsed.excludedBackendNodeIds);
+  const excludedBackendNodeIds = new Set(mainParsed.index.excludedBackendNodeIds);
 
   const ownerIds = new Set<number>();
   for (const document of documents) {
@@ -848,6 +714,11 @@ export async function captureViewModel(
     options.signal,
   );
   const iframeNodes = frameParsed.iframeNodes;
+  if (topContext.frameId)
+    frameParsed.frameExcludedBackendNodeIds.set(
+      topContext.frameId,
+      mainParsed.index.excludedBackendNodeIds,
+    );
   for (const id of frameParsed.excludedBackendNodeIds) {
     excludedBackendNodeIds.add(id);
   }
@@ -874,6 +745,7 @@ export async function captureViewModel(
     frameNodes,
     frameGeometryIssues: frameParsed.frameGeometryIssues,
     frameOwnerBackendNodeIds: frameParsed.frameOwnerBackendNodeIds,
+    frameExcludedBackendNodeIds: frameParsed.frameExcludedBackendNodeIds,
     frameParentIds: frameParsed.frameParentIds,
     ...(topContext.frameId ? { rootFrameId: topContext.frameId } : {}),
     excludedBackendNodeIds,

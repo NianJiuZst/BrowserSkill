@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { OVERLAY_HOST_MARKER_ATTR, OVERLAY_HOST_NAME } from "../../../lib/overlay-bridge";
-import { collectOverlayExcludedBackendIds, probeHoverSurfaces } from "../capture";
-import { captureObservationFacts, semanticCapture } from "../capture-coordinator";
+import type { CdpRunner } from "../../shared";
+import { captureViewModel, collectOverlayExcludedBackendIds, probeHoverSurfaces } from "../capture";
 
 // Minimal but format-accurate captureSnapshot reply: a body with one
 // fixed full-screen overlay div carrying a password input.
@@ -27,7 +27,6 @@ function fakeSnapshotReply() {
     strings: S,
     documents: [
       {
-        frameId: "root",
         nodes: {
           parentIndex: [-1, 0, 1, 2],
           nodeType: [1, 1, 1, 1],
@@ -75,7 +74,6 @@ function hoverTriggerSnapshotReply() {
     strings: S,
     documents: [
       {
-        frameId: "root",
         nodes: {
           parentIndex: [-1, 0, 1],
           nodeType: [1, 1, 1],
@@ -120,7 +118,6 @@ function twoHoverTriggerSnapshotReply() {
     strings: S,
     documents: [
       {
-        frameId: "root",
         nodes: {
           parentIndex: [-1, 0, 1, 1],
           nodeType: [1, 1, 1, 1],
@@ -174,7 +171,6 @@ function nestedHoverTriggerSnapshotReply() {
     strings: S,
     documents: [
       {
-        frameId: "root",
         nodes: {
           parentIndex: [-1, 0, 1, 2, 3],
           nodeType: [1, 1, 1, 1, 1],
@@ -248,11 +244,13 @@ function makeCdp(snapshot: unknown) {
   };
 }
 
-describe("snapshot capture and hover", () => {
+describe("captureViewModel", () => {
   it("parses nodes, attrs, rects, paint order and styles", async () => {
-    const { nodes, viewport } = semanticCapture(
-      await captureObservationFacts(makeCdp(fakeSnapshotReply()), 4),
-    ).captured;
+    const { nodes, viewport, iframeNodes } = await captureViewModel(
+      makeCdp(fakeSnapshotReply()),
+      4,
+    );
+    expect(iframeNodes.size).toBe(0);
     expect(viewport).toEqual({ width: 1000, height: 800 });
     const div = nodes.find((n) => n.backendNodeId === 12);
     expect(div).toMatchObject({ tag: "div", position: "fixed", parentBackendNodeId: 11 });
@@ -264,9 +262,33 @@ describe("snapshot capture and hover", () => {
 
   it("never hovers the page while capturing", async () => {
     const cdp = makeCdp(fakeSnapshotReply());
-    semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    await captureViewModel(cdp, 4);
 
     expect(cdp.send).not.toHaveBeenCalledWith(4, "Input.dispatchMouseEvent", expect.anything());
+  });
+
+  it("batch-enriches form controls without per-node object resolution", async () => {
+    const cdp = makeCdp(fakeSnapshotReply());
+    const result = await captureViewModel(cdp, 4);
+    const input = result.nodes.find((node) => node.backendNodeId === 13);
+
+    expect(input).toMatchObject({
+      formState: "filled",
+      formPlaceholder: "secret",
+      attrs: { type: "password" },
+    });
+    expect(input?.formValue).toBeUndefined();
+    expect(input?.formDefaultValue).toBeUndefined();
+    expect(cdp.send).toHaveBeenCalledWith(
+      4,
+      "Runtime.evaluate",
+      expect.objectContaining({
+        serializationOptions: expect.objectContaining({ serialization: "deep" }),
+      }),
+    );
+    expect(cdp.send).toHaveBeenCalledWith(4, "Runtime.releaseObjectGroup", expect.anything());
+    expect(cdp.send).not.toHaveBeenCalledWith(4, "DOM.resolveNode", expect.anything());
+    expect(cdp.send).not.toHaveBeenCalledWith(4, "Runtime.callFunctionOn", expect.anything());
   });
 
   it("runs hover surface probes when explicitly enabled", async () => {
@@ -308,7 +330,7 @@ describe("snapshot capture and hover", () => {
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
 
-    const captured = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    const captured = await captureViewModel(cdp, 4);
     const surfaceProbes = await probeHoverSurfaces(cdp, 4, captured.nodes);
 
     expect(surfaceProbes).toEqual([
@@ -368,7 +390,7 @@ describe("snapshot capture and hover", () => {
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
 
-    const captured = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    const captured = await captureViewModel(cdp, 4);
     const surfaceProbes = await probeHoverSurfaces(cdp, 4, captured.nodes);
 
     expect(surfaceProbes).toEqual([
@@ -413,7 +435,7 @@ describe("snapshot capture and hover", () => {
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
 
-    const captured = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    const captured = await captureViewModel(cdp, 4);
     await probeHoverSurfaces(cdp, 4, captured.nodes);
 
     expect(hoverMoves).toBe(1);
@@ -445,7 +467,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 0, 3, 4],
             nodeName: [i("html"), i("body"), i("div"), i(OVERLAY_HOST_NAME), i("div"), i("button")],
@@ -476,7 +497,7 @@ describe("snapshot capture and hover", () => {
       ],
     };
 
-    const { nodes } = semanticCapture(await captureObservationFacts(makeCdp(snapshot), 4)).captured;
+    const { nodes } = await captureViewModel(makeCdp(snapshot), 4);
     const ids = nodes.map((n) => n.backendNodeId);
     // Real page nodes survive.
     expect(ids).toContain(12);
@@ -507,7 +528,7 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
+          frameId: "main",
           nodes: {
             parentIndex: [-1, 0, 1, 0, 3, 4],
             nodeName: [i("html"), i("body"), i("div"), i(OVERLAY_HOST_NAME), i("div"), i("button")],
@@ -538,10 +559,12 @@ describe("snapshot capture and hover", () => {
       ],
     };
 
-    const { excludedBackendNodeIds } = semanticCapture(
-      await captureObservationFacts(makeCdp(snapshot), 4),
-    ).captured;
+    const { excludedBackendNodeIds, frameExcludedBackendNodeIds } = await captureViewModel(
+      makeCdp(snapshot),
+      4,
+    );
     expect(excludedBackendNodeIds).toEqual(new Set([13, 14, 15]));
+    expect(frameExcludedBackendNodeIds?.get("main")).toEqual(excludedBackendNodeIds);
   });
 
   it("excludes overlay host matched by tag name only", async () => {
@@ -561,7 +584,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i(OVERLAY_HOST_NAME)],
@@ -584,9 +606,7 @@ describe("snapshot capture and hover", () => {
       ],
     };
 
-    const { nodes, excludedBackendNodeIds } = semanticCapture(
-      await captureObservationFacts(makeCdp(snapshot), 4),
-    ).captured;
+    const { nodes, excludedBackendNodeIds } = await captureViewModel(makeCdp(snapshot), 4);
     expect(nodes.map((n) => n.backendNodeId)).not.toContain(13);
     expect(excludedBackendNodeIds).toEqual(new Set([13]));
   });
@@ -609,7 +629,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i("div")],
@@ -632,9 +651,7 @@ describe("snapshot capture and hover", () => {
       ],
     };
 
-    const { nodes, excludedBackendNodeIds } = semanticCapture(
-      await captureObservationFacts(makeCdp(snapshot), 4),
-    ).captured;
+    const { nodes, excludedBackendNodeIds } = await captureViewModel(makeCdp(snapshot), 4);
     expect(nodes.map((n) => n.backendNodeId)).not.toContain(13);
     expect(excludedBackendNodeIds).toEqual(new Set([13]));
   });
@@ -657,7 +674,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i("div")],
@@ -680,7 +696,7 @@ describe("snapshot capture and hover", () => {
         },
       ],
     };
-    const { nodes } = semanticCapture(await captureObservationFacts(makeCdp(snapshot), 4)).captured;
+    const { nodes } = await captureViewModel(makeCdp(snapshot), 4);
     expect(nodes.find((n) => n.backendNodeId === 12)?.cursor).toBe("pointer");
     expect(nodes.find((n) => n.backendNodeId === 11)?.cursor).toBe("auto");
   });
@@ -692,7 +708,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 1, 1],
             nodeName: [i("html"), i("body"), i("button"), i("button"), i("button")],
@@ -719,7 +734,7 @@ describe("snapshot capture and hover", () => {
       ],
     };
 
-    const { nodes } = semanticCapture(await captureObservationFacts(makeCdp(snapshot), 4)).captured;
+    const { nodes } = await captureViewModel(makeCdp(snapshot), 4);
 
     expect(nodes.find((node) => node.backendNodeId === 12)?.rendered).toBe(true);
     expect(nodes.find((node) => node.backendNodeId === 13)?.rendered).toBe(false);
@@ -739,7 +754,7 @@ describe("snapshot capture and hover", () => {
         throw new Error(method);
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
-    const { nodes } = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    const { nodes } = await captureViewModel(cdp, 4);
     const div = nodes.find((n) => n.backendNodeId === 12);
     expect(div?.localRect?.y).toBe(-200);
     expect(div?.rect).toMatchObject({ y: 0, h: 600 });
@@ -752,7 +767,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i("div")],
@@ -787,7 +801,7 @@ describe("snapshot capture and hover", () => {
         throw new Error(method);
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
-    const { nodes } = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    const { nodes } = await captureViewModel(cdp, 4);
     expect(nodes.find((n) => n.backendNodeId === 12)?.rect).toEqual({
       x: 0,
       y: 0,
@@ -823,7 +837,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           scrollOffsetX: 0,
           scrollOffsetY: 0,
           nodes: {
@@ -862,7 +875,7 @@ describe("snapshot capture and hover", () => {
         throw new Error(method);
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
-    const { nodes } = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    const { nodes } = await captureViewModel(cdp, 4);
     const btn = nodes.find((n) => n.backendNodeId === 12);
     expect(btn?.textContent).toBe("登录");
     const link = nodes.find((n) => n.backendNodeId === 14);
@@ -872,7 +885,7 @@ describe("snapshot capture and hover", () => {
     expect(body?.textContent).toBeUndefined();
   });
 
-  it("retains explicit iframe document ownership and projected nodes", async () => {
+  it("parses iframe sub-documents and returns iframeNodes keyed by iframe backendNodeId", async () => {
     const S = [
       "html",
       "body",
@@ -958,21 +971,30 @@ describe("snapshot capture and hover", () => {
         throw new Error(method);
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
-    const facts = await captureObservationFacts(cdp, 4);
-    const root = facts.documents.find((doc) => doc.frame.frameId === "main-frame")!;
-    const child = facts.documents.find((doc) => doc.frame.frameId === "child-frame")!;
-    expect(facts.documents).toHaveLength(2);
-    expect(root.domNodes.find((n) => n.backendNodeId === 13)?.tag).toBe("iframe");
-    const subNodes = child.domNodes;
+    const {
+      nodes,
+      iframeNodes,
+      frameNodes,
+      frameOwnerBackendNodeIds,
+      frameParentIds,
+      rootFrameId,
+    } = await captureViewModel(cdp, 4);
+    // Main frame has 4 nodes; iframe is included
+    expect(nodes.find((n) => n.backendNodeId === 13)?.tag).toBe("iframe");
+    // iframeNodes keyed by the <iframe> element's backendNodeId=13
+    expect(iframeNodes.size).toBe(1);
+    expect(iframeNodes.has(13)).toBe(true);
+    const subNodes = iframeNodes.get(13)!;
     const input = subNodes.find((n) => n.backendNodeId === 101);
     expect(input?.tag).toBe("input");
     expect(input?.attrs.type).toBe("text");
     expect(input?.ownerFrameBackendNodeId).toBe(13);
     expect(input?.localRect).toEqual({ x: 0, y: 0, w: 200, h: 40 });
     expect(input?.rect).toEqual({ x: 100, y: 300, w: 200, h: 40 });
-    expect(facts.rootFrameId).toBe("main-frame");
-    expect(child.frame.ownerBackendNodeId).toBe(13);
-    expect(child.frame.parentFrameId).toBe("main-frame");
+    expect(rootFrameId).toBe("main-frame");
+    expect(frameNodes?.get("child-frame")).toBe(subNodes);
+    expect(frameOwnerBackendNodeIds?.get("child-frame")).toBe(13);
+    expect(frameParentIds?.get("child-frame")).toBe("main-frame");
   });
 
   it("projects iframe documents independently of owner snapshot geometry", async () => {
@@ -993,7 +1015,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           scrollOffsetX: 0,
           scrollOffsetY: 0,
           nodes: {
@@ -1011,7 +1032,6 @@ describe("snapshot capture and hover", () => {
           },
         },
         {
-          frameId: "child",
           scrollOffsetX: 0,
           scrollOffsetY: 0,
           nodes: {
@@ -1048,10 +1068,8 @@ describe("snapshot capture and hover", () => {
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
 
-    const { documents } = await captureObservationFacts(cdp, 4);
-    const input = documents
-      .find((doc) => doc.frame.frameId === "child")
-      ?.domNodes?.find((n) => n.backendNodeId === 101);
+    const { iframeNodes } = await captureViewModel(cdp, 4);
+    const input = iframeNodes.get(13)?.find((n) => n.backendNodeId === 101);
 
     expect(input?.localRect).toEqual({ x: 20, y: 20, w: 120, h: 60 });
     expect(input?.rect).toEqual({ x: 120, y: 320, w: 120, h: 60 });
@@ -1075,7 +1093,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i("iframe")],
@@ -1097,7 +1114,6 @@ describe("snapshot capture and hover", () => {
           },
         },
         {
-          frameId: "child",
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i("iframe")],
@@ -1119,7 +1135,6 @@ describe("snapshot capture and hover", () => {
           },
         },
         {
-          frameId: "nested",
           nodes: {
             parentIndex: [-1, 0],
             nodeName: [i("body"), i("input")],
@@ -1175,13 +1190,9 @@ describe("snapshot capture and hover", () => {
       ) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
 
-    const { documents } = await captureObservationFacts(cdp, 4);
-    const nestedIframe = documents
-      .find((doc) => doc.frame.frameId === "child")
-      ?.domNodes?.find((n) => n.backendNodeId === 23);
-    const input = documents
-      .find((doc) => doc.frame.frameId === "nested")
-      ?.domNodes?.find((n) => n.backendNodeId === 31);
+    const { iframeNodes } = await captureViewModel(cdp, 4);
+    const nestedIframe = iframeNodes.get(13)?.find((n) => n.backendNodeId === 23);
+    const input = iframeNodes.get(23)?.find((n) => n.backendNodeId === 31);
 
     expect(nestedIframe?.localRect).toEqual({ x: 5, y: 6, w: 100, h: 80 });
     expect(nestedIframe?.rect).toEqual({ x: 15, y: 26, w: 100, h: 80 });
@@ -1197,7 +1208,6 @@ describe("snapshot capture and hover", () => {
       strings: S,
       documents: [
         {
-          frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i("div")],
@@ -1232,7 +1242,7 @@ describe("snapshot capture and hover", () => {
         throw new Error(method);
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
-    const { nodes } = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
+    const { nodes } = await captureViewModel(cdp, 4);
     expect(nodes.find((n) => n.backendNodeId === 12)?.rect?.y).toBe(400 - 100);
   });
 

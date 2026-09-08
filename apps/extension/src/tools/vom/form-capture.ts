@@ -1,6 +1,6 @@
 import type { CdpRunner } from "../shared";
-import type { CapturedNode } from "./facts";
-import { isCaptureAbort as isAbortError, throwCaptureAborted as throwIfAborted } from "./facts";
+import { isAbortError, throwIfAborted } from "./capture-abort";
+import type { CapturedNode } from "./capture-types";
 
 interface RuntimeEvaluateReply {
   result?: { deepSerializedValue?: DeepSerializedValue };

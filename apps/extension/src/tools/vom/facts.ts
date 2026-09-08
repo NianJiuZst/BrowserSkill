@@ -1,60 +1,6 @@
-import type { Rect, Viewport } from "@browser-skill/vom";
-import type { CdpFrame, CdpTarget } from "@/browser-driver/frame-graph";
 import { isOverlayHostNode } from "@/lib/overlay-bridge";
-import type { FrameProjectionIssue } from "../geometry/coordinate-types";
-import type { FrameOwnedAxNode } from "./frame-document";
-
-export interface CapturedNode {
-  backendNodeId: number;
-  parentBackendNodeId: number | null;
-  frameId?: string;
-  /** Owning iframe backend node id; `null` for the top-level document. */
-  ownerFrameBackendNodeId?: number | null;
-  tag: string;
-  attrs: Record<string, string>;
-  /** Top-level viewport-relative CSS px, clipped to the owning frame viewport. */
-  rect: Rect | null;
-  /** Frame-local viewport-relative CSS px before top-level projection. */
-  localRect?: Rect | null;
-  paintOrder: number;
-  position: string;
-  pointerEvents: string;
-  /**
-   * computed `cursor`. `cursor: pointer` is the strongest CDP-free signal
-   * that a non-semantic element (a `<div>`/`<span>` with a click handler)
-   * is actually an interactive control — used by the adapter to surface
-   * custom buttons/checkboxes the AX tree drops as `generic`. Optional like
-   * `textContent`: the live parser always sets it, hand-built fixtures may not.
-   */
-  cursor?: string;
-  /**
-   * Whether the live DOM snapshot provides a painted, non-hidden box for this
-   * node. Semantic resolution uses this only for DOM fallback nodes; AX-backed
-   * nodes remain authoritative even when they are outside the viewport.
-   */
-  rendered?: boolean;
-  textContent?: string;
-  formState?: "empty" | "filled" | "default";
-  formValue?: string;
-  formDefaultValue?: string;
-  formPlaceholder?: string;
-}
-
-export interface CapturedSurfaceProbe {
-  triggerBackendNodeId: number;
-  triggerPoint?: { x: number; y: number };
-  triggerAction: "hover" | "focus" | string;
-  subItems: string[];
-  confidence?: "high" | "medium" | "low";
-}
-
-/** Narrow input shared by the existing semantic scene/hover consumers. */
-export interface CapturedSceneInput {
-  nodes: CapturedNode[];
-  viewport: Viewport;
-  rootFrameId?: string;
-  excludedBackendNodeIds: ReadonlySet<number>;
-}
+import { captureCheckpoint } from "./capture-abort";
+import type { CapturedNode } from "./capture-types";
 
 /** Bounds retain their snapshot document CSS units until normalization. */
 export interface SnapshotLayout {
@@ -80,54 +26,6 @@ export interface DocumentIndex<T extends DecodedNode = NodeFacts> {
 
 export interface DecodedDocument {
   nodes: DecodedNode[];
-}
-
-export interface CaptureIssue {
-  /** Owner failure or inherited blockage; absent for other geometry failures. */
-  projectionIssue?: FrameProjectionIssue;
-  target: CdpTarget;
-  frameId?: string;
-  stage: "dom" | "ax" | "ownership" | "geometry" | "forms";
-  reason: "capture-unavailable" | "frame-ownership-unresolved" | "geometry-unavailable";
-}
-
-export interface DocumentFacts<T extends FrameOwnedAxNode> {
-  readonly frame: CdpFrame;
-  readonly index: DocumentIndex;
-  readonly domNodes: CapturedNode[];
-  readonly axNodes: T[];
-}
-
-export interface ObservationFacts<T extends FrameOwnedAxNode> {
-  readonly rootFrameId: string;
-  readonly viewport: Viewport;
-  readonly documents: readonly DocumentFacts<T>[];
-  readonly issues: readonly CaptureIssue[];
-  readonly startedAt: number;
-  readonly finishedAt: number;
-}
-
-export function throwCaptureAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new DOMException("observation aborted", "AbortError");
-}
-
-export function isCaptureAbort(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-/** Called only at bounded block boundaries, not once per node. */
-export async function captureCheckpoint(signal?: AbortSignal): Promise<void> {
-  throwCaptureAborted(signal);
-  await new Promise<void>((resolve) => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => {
-      channel.port1.close();
-      channel.port2.close();
-      resolve();
-    };
-    channel.port2.postMessage(null);
-  });
-  throwCaptureAborted(signal);
 }
 
 /** All snapshot nodes participate, including document and shadow roots. This
