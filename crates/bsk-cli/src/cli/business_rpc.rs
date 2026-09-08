@@ -73,6 +73,14 @@ where
     P: Serialize + Send + 'static,
     R: DeserializeOwned + Send + 'static,
 {
+    let parent_cancel = stdin_cancellation();
+    if parent_cancel.as_ref().is_some_and(|rx| *rx.borrow()) {
+        return Err(CliError::from_rpc(RpcError {
+            code: ErrorCode::Cancelled,
+            message: "parent closed the cancellation pipe".into(),
+            data: None,
+        }));
+    }
     let rpc_id: RpcId = format!("{}-{}", rpc_id_prefix, random_short_id());
     let mut client = IpcClient::connect(sock.clone()).await?;
     let rpc_id_for_call = rpc_id.clone();
@@ -88,16 +96,16 @@ where
     let outcome = tokio::select! {
         biased;
         res = &mut main_fut => res?,
-        sig = wait_for_sigint() => {
-            sig.context("install SIGINT handler").map_err(CliError::Local)?;
-            debug!(rpc_id = %rpc_id_for_cancel, "SIGINT: forwarding cancel to daemon");
+        sig = wait_for_cancel(parent_cancel) => {
+            sig.context("wait for cancellation").map_err(CliError::Local)?;
+            debug!(rpc_id = %rpc_id_for_cancel, "forwarding cancel to daemon");
             let _ = send_cancel(&sock, &rpc_id_for_cancel).await;
             match tokio::time::timeout(CANCEL_RESPONSE_GRACE, &mut main_fut).await {
                 Ok(res) => res?,
                 Err(_) => {
                     debug!(
                         rpc_id = %rpc_id_for_cancel,
-                        "SIGINT: cancel grace elapsed; synthesising cancelled error"
+                        "cancel grace elapsed; synthesising cancelled error"
                     );
                     return Err(CliError::from_rpc(RpcError {
                         code: ErrorCode::Cancelled,
@@ -146,8 +154,57 @@ fn random_short_id() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Wait for either Ctrl-C or process SIGTERM. Returning here means
-/// the user has asked us to stop.
+/// Opt-in control pipe for parent processes that cannot send Ctrl-C (Node on
+/// Windows). One reader survives the short-lived runtimes used by multi-RPC
+/// commands such as upload. Ordinary CLI stdin and terminal Ctrl-C are unchanged.
+fn stdin_cancellation() -> Option<tokio::sync::watch::Receiver<bool>> {
+    if std::env::var("BSK_CANCEL_ON_STDIN_CLOSE").as_deref() != Ok("1") {
+        return None;
+    }
+    static CANCEL: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>> =
+        std::sync::OnceLock::new();
+    Some(
+        CANCEL
+            .get_or_init(|| {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                std::thread::spawn(move || {
+                    use std::io::Read;
+                    let mut stdin = std::io::stdin().lock();
+                    let mut buf = [0; 64];
+                    loop {
+                        match stdin.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(_) => {}
+                            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = tx.send(true);
+                });
+                rx
+            })
+            .clone(),
+    )
+}
+
+async fn wait_for_cancel(
+    parent_cancel: Option<tokio::sync::watch::Receiver<bool>>,
+) -> anyhow::Result<()> {
+    let parent_closed = async move {
+        match parent_cancel {
+            Some(mut rx) => {
+                let _ = rx.wait_for(|closed| *closed).await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        result = wait_for_sigint() => result,
+        _ = parent_closed => Ok(()),
+    }
+}
+
+/// Wait for terminal Ctrl-C.
 async fn wait_for_sigint() -> anyhow::Result<()> {
     tokio::signal::ctrl_c().await.context("listen for SIGINT")?;
     Ok(())
