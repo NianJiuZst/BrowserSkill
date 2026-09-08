@@ -894,7 +894,7 @@ export async function captureVomObservation(
   throwIfAborted(options.signal, "observation");
   await cdp.ensureAttachedToUrl?.(tabId, url);
   throwIfAborted(options.signal, "observation");
-  const facts = await captureObservationFacts<CdpAxNode>(cdp, tabId, options.signal);
+  const facts = await captureObservationFacts<CdpAxNode>(cdp, tabId, options.signal, url);
   const { captured, documents: normalizedDocuments } = semanticCapture(facts);
   throwIfAborted(options.signal, "observation");
   const semanticGraph = buildSemanticGraph({

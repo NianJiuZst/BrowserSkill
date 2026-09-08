@@ -32,8 +32,6 @@ export interface FrameDomInput {
   nodes: CapturedNode[];
   rootFrameId?: string;
   frameNodes?: ReadonlyMap<string, CapturedNode[]>;
-  frameOwnerBackendNodeIds?: ReadonlyMap<string, number>;
-  frameParentIds?: ReadonlyMap<string, string>;
 }
 
 interface Ownership {
@@ -58,23 +56,13 @@ function targetBackendKey(target: CdpTarget, backendNodeId: number): string {
 function frameList<T extends FrameOwnedAxNode>(
   graph: CdpFrameGraph | null,
   batches: FrameAxBatch<T>[],
-  captured: FrameDomInput,
 ): CdpFrame[] {
   const frames = new Map<string, CdpFrame>();
   for (const frame of graph?.frames ?? []) frames.set(frame.frameId, frame);
   for (const batch of batches) {
     if (!frames.has(batch.frame.frameId)) frames.set(batch.frame.frameId, batch.frame);
   }
-  return [...frames.values()].map((frame) => {
-    const ownerBackendNodeId =
-      frame.ownerBackendNodeId ?? captured.frameOwnerBackendNodeIds?.get(frame.frameId);
-    const parentFrameId = frame.parentFrameId ?? captured.frameParentIds?.get(frame.frameId);
-    return {
-      ...frame,
-      ...(ownerBackendNodeId !== undefined ? { ownerBackendNodeId } : {}),
-      ...(parentFrameId ? { parentFrameId } : {}),
-    };
-  });
+  return [...frames.values()];
 }
 
 export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
@@ -85,7 +73,7 @@ export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
   unresolved?: (frame: CdpFrame) => void,
 ): Promise<FrameDocument<T>[]> {
   let work = 0;
-  const frames = frameList(graph, batches, captured);
+  const frames = frameList(graph, batches);
   const frameById = new Map(frames.map((frame) => [frame.frameId, frame]));
   const rootFrameId = graph?.rootFrameId ?? captured.rootFrameId ?? frames[0]?.frameId;
   const domNodesForFrame = (frameId: string): CapturedNode[] =>

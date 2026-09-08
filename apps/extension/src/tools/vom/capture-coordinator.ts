@@ -23,7 +23,7 @@ import {
   type FrameOwnedAxNode,
 } from "./frame-document";
 import { type NormalizedDocument, normalizeSnapshot } from "./normalize";
-import { REQUESTED_STYLES, type SnapshotReply, snapshotFrameId } from "./snapshot";
+import { describeSnapshotFrames, REQUESTED_STYLES, type SnapshotReply } from "./snapshot";
 
 interface TargetBatch<T extends FrameOwnedAxNode> {
   target: CdpTarget;
@@ -31,6 +31,8 @@ interface TargetBatch<T extends FrameOwnedAxNode> {
   documents: NormalizedDocument[];
   ax: FrameAxBatch<T>[];
   fallbackExcluded: Set<number>;
+  snapshotFrameIds?: Set<string>;
+  rootFrameId?: string;
 }
 
 /** A fixed worker pool scoped to one capture; each worker issues at most one
@@ -62,36 +64,11 @@ async function collectTargets<T>(
   if (failed) throw failure;
 }
 
-/** When topology discovery is unavailable, snapshot documents still carry
- * explicit target/frame provenance. Only explicit contentDocumentIndex edges
- * establish ancestry; a foreign frame is never renamed to fit a request. */
-function snapshotFrames(snapshot: SnapshotReply, target: CdpTarget): CdpFrame[] {
-  const raw = snapshot.documents ?? [];
-  const strings = snapshot.strings ?? [];
-  const frames = raw.map((doc) => {
-    const frameId = snapshotFrameId(doc, strings);
-    return frameId ? ({ frameId, target } as CdpFrame) : undefined;
-  });
-  for (let i = 0; i < raw.length; i++) {
-    const edges = raw[i].nodes?.contentDocumentIndex;
-    const parent = frames[i];
-    if (!parent || !edges) continue;
-    for (let e = 0; e < edges.index.length; e++) {
-      const child = frames[edges.value[e]];
-      const owner = raw[i].nodes?.backendNodeId?.[edges.index[e]];
-      if (child && owner !== undefined && child !== parent) {
-        child.parentFrameId = parent.frameId;
-        child.ownerBackendNodeId = owner;
-      }
-    }
-  }
-  return frames.filter((frame): frame is CdpFrame => !!frame);
-}
-
 export async function captureObservationFacts<T extends FrameOwnedAxNode>(
   cdp: CdpRunner,
   tabId: number,
   signal?: AbortSignal,
+  pageUrl?: string,
 ): Promise<ObservationFacts<T>> {
   const startedAt = Date.now();
   throwCaptureAborted(signal);
@@ -104,6 +81,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
   throwCaptureAborted(signal);
   const geometry = new GeometryContext(cdp, tabId, graph, signal);
   const issues: CaptureIssue[] = [];
+  const graphFrames = new Map(graph?.frames.map((frame) => [frame.frameId, frame]) ?? []);
   const groups = new Map<string, TargetBatch<T>>();
   for (const frame of graph?.frames ?? []) {
     const key = cdpTargetKey(frame.target);
@@ -118,9 +96,13 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
       };
       groups.set(key, group);
     }
-    group.frames.push(frame);
+    group.frames.push(
+      !frame.target.sessionId && frame.frameId === graph?.rootFrameId && !frame.url && pageUrl
+        ? { ...frame, url: pageUrl }
+        : frame,
+    );
   }
-  if (!groups.size)
+  if (!groups.has(cdpTargetKey({ tabId })))
     groups.set(cdpTargetKey({ tabId }), {
       target: { tabId },
       frames: [],
@@ -146,14 +128,22 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
           includeDOMRects: true,
         });
         throwCaptureAborted(signal);
-        if (!graph) batch.frames = snapshotFrames(snapshot, batch.target);
+        const observed = describeSnapshotFrames(snapshot, batch.target, graphFrames, pageUrl);
+        batch.snapshotFrameIds = observed.ids;
+        batch.rootFrameId = observed.rootFrameId;
+        // Keep graph-only frames for AX fallback, never in preference to observed membership.
+        batch.frames = [
+          ...observed.frames,
+          ...batch.frames.filter((frame) => !observed.ids.has(frame.frameId)),
+        ];
         batch.documents = await normalizeSnapshot(
           snapshot,
           batch.target,
-          batch.frames,
+          batch.frames.filter((frame) => observed.ids.has(frame.frameId)),
           geometry,
           issues,
           signal,
+          observed.rootFrameId,
         );
         const formsAvailable = await enrichFormControlStates(
           scoped,
@@ -174,7 +164,13 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
         batch.fallbackExcluded = await collectOverlayExcludedBackendIds(scoped, tabId, signal);
       }
       if (!batch.frames.length && !graph)
-        batch.frames = [{ frameId: "root", target: batch.target }];
+        batch.frames = [
+          {
+            frameId: "root",
+            target: batch.target,
+            ...(!batch.target.sessionId && pageUrl ? { url: pageUrl } : {}),
+          },
+        ];
       try {
         throwCaptureAborted(signal);
         await scoped.send(tabId, "Accessibility.enable", {});
@@ -206,12 +202,68 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
     signal,
   );
 
-  const frames = batches.flatMap((batch) => batch.frames);
-  const rootFrameId = graph?.rootFrameId ?? frames[0]?.frameId ?? "root";
-  const decoded = new Map(
-    batches.flatMap((batch) => batch.documents).map((doc) => [doc.frame.frameId, doc]),
+  // A snapshot claim outranks an old graph hint. Conflicting actual claims
+  // cannot be resolved by completion order or by overwriting a frameId map.
+  const claims = new Map<string, string>();
+  const invalid = new Set<string>();
+  for (const batch of batches) {
+    const targetKey = cdpTargetKey(batch.target);
+    for (const id of batch.snapshotFrameIds ?? []) {
+      const previous = claims.get(id);
+      if (previous !== undefined && previous !== targetKey) invalid.add(id);
+      claims.set(id, targetKey);
+    }
+    const accepted = new Set(batch.frames.map((frame) => frame.frameId));
+    for (const id of batch.snapshotFrameIds ?? []) if (!accepted.has(id)) invalid.add(id);
+  }
+  const currentFrames = batches.flatMap((batch) =>
+    batch.frames.filter(
+      (frame) =>
+        !claims.has(frame.frameId) || claims.get(frame.frameId) === cdpTargetKey(batch.target),
+    ),
   );
-  const ax = batches.flatMap((batch) => batch.ax);
+  const children = new Map<string, string[]>();
+  for (const frame of currentFrames) {
+    if (!frame.parentFrameId) continue;
+    const siblings = children.get(frame.parentFrameId);
+    if (siblings) siblings.push(frame.frameId);
+    else children.set(frame.parentFrameId, [frame.frameId]);
+  }
+  const blocked = [...invalid];
+  for (let i = 0; i < blocked.length; i++) {
+    for (const child of children.get(blocked[i]) ?? []) {
+      if (!invalid.has(child)) {
+        invalid.add(child);
+        blocked.push(child);
+      }
+    }
+  }
+  for (const frame of currentFrames) {
+    if (invalid.has(frame.frameId))
+      issues.push({
+        target: frame.target,
+        frameId: frame.frameId,
+        stage: "ownership",
+        reason: "frame-ownership-unresolved",
+      });
+  }
+  const rootBatch = batches.find((batch) => !batch.target.sessionId);
+  const rootFrameId =
+    rootBatch?.rootFrameId ?? graph?.rootFrameId ?? rootBatch?.frames[0]?.frameId ?? "root";
+  if (invalid.has(rootFrameId)) throw new Error("observation root document ownership is ambiguous");
+  const frames = currentFrames.filter((frame) => !invalid.has(frame.frameId));
+  const frameById = new Map(frames.map((frame) => [frame.frameId, frame]));
+  const belongs = (frame: CdpFrame) => {
+    const current = frameById.get(frame.frameId);
+    return current && cdpTargetKey(current.target) === cdpTargetKey(frame.target);
+  };
+  const decoded = new Map(
+    batches
+      .flatMap((batch) => batch.documents)
+      .filter((doc) => belongs(doc.frame))
+      .map((doc) => [doc.frame.frameId, doc]),
+  );
+  const ax = batches.flatMap((batch) => batch.ax).filter((batch) => belongs(batch.frame));
   const documents = await buildFrameDocuments(
     { rootFrameId, frames },
     ax,

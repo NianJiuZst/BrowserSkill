@@ -1,5 +1,5 @@
 import type { Viewport } from "@browser-skill/vom";
-import type { CdpFrame, CdpTarget } from "@/browser-driver/frame-graph";
+import { type CdpFrame, type CdpTarget, cdpTargetKey } from "@/browser-driver/frame-graph";
 import { type GeometryProjection, projectRectToViewport } from "../geometry";
 import {
   type FrameProjectionState,
@@ -39,6 +39,7 @@ export async function normalizeSnapshot(
   geometry: GeometryContext,
   issues: CaptureIssue[],
   signal?: AbortSignal,
+  rootFrameId?: string,
 ): Promise<NormalizedDocument[]> {
   const strings = snapshot.strings ?? [];
   const raw = snapshot.documents ?? [];
@@ -82,28 +83,47 @@ export async function normalizeSnapshot(
   const projections = new Map<string, FrameProjectionState | null>();
   const result: NormalizedDocument[] = [];
   let targetProjection: GeometryProjection | null = null;
-  const targetRoot = pending[0];
+  const targetRoot = rootFrameId ? frameById.get(rootFrameId) : undefined;
   if (target.sessionId && targetRoot) {
     try {
-      targetProjection = await geometry.targetProjection(targetRoot.frameId);
+      const known = await geometry.frame(targetRoot.frameId);
+      if (known && cdpTargetKey(known.target) === cdpTargetKey(target))
+        targetProjection = await geometry.targetProjection(targetRoot.frameId);
     } catch (error) {
       if (isCaptureAbort(error)) throw error;
     }
   }
-  for (let cursor = 0; cursor < pending.length; cursor++) {
+  const visited = new Set<string>();
+  const remaining = frames[Symbol.iterator]();
+  for (let cursor = 0; visited.size < frames.length; cursor++) {
+    if (cursor >= pending.length) {
+      let next = remaining.next();
+      while (!next.done && visited.has(next.value.frameId)) next = remaining.next();
+      if (next.done) break;
+      pending.push(next.value);
+    }
     if (cursor % 256 === 0) await captureCheckpoint(signal);
     const frame = pending[cursor];
+    if (visited.has(frame.frameId)) continue;
+    visited.add(frame.frameId);
     for (const child of children.get(frame.frameId) ?? []) pending.push(child);
     const doc = sources.get(frame.frameId);
     if (!doc) continue;
     const source = { target, frameId: frame.frameId };
-    const parent = frame.parentFrameId ? frameById.get(frame.parentFrameId) : undefined;
-    const state: FrameProjectionState | null = !parent
-      ? {
-          status: "available",
-          projection: { source, geometry: { sourceClips: [], edges: [], topViewport: viewport } },
-        }
-      : (projections.get(frame.frameId) ?? null);
+    const state: FrameProjectionState | null =
+      frame.frameId === rootFrameId
+        ? {
+            status: "available",
+            projection: { source, geometry: { sourceClips: [], edges: [], topViewport: viewport } },
+          }
+        : (projections.get(frame.frameId) ?? null);
+    if (!state && frame.frameId !== rootFrameId)
+      issues.push({
+        target,
+        frameId: frame.frameId,
+        stage: "ownership",
+        reason: "frame-ownership-unresolved",
+      });
     projections.set(frame.frameId, state);
     const projection = state?.status === "available" ? state.projection : null;
     if (!projection || (target.sessionId && !targetProjection))
@@ -173,8 +193,8 @@ export async function normalizeSnapshot(
       if (i % 256 === 0) await captureCheckpoint(signal);
       const node = decoded.nodes[i];
       const input = snapshotViewportRect(node.layout?.bounds ?? [], source, {
-        x: doc.scrollOffsetX ?? (parent ? 0 : scrollX),
-        y: doc.scrollOffsetY ?? (parent ? 0 : scrollY),
+        x: doc.scrollOffsetX ?? (frame.frameId === rootFrameId ? scrollX : 0),
+        y: doc.scrollOffsetY ?? (frame.frameId === rootFrameId ? scrollY : 0),
       });
       const local = input?.rect;
       let rect = input && projection ? projectSnapshotRect(input, projection) : null;
@@ -208,10 +228,6 @@ export async function normalizeSnapshot(
       frame,
       domNodes,
     });
-  }
-  for (const frameId of sources.keys()) {
-    if (!projections.has(frameId))
-      issues.push({ target, frameId, stage: "ownership", reason: "frame-ownership-unresolved" });
   }
   return result;
 }

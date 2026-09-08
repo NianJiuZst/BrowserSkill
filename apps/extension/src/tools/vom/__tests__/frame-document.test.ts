@@ -159,10 +159,12 @@ describe("buildFrameDocuments", () => {
       ["child", [domNode("child", 9)]],
     ]);
     const capture = captured(frameNodes);
-    capture.frameOwnerBackendNodeIds = new Map([["child", 7]]);
-    capture.frameParentIds = new Map([["child", "left"]]);
     const frames = ["main", "left", "right", "child"].map((frameId) => ({
-      frame: { frameId, target: { tabId: 4 } },
+      frame: {
+        frameId,
+        target: { tabId: 4 },
+        ...(frameId === "child" ? { parentFrameId: "left", ownerBackendNodeId: 7 } : {}),
+      },
       nodes: [],
     }));
 

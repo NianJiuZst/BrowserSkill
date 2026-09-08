@@ -3353,6 +3353,66 @@ describe("handleSnapshot", () => {
     };
   }
 
+  it.each([
+    false,
+    true,
+  ])("preserves external-link hints without graph metadata (snapshot URL: %s)", async (hasSnapshotUrl) => {
+    const snapshot = {
+      strings: ["body", "a", "href", "//outside.test/docs", "https://page.test/start"],
+      documents: [
+        {
+          frameId: "main",
+          ...(hasSnapshotUrl ? { documentURL: 4 } : {}),
+          nodes: {
+            backendNodeId: [1, 2],
+            parentIndex: [-1, 0],
+            nodeName: [0, 1],
+            attributes: [[], [2, 3]],
+          },
+          layout: {
+            nodeIndex: [0, 1],
+            bounds: [
+              [0, 0, 1000, 800],
+              [10, 20, 100, 40],
+            ],
+          },
+        },
+      ],
+    };
+    const ax: CdpAxNode[] = [
+      {
+        nodeId: "root",
+        backendDOMNodeId: 1,
+        role: { type: "role", value: "RootWebArea" },
+        childIds: ["link"],
+      },
+      {
+        nodeId: "link",
+        parentId: "root",
+        backendDOMNodeId: 2,
+        role: { type: "role", value: "link" },
+        name: { type: "computedString", value: "Docs" },
+      },
+    ];
+    const deps = makeOverlayDeps(ax, snapshot, VP_METRICS);
+    const cdp: CdpRunner = {
+      ...deps.cdp,
+      getFrameGraph: async () => {
+        throw new Error("graph unavailable");
+      },
+    };
+    const result = await captureVomObservation(
+      cdp,
+      4,
+      hasSnapshotUrl ? undefined : "https://page.test/start",
+    );
+    expect(result.text).toContain("outside.test");
+    expect(result.text).toContain("Docs");
+    expect(
+      deps.send.mock.calls.filter(([, method]) => method === "DOMSnapshot.captureSnapshot"),
+    ).toHaveLength(1);
+  });
+
   it("exposes the frame-aware observation result for recording", async () => {
     const ax: CdpAxNode[] = [
       {

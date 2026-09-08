@@ -1,3 +1,4 @@
+import { type CdpFrame, type CdpTarget, cdpTargetKey } from "@/browser-driver/frame-graph";
 import type { CapturedNode } from "./facts";
 import { captureCheckpoint, type DecodedDocument, type DecodedNode } from "./facts";
 export const REQUESTED_STYLES = [
@@ -22,6 +23,7 @@ interface RareBooleanData {
 
 export interface SnapshotDocument {
   frameId?: string | number;
+  documentURL?: number;
   scrollOffsetX?: number;
   scrollOffsetY?: number;
   nodes?: {
@@ -210,4 +212,69 @@ export async function decodeDocument(
     });
   }
   return { nodes };
+}
+
+/** Snapshot membership and same-target edges are current response evidence.
+ * The earlier graph only supplies compatible metadata and cross-target edges. */
+export function describeSnapshotFrames(
+  snapshot: SnapshotReply,
+  target: CdpTarget,
+  hintById: ReadonlyMap<string, CdpFrame>,
+  pageUrl?: string,
+): { frames: CdpFrame[]; ids: Set<string>; rootFrameId?: string } {
+  const raw = snapshot.documents ?? [];
+  const strings = snapshot.strings ?? [];
+  const ids = new Set<string>();
+  const invalid = new Set<string>();
+  const frames = raw.map((doc) => {
+    const frameId = snapshotFrameId(doc, strings);
+    if (!frameId) return undefined;
+    if (ids.has(frameId)) invalid.add(frameId);
+    ids.add(frameId);
+    const hint = hintById.get(frameId);
+    const compatible =
+      hint && cdpTargetKey(hint.target) === cdpTargetKey(target) ? hint : undefined;
+    const url =
+      (doc.documentURL === undefined ? undefined : strings[doc.documentURL]) || compatible?.url;
+    return { frameId, target, ...(url ? { url } : {}) } as CdpFrame;
+  });
+  const root = frames[0];
+  if (root) {
+    const hint = hintById.get(root.frameId);
+    const parent = hint?.parentFrameId ? hintById.get(hint.parentFrameId) : undefined;
+    if (
+      target.sessionId &&
+      hint &&
+      cdpTargetKey(hint.target) === cdpTargetKey(target) &&
+      parent &&
+      cdpTargetKey(parent.target) !== cdpTargetKey(target)
+    ) {
+      root.parentFrameId = parent.frameId;
+      root.ownerBackendNodeId = hint.ownerBackendNodeId;
+    }
+    if (!target.sessionId && !root.url && pageUrl) root.url = pageUrl;
+  }
+  const owned = new Set<string>();
+  for (let i = 0; i < raw.length; i++) {
+    const edges = raw[i].nodes?.contentDocumentIndex;
+    const parent = frames[i];
+    if (!parent || !edges) continue;
+    for (let e = 0; e < edges.index.length; e++) {
+      const child = frames[edges.value[e]];
+      const owner = raw[i].nodes?.backendNodeId?.[edges.index[e]];
+      if (!child || owner === undefined) continue;
+      if (child === root || child === parent || owned.has(child.frameId)) {
+        invalid.add(child.frameId);
+        continue;
+      }
+      owned.add(child.frameId);
+      child.parentFrameId = parent.frameId;
+      child.ownerBackendNodeId = owner;
+    }
+  }
+  return {
+    frames: frames.filter((frame): frame is CdpFrame => !!frame && !invalid.has(frame.frameId)),
+    ids,
+    rootFrameId: root?.frameId,
+  };
 }

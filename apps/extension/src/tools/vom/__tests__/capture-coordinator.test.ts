@@ -437,7 +437,8 @@ describe("OOPIF capture", () => {
     const reply = async (_target: unknown, method: string) => {
       if (method === "Page.getLayoutMetrics")
         return { cssLayoutViewport: { clientWidth: 300, clientHeight: 200 } };
-      if (method === "DOMSnapshot.captureSnapshot") return snapshot;
+      if (method === "DOMSnapshot.captureSnapshot")
+        return typeof _target === "number" ? childSnapshot("main", 11) : snapshot;
       if (method === "DOM.getBoxModel")
         return { model: { content: [50, 100, 350, 100, 350, 300, 50, 300] } };
       if (method === "DOM.resolveNode") throw new Error("nested owner replaced");
@@ -589,6 +590,7 @@ function siblingCaptureFixture(
     }
   });
   return {
+    snapshot,
     cdp: { send: send as CdpRunner["send"] },
     send,
     peak: () => peak,
@@ -599,6 +601,201 @@ function siblingCaptureFixture(
         .map(([, , params]) => (params as { backendNodeId: number }).backendNodeId),
   };
 }
+
+describe("snapshot document provenance", () => {
+  it.each([
+    "new-child",
+    "new-root",
+    "stale-owner",
+  ])("retains current snapshot evidence with %s graph data", async (mode) => {
+    const f = siblingCaptureFixture();
+    const cdp: CdpRunner = {
+      ...f.cdp,
+      getFrameGraph: async () => ({
+        rootFrameId: mode === "new-root" ? "old-root" : "frame-0",
+        frames: [
+          { frameId: mode === "new-root" ? "old-root" : "frame-0", target: { tabId: 4 } },
+          ...(mode === "stale-owner"
+            ? [
+                {
+                  frameId: "frame-1",
+                  parentFrameId: "frame-0",
+                  ownerBackendNodeId: 999,
+                  target: { tabId: 4 },
+                },
+              ]
+            : []),
+        ],
+      }),
+    };
+    const facts = await captureObservationFacts(cdp, 4);
+    expect(facts.rootFrameId).toBe("frame-0");
+    expect(facts.documents.find((doc) => doc.frame.frameId === "frame-1")).toMatchObject({
+      frame: { ownerBackendNodeId: 100 },
+      domNodes: [
+        expect.objectContaining({ rect: { x: 0, y: 0, w: 200, h: 100 } }),
+        expect.anything(),
+      ],
+    });
+    expect(
+      facts.documents.find((doc) => doc.frame.frameId === "frame-7")?.domNodes[0].rect,
+    ).not.toBeNull();
+    expect(f.measured()).not.toContain(999);
+    expect(
+      f.send.mock.calls.filter(([, method]) => method === "DOMSnapshot.captureSnapshot"),
+    ).toHaveLength(1);
+    expect(
+      f.send.mock.calls.some(
+        ([, method, params]) =>
+          method === "Accessibility.getFullAXTree" &&
+          (params as { frameId?: string }).frameId === "frame-7",
+      ),
+    ).toBe(true);
+  });
+
+  it("uses snapshot URLs before graph URLs and limits the caller URL to the root", async () => {
+    const f = siblingCaptureFixture();
+    f.snapshot.strings.push("https://current.test/page", "https://child.test/page");
+    Object.assign(f.snapshot.documents[0], { documentURL: 2 });
+    Object.assign(f.snapshot.documents[1], { documentURL: 3 });
+    const facts = await captureObservationFacts(
+      {
+        ...f.cdp,
+        getFrameGraph: async () => ({
+          rootFrameId: "frame-0",
+          frames: [{ frameId: "frame-0", target: { tabId: 4 }, url: "https://old.test/" }],
+        }),
+      },
+      4,
+      undefined,
+      "https://caller.test/",
+    );
+    expect(facts.documents.find((doc) => doc.frame.frameId === "frame-0")?.frame.url).toBe(
+      "https://current.test/page",
+    );
+    expect(facts.documents.find((doc) => doc.frame.frameId === "frame-1")?.frame.url).toBe(
+      "https://child.test/page",
+    );
+    expect(
+      facts.documents.find((doc) => doc.frame.frameId === "frame-2")?.frame.url,
+    ).toBeUndefined();
+  });
+
+  it("accepts a migrated snapshot claim without merging AX from the old target", async () => {
+    const f = siblingCaptureFixture();
+    const cdp: CdpRunner = {
+      ...f.cdp,
+      getFrameGraph: async () => ({
+        rootFrameId: "frame-0",
+        frames: [
+          { frameId: "frame-0", target: { tabId: 4 } },
+          {
+            frameId: "frame-1",
+            parentFrameId: "frame-0",
+            ownerBackendNodeId: 100,
+            target: { tabId: 4, sessionId: "old" },
+          },
+        ],
+      }),
+      sendToTarget: async <T>(_target: CdpTarget, method: string): Promise<T> =>
+        (method === "Accessibility.getFullAXTree"
+          ? { nodes: [{ nodeId: "stale", role: { value: "button" }, name: { value: "stale" } }] }
+          : {}) as T,
+    };
+    const facts = await captureObservationFacts(cdp, 4);
+    const current = facts.documents.find((doc) => doc.frame.frameId === "frame-1");
+    expect(current?.frame.target).toEqual({ tabId: 4 });
+    expect(current?.domNodes.length).toBeGreaterThan(0);
+    expect(current?.axNodes).toEqual([]);
+  });
+
+  it.each([
+    0, 1,
+  ])("rejects duplicate snapshot frame identity at document %i without overwriting", async (index) => {
+    const f = siblingCaptureFixture();
+    f.snapshot.documents.push(f.snapshot.documents[index]);
+    if (index === 0) {
+      await expect(captureObservationFacts(f.cdp, 4)).rejects.toThrow(
+        "root document ownership is ambiguous",
+      );
+    } else {
+      const facts = await captureObservationFacts(f.cdp, 4);
+      expect(facts.documents.map((doc) => doc.frame.frameId)).not.toContain("frame-1");
+      expect(facts.documents.map((doc) => doc.frame.frameId)).not.toContain("frame-7");
+      expect(
+        facts.documents.find((doc) => doc.frame.frameId === "frame-2")?.domNodes.length,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("retains the caller URL in the root AX-only fallback", async () => {
+    const cdp: CdpRunner = {
+      getFrameGraph: async () => {
+        throw new Error("no graph");
+      },
+      send: async <T>(_tabId: number, method: string): Promise<T> => {
+        if (method === "DOMSnapshot.captureSnapshot") throw new Error("no snapshot");
+        return (
+          method === "Accessibility.getFullAXTree"
+            ? { nodes: [{ nodeId: "root", role: { value: "RootWebArea" } }] }
+            : {}
+        ) as T;
+      },
+    };
+    const facts = await captureObservationFacts(cdp, 4, undefined, "https://page.test/");
+    expect(facts.documents[0].frame.url).toBe("https://page.test/");
+    expect(facts.documents[0].axNodes).toHaveLength(1);
+  });
+
+  it("retains disconnected document data without inventing top-level geometry", async () => {
+    const f = siblingCaptureFixture();
+    f.snapshot.documents[0].nodes.contentDocumentIndex = { index: [], value: [] };
+    const facts = await captureObservationFacts(f.cdp, 4);
+    expect(
+      facts.documents.find((doc) => doc.frame.frameId === "frame-1")?.domNodes[0],
+    ).toMatchObject({ rect: null, localRect: { x: 0, y: 0, w: 200, h: 100 } });
+    expect(f.measured()).toEqual([]);
+    expect(facts.issues).toContainEqual(
+      expect.objectContaining({ frameId: "frame-1", stage: "ownership" }),
+    );
+  });
+
+  it.each([
+    false,
+    true,
+  ])("isolates competing target claims independent of batch order %s", async (reverse) => {
+    const f = siblingCaptureFixture();
+    const remote = {
+      frameId: "frame-1",
+      parentFrameId: "frame-0",
+      ownerBackendNodeId: 100,
+      target: { tabId: 4, sessionId: "remote" },
+    };
+    const main = { frameId: "frame-0", target: { tabId: 4 } };
+    const cdp: CdpRunner = {
+      ...f.cdp,
+      getFrameGraph: async () => ({
+        rootFrameId: "frame-0",
+        frames: reverse ? [remote, main] : [main, remote],
+      }),
+      sendToTarget: async <T>(_target: CdpTarget, method: string): Promise<T> =>
+        (method === "DOMSnapshot.captureSnapshot"
+          ? { ...f.snapshot, documents: [f.snapshot.documents[1]] }
+          : method === "Page.getLayoutMetrics"
+            ? { cssLayoutViewport: { clientWidth: 200, clientHeight: 100 } }
+            : {}) as T,
+    };
+    const facts = await captureObservationFacts(cdp, 4);
+    expect(facts.documents.map((doc) => doc.frame.frameId)).not.toContain("frame-1");
+    expect(facts.documents.map((doc) => doc.frame.frameId)).not.toContain("frame-7");
+    expect(
+      facts.documents.find((doc) => doc.frame.frameId === "frame-2")?.domNodes[0].rect,
+    ).not.toBeNull();
+    expect(facts.issues).toContainEqual(
+      expect.objectContaining({ frameId: "frame-1", stage: "ownership" }),
+    );
+  });
+});
 
 describe("sibling frame measurement scheduling", () => {
   it("bounds concurrent reads, fills free slots and preserves breadth-first output despite reordered replies", async () => {
