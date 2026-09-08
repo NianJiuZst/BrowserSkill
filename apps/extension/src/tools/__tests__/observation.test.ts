@@ -3692,6 +3692,58 @@ describe("handleSnapshot", () => {
   });
 
   it.each([
+    ["DOMSnapshot.captureSnapshot", "dom"],
+    ["Accessibility.getFullAXTree", "ax"],
+  ])("reports partial capture when child %s fails", async (failedMethod, stage) => {
+    const { cdp } = makeFrameAwareDeps("available");
+    const send = cdp.sendToTarget;
+    cdp.sendToTarget = async (target, method, params) => {
+      if (method === failedMethod) throw new Error("unavailable child data");
+      return send(target, method, params);
+    };
+    for (const maxTokens of [undefined, 100, 0]) {
+      const result = await captureVomObservation(cdp, 4, "https://example.com", { maxTokens });
+      expect(result.text).toContain(`@warning observation incomplete: some ${stage} data`);
+      expect(result.text.match(/@warning/g)).toHaveLength(1);
+      expect(result.text.startsWith("@vom 1\n")).toBe(true);
+      if (maxTokens === undefined) {
+        expect(result.frames.map((frame) => frame.frameId)).toEqual(["main", "child"]);
+        expect(result.truncated).toBe(false);
+      }
+      if (maxTokens === 100)
+        expect(Math.ceil(result.text.length / 4)).toBeLessThanOrEqual(maxTokens);
+    }
+  });
+
+  it("reports omitted child ownership without exposing capture internals", async () => {
+    const { cdp } = makeFrameAwareDeps("available");
+    const send = cdp.send;
+    cdp.send = async (tabId, method, params) => {
+      const result = await send(tabId, method, params);
+      if (method === "DOMSnapshot.captureSnapshot") {
+        const child = await cdp.sendToTarget({ tabId, sessionId: "child-session" }, method, params);
+        (result as { documents: unknown[] }).documents.push(
+          ...(child as { documents: unknown[] }).documents,
+        );
+      }
+      return result as never;
+    };
+    const result = await captureVomObservation(cdp, 4, "https://example.com");
+    expect(result.frames.map((frame) => frame.frameId)).toEqual(["main"]);
+    expect(result.text).toContain("observation incomplete: some ownership data");
+    expect(result.text).not.toContain("Frame action");
+    expect(result).not.toHaveProperty("issues");
+  });
+
+  it("reports unavailable form state while retaining the observed document", async () => {
+    const { cdp } = makeOverlayDeps([], loginSnapshotReply(), VP_METRICS);
+    const result = await captureVomObservation(cdp, 4, "https://example.com");
+    expect(result.text).toContain("observation incomplete: some forms data");
+    expect(result.frames).toHaveLength(1);
+    expect(result.text).not.toContain("unexpected CDP method");
+  });
+
+  it.each([
     "available",
     "clipped",
   ] as const)("does not report successful %s geometry as an observation failure", async (ownerGeometry) => {

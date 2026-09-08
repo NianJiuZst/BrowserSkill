@@ -8,51 +8,33 @@ import { buildSemanticGraph } from "../semantic-graph/build";
 import { REQUESTED_STYLES } from "../snapshot";
 
 function fixture(
-  options: {
-    frames?: CdpFrame[];
-    after?: Record<
-      string,
-      { loader?: string; element?: number; missing?: boolean; unreadable?: boolean }
-    >;
-    fail?: string;
-    missingIdentity?: boolean;
-    omitDocument?: string;
-    attachmentChanged?: boolean;
-    overlay?: string;
-  } = {},
+  options: { frames?: CdpFrame[]; fail?: string; omitDocument?: string; overlay?: string } = {},
 ) {
   const frames = options.frames ?? [
-    { frameId: "main", loaderId: "main-loader", target: { tabId: 4 } },
+    { frameId: "main", target: { tabId: 4 } },
     {
       frameId: "same",
       parentFrameId: "main",
       ownerBackendNodeId: 3,
-      loaderId: "same-loader",
       target: { tabId: 4 },
     },
     {
       frameId: "nested",
       parentFrameId: "same",
       ownerBackendNodeId: 13,
-      loaderId: "nested-loader",
       target: { tabId: 4 },
     },
     {
       frameId: "remote",
       parentFrameId: "main",
       ownerBackendNodeId: 4,
-      loaderId: "remote-loader",
       target: { tabId: 4, sessionId: "remote" },
     },
   ];
   const elements = new Map(
     frames.map((frame, i) => [frame.frameId, frame.target.sessionId ? 1 : i * 10 + 1]),
   );
-  const contexts = new Map(frames.map((frame, i) => [i + 1, frame.frameId]));
-  const reads = new Map<string, number>();
   const logs: Array<{ target: CdpTarget; method: string; params: Record<string, unknown> }> = [];
-  let snapshots = 0;
-  const targetCount = new Set(frames.map((frame) => cdpTargetKey(frame.target))).size;
   const send = vi.fn(
     async <T>(target: CdpTarget, method: string, params: object = {}): Promise<T> => {
       logs.push({ target, method, params: params as Record<string, unknown> });
@@ -60,55 +42,9 @@ function fixture(
       if (options.fail === `${target.sessionId ?? "main"}:${method}`)
         throw new Error("fixture failure");
       let result: unknown = {};
-      if (method === "Page.createIsolatedWorld")
-        result = {
-          executionContextId: frames.findIndex((frame) => frame.frameId === args.frameId) + 1,
-        };
-      if (method === "Runtime.evaluate")
-        result = { result: { objectId: contexts.get(Number(args.contextId)) } };
-      if (method === "DOM.describeNode") {
-        const id = String(args.objectId);
-        const count = reads.get(id) ?? 0;
-        reads.set(id, count + 1);
-        result =
-          options.missingIdentity || (count > 0 && options.after?.[id]?.unreadable)
-            ? {}
-            : {
-                node: {
-                  backendNodeId:
-                    count > 0
-                      ? (options.after?.[id]?.element ?? elements.get(id))
-                      : elements.get(id),
-                },
-              };
-      }
-      if (method === "Page.getFrameTree") {
-        const own = frames.filter(
-          (frame) =>
-            cdpTargetKey(frame.target) === cdpTargetKey(target) &&
-            !options.after?.[frame.frameId]?.missing,
-        );
-        const trees = new Map(
-          own.map((frame) => [
-            frame.frameId,
-            {
-              frame: {
-                id: frame.frameId,
-                loaderId: options.after?.[frame.frameId]?.loader ?? frame.loaderId,
-              },
-              childFrames: [] as unknown[],
-            },
-          ]),
-        );
-        for (const frame of own)
-          if (frame.parentFrameId && trees.has(frame.parentFrameId))
-            trees.get(frame.parentFrameId)!.childFrames.push(trees.get(frame.frameId));
-        result = { frameTree: trees.get(own[0]?.frameId) };
-      }
       if (method === "Page.getLayoutMetrics")
         result = { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
       if (method === "DOMSnapshot.captureSnapshot") {
-        snapshots++;
         expect((params as { computedStyles: unknown }).computedStyles).toEqual(REQUESTED_STYLES);
         result = {
           strings: [
@@ -195,8 +131,6 @@ function fixture(
     },
   );
   const cdp: CdpRunner = {
-    getAttachmentId: () =>
-      options.attachmentChanged && snapshots === targetCount ? "new-attachment" : "attachment",
     getFrameGraph: async () => ({ rootFrameId: frames[0].frameId, frames }),
     send: (tabId, method, params) =>
       (send as NonNullable<CdpRunner["sendToTarget"]>)({ tabId }, method, params),
@@ -212,9 +146,6 @@ describe("captureObservationFacts", () => {
     expect(logs.filter((call) => call.method === "DOMSnapshot.captureSnapshot")).toHaveLength(2);
     expect(logs.filter((call) => call.method === "Accessibility.enable")).toHaveLength(2);
     expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(4);
-    expect(facts.documents.every((doc) => doc.identity)).toBe(true);
-    expect(logs.filter((call) => call.method === "DOM.describeNode")).toHaveLength(8);
-    expect(logs.filter((call) => call.method === "Runtime.releaseObject")).toHaveLength(8);
     const main = facts.documents.find((doc) => doc.frame.frameId === "main")!;
     const remote = facts.documents.find((doc) => doc.frame.frameId === "remote")!;
     expect(main.index.nodes.get(2)).not.toBe(remote.index.nodes.get(2));
@@ -223,113 +154,6 @@ describe("captureObservationFacts", () => {
     expect(remote.axNodes[0].frameId).toBe("remote");
     expect(main.index.nodes.get(2)).toBe(main.domNodes.find((node) => node.backendNodeId === 2));
     expect(facts.finishedAt).toBeGreaterThanOrEqual(facts.startedAt);
-  });
-
-  it.each([
-    { loader: "new-loader" },
-    { element: 99 },
-    { missing: true },
-  ])("isolates changed child identity %j and dependent descendants", async (change) => {
-    const { cdp } = fixture({ after: { same: change } });
-    const facts = await captureObservationFacts(cdp, 4);
-    expect(facts.documents.map((doc) => doc.frame.frameId)).toEqual(["main", "remote"]);
-    expect(facts.issues).toContainEqual(
-      expect.objectContaining({ frameId: "same", reason: "document-changed" }),
-    );
-  });
-
-  it.each([
-    { after: { main: { element: 99 } } },
-    { attachmentChanged: true },
-  ])("rejects a root replacement or reattachment %j", async (options) => {
-    await expect(captureObservationFacts(fixture(options).cdp, 4)).rejects.toThrow(
-      "document identity",
-    );
-  });
-
-  it.each([
-    "main",
-    "same",
-  ])("does not publish a previously identified %s document after identity reads fail", async (frameId) => {
-    const { cdp } = fixture({ after: { [frameId]: { unreadable: true } } });
-    if (frameId === "main")
-      await expect(captureObservationFacts(cdp, 4)).rejects.toThrow("document identity");
-    else {
-      const facts = await captureObservationFacts(cdp, 4);
-      expect(facts.documents.map((doc) => doc.frame.frameId)).toEqual(["main", "remote"]);
-      expect(facts.issues).toContainEqual(
-        expect.objectContaining({ frameId, reason: "identity-unverified" }),
-      );
-    }
-  });
-
-  it("keeps newly discovered snapshot documents unverified without reading a synthetic before identity", async () => {
-    const { cdp, logs } = fixture();
-    const originalGraph = await cdp.getFrameGraph!(4);
-    cdp.getFrameGraph = async () => ({
-      ...originalGraph,
-      frames: originalGraph.frames.slice(0, 1),
-    });
-    const facts = await captureObservationFacts(cdp, 4);
-    expect(facts.documents.map((doc) => doc.frame.frameId)).toEqual(["main", "same", "nested"]);
-    expect(facts.documents[0].identity).toBeDefined();
-    for (const doc of facts.documents.slice(1)) {
-      expect(doc.identity).toBeUndefined();
-      expect(facts.issues).toContainEqual(
-        expect.objectContaining({ frameId: doc.frame.frameId, reason: "identity-unverified" }),
-      );
-    }
-    expect(
-      logs.filter((call) => call.method === "DOM.describeNode").map((call) => call.params.objectId),
-    ).toEqual(["main", "main"]);
-  });
-
-  it.each([
-    "frame-id",
-    "snapshot-element",
-  ])("rejects root replacement evidenced by %s even if the later graph is stale", async (mode) => {
-    const { cdp } = fixture();
-    const original = cdp.sendToTarget!;
-    cdp.sendToTarget = async (target, method, params) => {
-      const result = await original(target, method, params);
-      if (method === "DOMSnapshot.captureSnapshot" && !target.sessionId) {
-        const snapshot = result as {
-          documents: { frameId: string; nodes: { backendNodeId: number[] } }[];
-        };
-        if (mode === "frame-id") snapshot.documents[0].frameId = "replacement";
-        else snapshot.documents[0].nodes.backendNodeId[2] = 999;
-      }
-      return result as never;
-    };
-    cdp.send = (tabId, method, params) => cdp.sendToTarget!({ tabId }, method, params);
-    await expect(captureObservationFacts(cdp, 4)).rejects.toThrow("document identity");
-  });
-
-  it("starts after-identity reads only after every target finishes and propagates cancellation during identity cleanup", async () => {
-    const { cdp, logs } = fixture();
-    const controller = new AbortController();
-    const original = cdp.sendToTarget!;
-    let identityCleanup = 0;
-    cdp.sendToTarget = async (target, method, params) => {
-      if (method === "Page.getFrameTree") {
-        expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(
-          4,
-        );
-      }
-      const result = await original(target, method, params);
-      if (
-        method === "Runtime.releaseObject" &&
-        (params as { objectId?: string })?.objectId === "remote"
-      ) {
-        if (++identityCleanup === 2) controller.abort();
-      }
-      return result as never;
-    };
-    cdp.send = (tabId, method, params) => cdp.sendToTarget!({ tabId }, method, params);
-    await expect(captureObservationFacts(cdp, 4, controller.signal)).rejects.toMatchObject({
-      name: "AbortError",
-    });
-    expect(identityCleanup).toBe(2);
   });
 
   it("does not retry failed or missing documents and retains valid AX-only semantics", async () => {
@@ -348,12 +172,6 @@ describe("captureObservationFacts", () => {
     expect(facts.issues).toContainEqual(
       expect.objectContaining({ target: { tabId: 4, sessionId: "remote" }, stage: "dom" }),
     );
-  });
-
-  it("keeps missing identity explicit without manufacturing a verified document", async () => {
-    const facts = await captureObservationFacts(fixture({ missingIdentity: true }).cdp, 4);
-    expect(facts.documents.every((doc) => !doc.identity)).toBe(true);
-    expect(facts.issues.filter((issue) => issue.reason === "identity-unverified")).toHaveLength(4);
   });
 
   it("excludes overlay AX in its own document without excluding equal IDs elsewhere", async () => {

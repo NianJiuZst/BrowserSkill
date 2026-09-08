@@ -1,20 +1,17 @@
 import {
-  buildFrameGraph,
   type CdpFrame,
   type CdpFrameGraph,
-  type CdpFrameTreeNode,
   type CdpTarget,
   cdpTargetKey,
 } from "@/browser-driver/frame-graph";
 import { cssViewport, GeometryContext } from "../geometry/frame-context";
-import { type CdpRunner, cdpRunnerForTarget, sendToCdpTarget } from "../shared";
+import { type CdpRunner, cdpRunnerForTarget } from "../shared";
 import { collectOverlayExcludedBackendIds } from "./capture";
 import {
   isAbortError as isCaptureAbort,
   throwIfAborted as throwCaptureAborted,
 } from "./capture-abort";
-import { readDocumentIdentity, sameDocument } from "./document-identity";
-import type { CapturedSceneInput, DocumentIdentity } from "./facts";
+import type { CapturedSceneInput } from "./facts";
 import { buildDocumentIndex, type CaptureIssue, type ObservationFacts } from "./facts";
 import { enrichFormControlStates } from "./form-capture";
 import {
@@ -29,7 +26,6 @@ import { describeSnapshotFrames, REQUESTED_STYLES, type SnapshotReply } from "./
 interface TargetBatch<T extends FrameOwnedAxNode> {
   target: CdpTarget;
   frames: CdpFrame[];
-  before: Map<string, DocumentIdentity>;
   documents: NormalizedFrameDocument[];
   ax: FrameAxBatch<T>[];
   fallbackExcluded: Set<number>;
@@ -92,7 +88,6 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
       group = {
         target: frame.target,
         frames: [],
-        before: new Map(),
         documents: [],
         ax: [],
         fallbackExcluded: new Set(),
@@ -109,7 +104,6 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
     groups.set(cdpTargetKey({ tabId }), {
       target: { tabId },
       frames: [],
-      before: new Map(),
       documents: [],
       ax: [],
       fallbackExcluded: new Set(),
@@ -122,10 +116,6 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
     batches,
     async (batch) => {
       const scoped = cdpRunnerForTarget(cdp, batch.target);
-      for (const frame of batch.frames) {
-        const identity = await readDocumentIdentity(cdp, frame, signal);
-        if (identity) batch.before.set(frame.frameId, identity);
-      }
       try {
         throwCaptureAborted(signal);
         await scoped.send(tabId, "DOMSnapshot.enable", {});
@@ -241,91 +231,6 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
   const rootBatch = batches.find((batch) => !batch.target.sessionId);
   const rootFrameId =
     rootBatch?.rootFrameId ?? graph?.rootFrameId ?? rootBatch?.frames[0]?.frameId ?? "root";
-  const ownershipInvalid = new Set(invalid);
-  const identities = new Map<string, DocumentIdentity>();
-  const rootBefore = graph && rootBatch?.before.get(graph.rootFrameId);
-  if (rootBefore && rootFrameId !== rootBefore.frameId) {
-    invalid.add(rootFrameId);
-    issues.push({
-      target: rootBefore.target,
-      frameId: rootFrameId,
-      stage: "identity",
-      reason: "document-changed",
-    });
-  }
-  const selected = new Map(currentFrames.map((frame) => [frame.frameId, frame]));
-  await collectTargets(
-    batches,
-    async (batch) => {
-      const frames = batch.frames.filter(
-        (frame) =>
-          !invalid.has(frame.frameId) &&
-          cdpTargetKey(selected.get(frame.frameId)!.target) === cdpTargetKey(batch.target),
-      );
-      if (!frames.length) return;
-      let fresh: Map<string, CdpFrame> | undefined;
-      if (frames.some((frame) => batch.before.has(frame.frameId))) {
-        try {
-          throwCaptureAborted(signal);
-          const reply = await sendToCdpTarget<{ frameTree?: CdpFrameTreeNode }>(
-            cdp,
-            batch.target,
-            "Page.getFrameTree",
-            {},
-          );
-          const tree = reply.frameTree
-            ? buildFrameGraph([{ target: batch.target, tree: reply.frameTree }])
-            : null;
-          if (tree) fresh = new Map(tree.frames.map((frame) => [frame.frameId, frame]));
-        } catch (error) {
-          throwCaptureAborted(signal);
-          if (isCaptureAbort(error)) throw error;
-        }
-      }
-      const docs = new Map(batch.documents.map((doc) => [doc.frame.frameId, doc]));
-      for (const frame of frames) {
-        throwCaptureAborted(signal);
-        const before = batch.before.get(frame.frameId);
-        const current = fresh?.get(frame.frameId);
-        const after =
-          before && current ? await readDocumentIdentity(cdp, current, signal) : undefined;
-        const doc = docs.get(frame.frameId);
-        const snapshotMismatch =
-          before &&
-          doc?.documentElementBackendNodeId !== undefined &&
-          before.documentElementBackendNodeId !== doc.documentElementBackendNodeId;
-        const changed =
-          before &&
-          (snapshotMismatch ||
-            (fresh && !current) ||
-            (after && !sameDocument(before, after)) ||
-            cdp.getAttachmentId?.(tabId) !== before.attachmentId);
-        if (changed || (before && !after)) {
-          invalid.add(frame.frameId);
-          issues.push({
-            target: frame.target,
-            frameId: frame.frameId,
-            stage: "identity",
-            reason: changed ? "document-changed" : "identity-unverified",
-          });
-        } else if (
-          before &&
-          after &&
-          (!doc || doc.documentElementBackendNodeId === before.documentElementBackendNodeId)
-        ) {
-          identities.set(frame.frameId, after);
-        } else {
-          issues.push({
-            target: frame.target,
-            frameId: frame.frameId,
-            stage: "identity",
-            reason: "identity-unverified",
-          });
-        }
-      }
-    },
-    signal,
-  );
   const children = new Map<string, string[]>();
   for (const frame of currentFrames) {
     if (!frame.parentFrameId) continue;
@@ -343,7 +248,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
     }
   }
   for (const frame of currentFrames) {
-    if (ownershipInvalid.has(frame.frameId))
+    if (invalid.has(frame.frameId))
       issues.push({
         target: frame.target,
         frameId: frame.frameId,
@@ -351,12 +256,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
         reason: "frame-ownership-unresolved",
       });
   }
-  if (invalid.has(rootFrameId))
-    throw new Error(
-      ownershipInvalid.has(rootFrameId)
-        ? "observation root document ownership is ambiguous"
-        : "observation document identity changed or could not be verified; observe again",
-    );
+  if (invalid.has(rootFrameId)) throw new Error("observation root document ownership is ambiguous");
   const frames = currentFrames.filter((frame) => !invalid.has(frame.frameId));
   const frameById = new Map(frames.map((frame) => [frame.frameId, frame]));
   const belongs = (frame: CdpFrame) => {
@@ -404,7 +304,6 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
     } = document;
     facts.push({
       frame,
-      identity: identities.get(document.frameId),
       index: fallback?.size ? { ...index, excludedBackendNodeIds: fallback } : index,
       domNodes,
       axNodes,

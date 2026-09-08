@@ -926,19 +926,29 @@ export async function captureVomObservation(
   );
   // Reserve space using the renderer's character-based token estimate. Like VOM
   // headers, this integrity notice remains visible even under a tiny token budget.
-  const geometryNotice = facts.issues.some((issue) => issue.stage === "geometry")
-    ? "@warning iframe geometry incomplete: some frame content has no top-level coordinates.\n"
-    : "";
+  const notices: string[] = [];
+  if (facts.issues.some((issue) => issue.stage === "geometry"))
+    notices.push(
+      "@warning iframe geometry incomplete: some frame content has no top-level coordinates.",
+    );
+  const incompleteStages = ["dom", "ax", "forms", "ownership"].filter((stage) =>
+    facts.issues.some((issue) => issue.stage === stage),
+  );
+  if (incompleteStages.length)
+    notices.push(
+      `@warning observation incomplete: some ${incompleteStages.join(", ")} data is unavailable or omitted.`,
+    );
+  const captureNotice = notices.join("\n");
   const rendered = renderVom(decoratedScene, {
     maxDepth: options.maxDepth,
     maxTokens:
-      !geometryNotice || options.maxTokens === undefined
+      !captureNotice || options.maxTokens === undefined
         ? options.maxTokens
-        : Math.max(0, options.maxTokens - Math.ceil(geometryNotice.length / 4)),
+        : Math.max(0, options.maxTokens - Math.ceil((captureNotice.length + 1) / 4)),
     redactValues: options.redactValues,
     activeRegionPolicy: options.activeRegionPolicy,
   });
-  if (geometryNotice) rendered.text += `\n${geometryNotice.trimEnd()}`;
+  if (captureNotice) rendered.text += `\n${captureNotice}`;
   throwIfAborted(options.signal, "observation");
   return projectRecordSafeObservation({
     rootFrameId: captured.rootFrameId ?? normalizedDocuments[0]?.frameId ?? "root",
