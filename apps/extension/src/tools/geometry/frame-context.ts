@@ -13,7 +13,7 @@ import {
   type Size,
 } from "../geometry";
 import { type CdpRunner, sendToCdpTarget } from "../shared";
-import type { CoordinateOwner, CssViewport, SnapshotProjection } from "./coordinate-types";
+import type { CoordinateOwner, CssViewport, SnapshotProjectionResult } from "./coordinate-types";
 
 export interface LayoutMetrics {
   cssVisualViewport?: { zoom?: number };
@@ -149,30 +149,41 @@ export class GeometryContext {
     ownerBackendNodeId: number,
     ancestorClips: Polygon[],
     viewport: Size,
-  ): Promise<SnapshotProjection | null> {
+  ): Promise<SnapshotProjectionResult> {
     const key = `${cdpTargetKey(source.target)}:${ownerBackendNodeId}`;
     let promise = this.snapshotOwners.get(key);
     if (!promise) {
       promise = this.snapshotOwner(source.target, ownerBackendNodeId);
       this.snapshotOwners.set(key, promise);
     }
-    const owner = await promise;
+    let owner: { quad: Quad; size: Size } | null;
+    try {
+      owner = await promise;
+    } catch (error) {
+      if (error && typeof error === "object" && "name" in error && error.name === "AbortError")
+        throw error;
+      console.debug("[bsk geometry] frame owner unavailable", error);
+      owner = null;
+    }
     return owner
       ? {
-          source,
-          geometry: {
-            sourceClips: [],
-            edges: [
-              {
-                sourceViewport: owner.size,
-                destinationQuad: owner.quad,
-                destinationClips: ancestorClips,
-              },
-            ],
-            topViewport: viewport,
+          status: "available",
+          projection: {
+            source,
+            geometry: {
+              sourceClips: [],
+              edges: [
+                {
+                  sourceViewport: owner.size,
+                  destinationQuad: owner.quad,
+                  destinationClips: ancestorClips,
+                },
+              ],
+              topViewport: viewport,
+            },
           },
         }
-      : null;
+      : { status: "unavailable", source, ownerBackendNodeId };
   }
 
   private async snapshotOwner(

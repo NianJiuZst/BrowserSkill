@@ -56,6 +56,9 @@ async function captureMissingFrameDocuments(
         geometry,
         target: frame.target,
       });
+      if (child.frameGeometryIssues?.length) {
+        (captured.frameGeometryIssues ??= []).push(...child.frameGeometryIssues);
+      }
       let projection: GeometryProjection | null = null;
       try {
         projection = await geometry.targetProjection(frame.frameId);

@@ -3147,7 +3147,9 @@ describe("handleSnapshot", () => {
     cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
   };
 
-  function makeFrameAwareDeps() {
+  function makeFrameAwareDeps(
+    ownerGeometry: "unavailable" | "available" | "clipped" = "unavailable",
+  ) {
     const strings = ["html", "body", "iframe", "button", "title", "Remote", "static", "auto"];
     const i = (value: string) => strings.indexOf(value);
     const styles = [i("static"), i("auto"), i("auto")];
@@ -3227,6 +3229,16 @@ describe("handleSnapshot", () => {
     ];
     const send = vi.fn(async (_tabId: number, method: string) => {
       if (method === "Page.getLayoutMetrics") return VP_METRICS;
+      if (ownerGeometry !== "unavailable") {
+        if (method === "DOM.getBoxModel") {
+          const x = ownerGeometry === "clipped" ? 10000 : 100;
+          return { model: { content: [x, 100, x + 400, 100, x + 400, 400, x, 400] } };
+        }
+        if (method === "DOM.resolveNode") return { object: { objectId: "owner" } };
+        if (method === "Runtime.callFunctionOn")
+          return { result: { value: { width: 400, height: 300 } } };
+        if (method === "Runtime.releaseObject") return {};
+      }
       if (method === "DOMSnapshot.enable" || method === "Accessibility.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") return snapshot;
       if (method === "Accessibility.getFullAXTree") return { nodes: mainAx };
@@ -3465,6 +3477,43 @@ describe("handleSnapshot", () => {
     expect(dumped).not.toContain("domNodes");
     expect(dumped).not.toContain("attrs");
     expect(result.text).toContain("•••");
+  });
+
+  it.each([
+    undefined,
+    100,
+    0,
+  ])("reports unavailable iframe geometry within the observation budget %s", async (maxTokens) => {
+    const result = await captureVomObservation(makeFrameAwareDeps().cdp, 4, "https://example.com", {
+      maxTokens,
+    });
+    expect(result.text.match(/@warning/g)).toHaveLength(1);
+    expect(result.text).toContain("iframe geometry incomplete");
+    expect(result.text.startsWith("@vom 1\n")).toBe(true);
+    if (maxTokens === undefined) {
+      expect(result.truncated).toBe(false);
+      expect(result.text).toContain("Frame action");
+      expect(result.matchNodes.find((node) => node.backendNodeId === 22)).toMatchObject({
+        rect: null,
+        localRect: { x: 20, y: 30, w: 120, h: 40 },
+      });
+    }
+    if (maxTokens === 100) expect(Math.ceil(result.text.length / 4)).toBeLessThanOrEqual(maxTokens);
+  });
+
+  it.each([
+    "available",
+    "clipped",
+  ] as const)("does not report successful %s geometry as an observation failure", async (ownerGeometry) => {
+    const result = await captureVomObservation(
+      makeFrameAwareDeps(ownerGeometry).cdp,
+      4,
+      "https://example.com",
+    );
+    expect(result.text).not.toContain("@warning");
+    const node = result.matchNodes.find((item) => item.backendNodeId === 22);
+    if (ownerGeometry === "clipped") expect(node?.rect).toBeNull();
+    else expect(node?.rect).toEqual({ x: 120, y: 130, w: 120, h: 40 });
   });
 
   it("keeps frames and rendered refs on the same frame identity", async () => {

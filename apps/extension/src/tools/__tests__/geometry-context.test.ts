@@ -60,15 +60,16 @@ describe("measurement geometry context", () => {
       width: 1000,
       height: 1000,
     });
+    if (projection.status !== "available") throw new Error("expected available projection");
     const input = snapshotViewportRect([17, 23, 120, 40], source, { x: 0, y: 0 });
-    expect(projectSnapshotRect(input!, projection!)).toEqual({
+    expect(projectSnapshotRect(input!, projection.projection)).toEqual({
       x: 73.75,
       y: 641.25,
       width: 150,
       height: 50,
     });
     const scrolled = snapshotViewportRect([17, 23, 120, 40], source, { x: 0, y: 10 });
-    expect(projectSnapshotRect(scrolled!, projection!)?.y).toBe(628.75);
+    expect(projectSnapshotRect(scrolled!, projection.projection)?.y).toBe(628.75);
     await context.snapshotProjection(source, 10, [], { width: 1000, height: 1000 });
     expect(cdp.calls.mock.calls.filter(([, method]) => method === "DOM.resolveNode")).toHaveLength(
       1,
@@ -118,7 +119,11 @@ describe("measurement geometry context", () => {
         width: 100,
         height: 100,
       }),
-    ).toBeNull();
+    ).toEqual({
+      status: "unavailable",
+      source: { target, frameId: "child" },
+      ownerBackendNodeId: 10,
+    });
   });
 
   it("keeps ancestor clips in target coordinates instead of applying nested offsets twice", async () => {
@@ -129,12 +134,13 @@ describe("measurement geometry context", () => {
       [rectPolygon({ x: 60, y: 620, w: 100, h: 100 })],
       { width: 1000, height: 1000 },
     );
+    if (projection.status !== "available") throw new Error("expected available projection");
     const input = snapshotViewportRect(
       [0, 0, 300, 200],
       { target, frameId: "nested" },
       { x: 0, y: 0 },
     );
-    expect(projectSnapshotRect(input!, projection!)).toEqual({
+    expect(projectSnapshotRect(input!, projection.projection)).toEqual({
       x: 60,
       y: 620,
       width: 100,

@@ -1340,6 +1340,7 @@ describe("sibling frame measurement scheduling", () => {
     expect(fixture.measured()).not.toContain(200);
     for (const id of [105, 102, 101, 100]) pending.get(id)!();
     const captured = await capture;
+    expect(captured.frameGeometryIssues).toEqual([]);
     expect(fixture.peak()).toBe(4);
     expect(fixture.active()).toBe(0);
     expect(fixture.measured()).toEqual([100, 101, 102, 103, 104, 105, 200]);
@@ -1360,6 +1361,18 @@ describe("sibling frame measurement scheduling", () => {
         throw new Error("owner replaced");
     });
     const captured = await captureViewModel(fixture.cdp, 4);
+    expect(captured.frameGeometryIssues).toEqual([
+      {
+        status: "unavailable",
+        source: { target: { tabId: 4 }, frameId: "frame-1" },
+        ownerBackendNodeId: 100,
+      },
+      {
+        status: "blocked",
+        source: { target: { tabId: 4 }, frameId: "frame-7" },
+        cause: captured.frameGeometryIssues?.[0],
+      },
+    ]);
     expect(fixture.measured()).not.toContain(200);
     expect(captured.iframeNodes.get(200)?.[0]).toMatchObject({
       tag: "body",

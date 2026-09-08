@@ -1133,12 +1133,21 @@ export async function captureVomObservation(
     captured,
     hoverProbes.surfaceProbes,
   );
+  // Reserve space using the renderer's character-based token estimate. Like VOM
+  // headers, this integrity notice remains visible even under a tiny token budget.
+  const geometryNotice = captured.frameGeometryIssues?.length
+    ? "@warning iframe geometry incomplete: some frame content has no top-level coordinates.\n"
+    : "";
   const rendered = renderVom(decoratedScene, {
     maxDepth: options.maxDepth,
-    maxTokens: options.maxTokens,
+    maxTokens:
+      !geometryNotice || options.maxTokens === undefined
+        ? options.maxTokens
+        : Math.max(0, options.maxTokens - Math.ceil(geometryNotice.length / 4)),
     redactValues: options.redactValues,
     activeRegionPolicy: options.activeRegionPolicy,
   });
+  if (geometryNotice) rendered.text += `\n${geometryNotice.trimEnd()}`;
   throwIfAborted(options.signal, "observation");
   return projectRecordSafeObservation({
     rootFrameId: captured.rootFrameId ?? normalizedDocuments[0]?.frameId ?? "root",

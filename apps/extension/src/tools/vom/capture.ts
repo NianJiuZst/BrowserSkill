@@ -9,8 +9,9 @@ import type { CdpTarget } from "@/browser-driver/frame-graph";
 import { evaluateHoverTrigger } from "@/lib/hover-trigger-policy";
 import { isOverlayHostNode, OVERLAY_HOST_SELECTOR } from "../../lib/overlay-bridge";
 import {
+  type FrameProjectionIssue,
+  type FrameProjectionState,
   projectSnapshotRect,
-  type SnapshotProjection,
   snapshotViewportRect,
 } from "../geometry/coordinate-types";
 import { cssViewport, GeometryContext, type LayoutMetrics } from "../geometry/frame-context";
@@ -77,6 +78,8 @@ export interface CapturedViewModel {
   /** Explicit DOMSnapshot frame ancestry; never inferred from backend node ids. */
   frameParentIds?: Map<string, string>;
   rootFrameId?: string;
+  /** Failed boundaries and descendants blocked by them; clipping is not a failure. */
+  frameGeometryIssues?: FrameProjectionIssue[];
   /** Backend node ids belonging to the agent overlay host + its shadow subtree. */
   excludedBackendNodeIds: Set<number>;
 }
@@ -351,7 +354,7 @@ interface ParseDocumentResult {
 interface FrameContext {
   frameId?: string;
   ownerFrameBackendNodeId: number | null;
-  projection: SnapshotProjection | null;
+  projection: FrameProjectionState;
   target: CdpTarget;
   scrollX: number;
   scrollY: number;
@@ -896,7 +899,9 @@ function parseDocumentNodes(
           localRect = { x, y, w, h };
         }
         const bounds =
-          input && context.projection ? projectSnapshotRect(input, context.projection) : null;
+          input && context.projection.status === "available"
+            ? projectSnapshotRect(input, context.projection.projection)
+            : null;
         rect = bounds ? { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height } : null;
       }
       paintOrder = dl?.paintOrders?.[li] ?? 0;
@@ -964,6 +969,7 @@ function parseDocumentNodes(
 }
 
 interface ParseFrameDocumentsResult {
+  frameGeometryIssues: FrameProjectionIssue[];
   iframeNodes: CapturedIframeNodes;
   frameOwnerBackendNodeIds: Map<string, number>;
   frameParentIds: Map<string, string>;
@@ -979,6 +985,7 @@ async function parseChildFrameDocuments(
   signal?: AbortSignal,
   visited = new Set<number>(),
 ): Promise<ParseFrameDocumentsResult> {
+  const frameGeometryIssues: FrameProjectionIssue[] = [];
   const iframeNodes: CapturedIframeNodes = new Map();
   const frameOwnerBackendNodeIds = new Map<string, number>();
   const frameParentIds = new Map<string, string>();
@@ -986,7 +993,13 @@ async function parseChildFrameDocuments(
   const parentDoc = documents[parentDocIndex];
   const cdi = sparseIndexMap(parentDoc?.nodes?.contentDocumentIndex);
   if (cdi.size === 0) {
-    return { iframeNodes, frameOwnerBackendNodeIds, frameParentIds, excludedBackendNodeIds };
+    return {
+      iframeNodes,
+      frameOwnerBackendNodeIds,
+      frameParentIds,
+      excludedBackendNodeIds,
+      frameGeometryIssues,
+    };
   }
 
   const parentBackendIds = parentDoc?.nodes?.backendNodeId ?? [];
@@ -995,17 +1008,26 @@ async function parseChildFrameDocuments(
     const childDoc = documents[childDocIndex];
     const iframeBackendId = parentBackendIds[nodeArrayIdx];
     if (visited.has(childDocIndex) || !childDoc || iframeBackendId === undefined) return [];
+    const source = { target: parentContext.target, frameId: snapshotFrameId(childDoc, strings) };
+    const parent = parentContext.projection;
+    const projection: FrameProjectionState =
+      parent.status === "available"
+        ? { status: "unavailable", source, ownerBackendNodeId: iframeBackendId }
+        : { status: "blocked", source, cause: parent.status === "blocked" ? parent.cause : parent };
     return [
       {
         childDocIndex,
         childDoc,
         iframeBackendId,
-        source: { target: parentContext.target, frameId: snapshotFrameId(childDoc, strings) },
-        projection: null as SnapshotProjection | null,
+        source,
+        projection: projection as FrameProjectionState,
       },
     ];
   });
-  const parentProjection = parentContext.projection?.geometry;
+  const parentProjection =
+    parentContext.projection.status === "available"
+      ? parentContext.projection.projection.geometry
+      : null;
   if (parentProjection) {
     // Measure only direct siblings. Recursion starts after these workers finish,
     // so descendants never hold or recursively acquire a measurement slot.
@@ -1014,10 +1036,10 @@ async function parseChildFrameDocuments(
       ? [edge.destinationQuad, ...(edge.destinationClips ?? [])]
       : parentProjection.sourceClips;
     let cursor = 0;
-    let aborted: unknown;
+    let failure: unknown;
     await Promise.all(
       Array.from({ length: Math.min(4, children.length) }, async () => {
-        while (cursor < children.length && !signal?.aborted && !aborted) {
+        while (cursor < children.length && !signal?.aborted && !failure) {
           const child = children[cursor++];
           try {
             // Owner quads are target-relative; do not apply the parent transform twice.
@@ -1028,20 +1050,20 @@ async function parseChildFrameDocuments(
               parentProjection.topViewport,
             );
           } catch (error) {
-            if (isAbortError(error)) aborted = error;
-            else console.debug("[bsk capture] frame owner geometry unavailable", error);
+            failure ??= error;
           }
         }
       }),
     );
     // Join all active reads, including object cleanup, before propagating abort.
-    if (aborted) throw aborted;
+    if (failure) throw failure;
   }
   throwIfAborted(signal);
 
   // Completion order must not change document traversal or result insertion order.
   for (const { childDocIndex, childDoc, iframeBackendId, source, projection } of children) {
     throwIfAborted(signal);
+    if (projection.status !== "available") frameGeometryIssues.push(projection);
     const childContext: FrameContext = {
       frameId: source.frameId,
       target: source.target,
@@ -1069,6 +1091,7 @@ async function parseChildFrameDocuments(
       signal,
       nextVisited,
     );
+    frameGeometryIssues.push(...nested.frameGeometryIssues);
     for (const [nestedFrameId, nestedNodes] of nested.iframeNodes) {
       iframeNodes.set(nestedFrameId, nestedNodes);
     }
@@ -1081,7 +1104,13 @@ async function parseChildFrameDocuments(
     for (const id of nested.excludedBackendNodeIds) excludedBackendNodeIds.add(id);
   }
 
-  return { iframeNodes, frameOwnerBackendNodeIds, frameParentIds, excludedBackendNodeIds };
+  return {
+    iframeNodes,
+    frameOwnerBackendNodeIds,
+    frameParentIds,
+    excludedBackendNodeIds,
+    frameGeometryIssues,
+  };
 }
 
 export async function captureViewModel(
@@ -1131,8 +1160,11 @@ export async function captureViewModel(
     ownerFrameBackendNodeId: null,
     target,
     projection: {
-      source: { target, frameId: snapshotFrameId(doc0, strings) },
-      geometry: { sourceClips: [], edges: [], topViewport: viewport },
+      status: "available",
+      projection: {
+        source: { target, frameId: snapshotFrameId(doc0, strings) },
+        geometry: { sourceClips: [], edges: [], topViewport: viewport },
+      },
     },
     scrollX,
     scrollY,
@@ -1174,6 +1206,7 @@ export async function captureViewModel(
     viewport,
     iframeNodes,
     frameNodes,
+    frameGeometryIssues: frameParsed.frameGeometryIssues,
     frameOwnerBackendNodeIds: frameParsed.frameOwnerBackendNodeIds,
     frameParentIds: frameParsed.frameParentIds,
     ...(topContext.frameId ? { rootFrameId: topContext.frameId } : {}),

@@ -50,6 +50,68 @@ function childSnapshot(frameId: string, backendNodeId: number) {
 }
 
 describe("captureFrameData", () => {
+  it("retains nested owner failures when merging a captured OOPIF", async () => {
+    const owner = ownerNode(10, 50);
+    const captured: CapturedViewModel = {
+      nodes: [owner],
+      viewport: { width: 1000, height: 800 },
+      iframeNodes: new Map(),
+      frameNodes: new Map([["main", [owner]]]),
+      rootFrameId: "main",
+      excludedBackendNodeIds: new Set(),
+    };
+    const child = childSnapshot("child", 101);
+    const nested = childSnapshot("nested", 201);
+    const document = child.documents[0];
+    const snapshot = {
+      strings: child.strings,
+      documents: [
+        {
+          ...document,
+          nodes: { ...document.nodes, contentDocumentIndex: { index: [1], value: [1] } },
+        },
+        nested.documents[0],
+      ],
+    };
+    const reply = async (_target: unknown, method: string) => {
+      if (method === "Page.getLayoutMetrics")
+        return { cssLayoutViewport: { clientWidth: 300, clientHeight: 200 } };
+      if (method === "DOMSnapshot.captureSnapshot") return snapshot;
+      if (method === "DOM.getBoxModel")
+        return { model: { content: [50, 100, 350, 100, 350, 300, 50, 300] } };
+      if (method === "DOM.resolveNode") throw new Error("nested owner replaced");
+      return {};
+    };
+    const cdp: CdpRunner = {
+      send: vi.fn(reply) as CdpRunner["send"],
+      sendToTarget: vi.fn(reply) as NonNullable<CdpRunner["sendToTarget"]>,
+      getFrameGraph: vi.fn(async () => ({
+        rootFrameId: "main",
+        frames: [
+          { frameId: "main", target: { tabId: 4 } },
+          {
+            frameId: "child",
+            parentFrameId: "main",
+            ownerBackendNodeId: 10,
+            target: { tabId: 4, sessionId: "child-session" },
+          },
+        ],
+      })),
+    };
+    await captureFrameData(cdp, 4, captured);
+    expect(captured.frameGeometryIssues).toEqual([
+      {
+        status: "unavailable",
+        source: { target: { tabId: 4, sessionId: "child-session" }, frameId: "nested" },
+        ownerBackendNodeId: 101,
+      },
+    ]);
+    expect(captured.frameNodes?.get("nested")?.[1]).toMatchObject({
+      rect: null,
+      localRect: { x: 10, y: 20, w: 100, h: 40 },
+    });
+  });
+
   it("captures and positions multiple OOPIF documents missing from the root snapshot", async () => {
     const leftOwner = ownerNode(10, 50);
     const rightOwner = ownerNode(20, 500);

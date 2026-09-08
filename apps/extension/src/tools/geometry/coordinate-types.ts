@@ -18,6 +18,24 @@ export interface SnapshotProjection {
   geometry: GeometryProjection;
 }
 
+/** A failed owner read is different from a successfully projected, clipped-out rect. */
+export interface UnavailableFrameProjection {
+  status: "unavailable";
+  source: CoordinateOwner;
+  ownerBackendNodeId: number;
+}
+
+export type SnapshotProjectionResult =
+  | { status: "available"; projection: SnapshotProjection }
+  | UnavailableFrameProjection;
+
+/** Descendants inherit the failed boundary without attempting another owner read. */
+export type FrameProjectionIssue =
+  | UnavailableFrameProjection
+  | { status: "blocked"; source: CoordinateOwner; cause: UnavailableFrameProjection };
+
+export type FrameProjectionState = SnapshotProjectionResult | FrameProjectionIssue;
+
 /** DOMSnapshot bounds are document-relative CSS pixels, independent of raster DPR. */
 export function snapshotViewportRect(
   bounds: number[],
