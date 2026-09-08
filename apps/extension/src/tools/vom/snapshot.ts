@@ -1,4 +1,4 @@
-import { captureCheckpoint } from "./capture-abort";
+import { createCaptureCheckpoint } from "./capture-abort";
 import type { CapturedNode } from "./capture-types";
 import type { DecodedDocument, DecodedNode } from "./facts";
 export const REQUESTED_STYLES = [
@@ -102,6 +102,7 @@ export async function decodeDocument(
   strings: string[],
   signal?: AbortSignal,
 ): Promise<DecodedDocument> {
+  const checkpoint = createCaptureCheckpoint(signal);
   const dn = doc.nodes;
   const dl = doc.layout;
   if (!dn?.backendNodeId) {
@@ -111,7 +112,10 @@ export async function decodeDocument(
   const count = dn.backendNodeId.length;
   const layoutByNode = new Map<number, number>();
   for (let i = 0; i < (dl?.nodeIndex?.length ?? 0); i++) {
-    if (i % 256 === 0) await captureCheckpoint(signal);
+    if (i % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     layoutByNode.set(dl!.nodeIndex![i], i);
   }
 
@@ -126,7 +130,10 @@ export async function decodeDocument(
   const nodeTextContent = new Map<number, string[]>();
   if (dn.nodeValue) {
     for (let n = 0; n < count; n++) {
-      if (n % 256 === 0) await captureCheckpoint(signal);
+      if (n % 256 === 0) {
+        const pending = checkpoint();
+        if (pending) await pending;
+      }
       const nvIdx = dn.nodeValue[n] ?? -1;
       if (nvIdx < 0) continue;
       const text = str(strings, nvIdx).trim();
@@ -143,7 +150,10 @@ export async function decodeDocument(
   // Decode fields without assigning a coordinate projection or semantic policy.
   const nodes: DecodedNode[] = [];
   for (let n = 0; n < count; n++) {
-    if (n % 256 === 0) await captureCheckpoint(signal);
+    if (n % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     const backendNodeId = dn.backendNodeId[n];
     const parentIdx = dn.parentIndex?.[n] ?? -1;
     const parentBackendNodeId = parentIdx >= 0 ? (dn.backendNodeId[parentIdx] ?? null) : null;

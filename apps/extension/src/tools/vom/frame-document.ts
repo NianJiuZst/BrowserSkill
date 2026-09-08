@@ -4,7 +4,7 @@ import {
   type CdpTarget,
   cdpTargetKey,
 } from "@/browser-driver/frame-graph";
-import { captureCheckpoint } from "./capture-abort";
+import { createCaptureCheckpoint } from "./capture-abort";
 import type { CapturedNode } from "./capture-types";
 
 export interface FrameOwnedAxNode {
@@ -88,6 +88,7 @@ export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
   captured: FrameDomInput,
   signal?: AbortSignal,
 ): Promise<FrameDocument<T>[]> {
+  const checkpoint = createCaptureCheckpoint(signal);
   let work = 0;
   const frames = frameList(graph, batches, captured);
   const frameById = new Map(frames.map((frame) => [frame.frameId, frame]));
@@ -97,7 +98,10 @@ export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
   const backendOwner = new Map<string, string>();
   for (const frame of frames) {
     for (const node of domNodesForFrame(frame.frameId)) {
-      if (work++ % 256 === 0) await captureCheckpoint(signal);
+      if (work++ % 256 === 0) {
+        const pending = checkpoint();
+        if (pending) await pending;
+      }
       backendOwner.set(targetBackendKey(frame.target, node.backendNodeId), frame.frameId);
     }
   }
@@ -106,17 +110,23 @@ export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
   for (const batch of batches) {
     const nodeById = new Map<string, T>();
     for (const node of batch.nodes) {
-      if (work++ % 256 === 0) await captureCheckpoint(signal);
+      if (work++ % 256 === 0) {
+        const pending = checkpoint();
+        if (pending) await pending;
+      }
       nodeById.set(node.nodeId, node);
     }
     const ownershipByNodeId = new Map<string, Ownership>();
-    const resolveOwnership = async (node: T): Promise<Ownership> => {
+    for (const node of batch.nodes) {
       const path: T[] = [];
       const visiting = new Set<string>();
       let current: T | undefined = node;
       let ownership: Ownership = { frameId: batch.frame.frameId, strength: 1 };
       while (current) {
-        if (work++ % 256 === 0) await captureCheckpoint(signal);
+        if (work++ % 256 === 0) {
+          const pending = checkpoint();
+          if (pending) await pending;
+        }
         const cached = ownershipByNodeId.get(current.nodeId);
         if (cached) {
           ownership = cached;
@@ -142,17 +152,14 @@ export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
         current = current.parentId ? nodeById.get(current.parentId) : undefined;
       }
       for (let i = path.length - 1; i >= 0; i--) {
-        if (work++ % 256 === 0) await captureCheckpoint(signal);
+        if (work++ % 256 === 0) {
+          const pending = checkpoint();
+          if (pending) await pending;
+        }
         ownership = { frameId: ownership.frameId, strength: Math.min(2, ownership.strength) };
         ownershipByNodeId.set(path[i].nodeId, ownership);
       }
       if (!ownershipByNodeId.has(node.nodeId)) ownershipByNodeId.set(node.nodeId, ownership);
-      return ownership;
-    };
-
-    for (const node of batch.nodes) {
-      if (work++ % 256 === 0) await captureCheckpoint(signal);
-      const ownership = await resolveOwnership(node);
       const key = targetNodeKey(batch.frame.target, node.nodeId);
       const existing = candidates.get(key);
       if (!existing || ownership.strength > existing.ownership.strength) {
@@ -166,7 +173,10 @@ export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
   );
   const axNodesByFrame = new Map<string, T[]>();
   for (const candidate of candidates.values()) {
-    if (work++ % 256 === 0) await captureCheckpoint(signal);
+    if (work++ % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     const { node, target, ownership } = candidate;
     const parentFrameId = node.parentId
       ? ownershipByTargetNode.get(targetNodeKey(target, node.parentId))

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OVERLAY_HOST_MARKER_ATTR } from "@/lib/overlay-bridge";
+import { createCaptureCheckpoint } from "../capture-abort";
 import { buildDocumentIndex, type DecodedNode } from "../facts";
 import { decodeDocument, REQUESTED_STYLES } from "../snapshot";
 
@@ -90,7 +91,23 @@ describe("document facts", () => {
     expect(nodes[0]).not.toHaveProperty("excluded");
   });
 
-  it("yields during large inputs so cancellation interrupts indexing", async () => {
+  it("keeps short blocks synchronous and checks cancellation after yielding", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      const controller = new AbortController();
+      const checkpoint = createCaptureCheckpoint(controller.signal);
+      for (let i = 0; i < 20; i++) expect(checkpoint()).toBeUndefined();
+      clock.mockReturnValue(9);
+      const pending = checkpoint();
+      expect(pending).toBeInstanceOf(Promise);
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("checks cancellation at bounded indexing blocks", async () => {
     const controller = new AbortController();
     const input = Array.from({ length: 100_000 }, (_, i) => node(i, i ? i - 1 : null));
     let reads = 0;

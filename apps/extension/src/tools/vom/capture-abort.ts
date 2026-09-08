@@ -16,17 +16,25 @@ export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw captureAbortError();
 }
 
-/** Called only at bounded block boundaries, not once per node. */
-export async function captureCheckpoint(signal?: AbortSignal): Promise<void> {
+/** Check at bounded work blocks; yield only after a processing slice is spent.
+ * Each caller owns its deadline, so unrelated captures do not share state. */
+export function createCaptureCheckpoint(signal?: AbortSignal): () => Promise<void> | undefined {
   throwIfAborted(signal);
-  await new Promise<void>((resolve) => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => {
-      channel.port1.close();
-      channel.port2.close();
-      resolve();
-    };
-    channel.port2.postMessage(null);
-  });
-  throwIfAborted(signal);
+  let deadline = performance.now() + 8;
+  return () => {
+    throwIfAborted(signal);
+    if (performance.now() < deadline) return;
+    return new Promise<void>((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolve();
+      };
+      channel.port2.postMessage(null);
+    }).then(() => {
+      throwIfAborted(signal);
+      deadline = performance.now() + 8;
+    });
+  };
 }

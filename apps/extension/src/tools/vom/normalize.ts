@@ -4,7 +4,7 @@ import {
   projectSnapshotRect,
   snapshotViewportRect,
 } from "../geometry/coordinate-types";
-import { captureCheckpoint } from "./capture-abort";
+import { createCaptureCheckpoint } from "./capture-abort";
 import { buildDocumentIndex, type DocumentIndex, type NodeFacts } from "./facts";
 import { decodeDocument, type SnapshotDocument } from "./snapshot";
 
@@ -30,9 +30,13 @@ export async function normalizeDocument(
   signal?: AbortSignal,
 ): Promise<NormalizedDocument> {
   const decoded = await decodeDocument(doc, strings, signal);
+  const checkpoint = createCaptureCheckpoint(signal);
   const nodes: NodeFacts[] = [];
   for (let i = 0; i < decoded.nodes.length; i++) {
-    if (i % 256 === 0) await captureCheckpoint(signal);
+    if (i % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     const node = decoded.nodes[i];
     const input = snapshotViewportRect(
       node.layout?.bounds ?? [],

@@ -1,5 +1,5 @@
 import { isOverlayHostNode } from "@/lib/overlay-bridge";
-import { captureCheckpoint } from "./capture-abort";
+import { createCaptureCheckpoint } from "./capture-abort";
 import type { CapturedNode } from "./capture-types";
 
 /** Bounds retain their snapshot document CSS units until normalization. */
@@ -34,24 +34,34 @@ export async function buildDocumentIndex<T extends DecodedNode>(
   input: readonly T[],
   signal?: AbortSignal,
 ): Promise<DocumentIndex<T>> {
+  const checkpoint = createCaptureCheckpoint(signal);
   const nodes = new Map<number, T>();
   const overlayByNode = new Map<number, boolean>();
   const excludedBackendNodeIds = new Set<number>();
   for (let i = 0; i < input.length; i++) {
-    if (i % 256 === 0) await captureCheckpoint(signal);
+    if (i % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     const node = input[i];
     nodes.set(node.backendNodeId, node);
   }
   let work = 0;
   for (const node of input) {
-    if (work++ % 256 === 0) await captureCheckpoint(signal);
+    if (work++ % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     if (overlayByNode.has(node.backendNodeId)) continue;
     const path: DecodedNode[] = [];
     const visiting = new Set<number>();
     let current: DecodedNode | undefined = node;
     let overlay = false;
     while (current && !overlayByNode.has(current.backendNodeId)) {
-      if (work++ % 256 === 0) await captureCheckpoint(signal);
+      if (work++ % 256 === 0) {
+        const pending = checkpoint();
+        if (pending) await pending;
+      }
       if (visiting.has(current.backendNodeId)) {
         // Only an overlay inside the cycle may mark the cycle and its descendants.
         overlay = path
@@ -70,7 +80,10 @@ export async function buildDocumentIndex<T extends DecodedNode>(
     if (current && overlayByNode.has(current.backendNodeId))
       overlay = overlayByNode.get(current.backendNodeId)!;
     for (let i = path.length - 1; i >= 0; i--) {
-      if (work++ % 256 === 0) await captureCheckpoint(signal);
+      if (work++ % 256 === 0) {
+        const pending = checkpoint();
+        if (pending) await pending;
+      }
       const item = path[i];
       overlay = overlay || isOverlayHostNode(item.tag, Object.keys(item.attrs));
       overlayByNode.set(item.backendNodeId, overlay);
