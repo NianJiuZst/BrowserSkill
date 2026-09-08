@@ -47,6 +47,7 @@ export async function readDocumentIdentity(
       documentElementBackendNodeId: backendNodeId,
     };
   } catch (error) {
+    throwCaptureAborted(signal);
     if (isCaptureAbort(error)) throw error;
     return undefined;
   } finally {
@@ -54,6 +55,7 @@ export async function readDocumentIdentity(
       await sendToCdpTarget(cdp, frame.target, "Runtime.releaseObject", { objectId }).catch(
         () => {},
       );
+    throwCaptureAborted(signal);
   }
 }
 
