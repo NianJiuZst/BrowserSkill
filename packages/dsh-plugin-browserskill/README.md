@@ -84,8 +84,10 @@ profile, the default location is `~/.dsh/profiles/web/cordis.patch.yml`. If you 
 `DSH_HOME`, use `$DSH_HOME/profiles/web/cordis.patch.yml` instead. Replace `web` with
 your profile name as needed.
 
-Add the following entry to the file's patch list, or edit the existing
-`id: browserskill` entry. This overrides the plugin registered by the installed bundle:
+If the file contains only comments and `[]`, keep the comments and replace `[]`
+with the YAML below. If it already contains patch entries, add this entry to the
+existing list or edit its existing `id: browserskill` entry. Keep a single
+top-level YAML list. This overrides the plugin registered by the installed bundle:
 
 ```yaml
 - id: browserskill
@@ -101,7 +103,13 @@ Add the following entry to the file's patch list, or edit the existing
 
 Change `bskPath` to the full path of your CLI binary if it is not on dsh's `PATH`.
 A patch replaces the entry's entire `config` object, so keep all overrides you need
-together in that object. Restart the profile to apply the configuration.
+together in that object.
+
+Configuration changes follow `dsh.profile.patchReload` in the profile's
+`package.json`: `live` (the default for `web`) applies changes when you save the
+patch file; `startup` requires restarting the profile. Restart after upgrading
+the plugin in either case.
+
 All fields are optional; omitted fields use the defaults below:
 
 | Option | Default | Purpose |
