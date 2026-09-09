@@ -102,6 +102,7 @@ const ACTION_ROUTES: Record<string, readonly [string, string]> = {
   "inspect.network": ["browser_inspect", "network"],
   "interact.click": ["browser_interact", "click"],
   "interact.hover": ["browser_interact", "hover"],
+  "interact.scroll-to": ["browser_interact", "scroll-to"],
   "interact.focus": ["browser_interact", "focus"],
   "interact.blur": ["browser_interact", "blur"],
   "interact.fill": ["browser_interact", "fill"],
@@ -202,7 +203,7 @@ const EXPECTED_ACTIONS = {
   browser_session: ["start", "stop", "list"],
   browser_page: ["navigate", "back", "forward", "reload", "wait"],
   browser_inspect: ["observe", "snapshot", "html", "screenshot", "console", "network"],
-  browser_interact: ["click", "hover", "focus", "blur", "fill", "select", "press"],
+  browser_interact: ["click", "hover", "scroll-to", "focus", "blur", "fill", "select", "press"],
   browser_tabs: ["list", "create", "select", "close", "borrow", "return"],
   browser_assist: ["resize", "emulate", "request-help"],
 } as const;
@@ -540,6 +541,7 @@ describe("interaction tools", () => {
   it.each([
     "focus",
     "blur",
+    "scroll-to",
   ] as const)("interact.%s validates arguments and session ownership before running", async (action) => {
     const { tools, calls } = setup({ "session start": START_REPLY("s1") });
     await startSession(tools);
@@ -553,6 +555,30 @@ describe("interaction tools", () => {
       /session/i,
     );
     expect(calls).toHaveLength(1);
+  });
+
+  it.each(["@e3", "#target"])("interact.scroll-to maps %s, bounds and timeout", async (target) => {
+    const { tools, calls } = setup({
+      "session start": START_REPLY("s1"),
+      "scroll-to": { tab_id: 7, x: 10, y: 20, width: 100, height: 80 },
+    });
+    await startSession(tools);
+    expect(
+      await tools
+        .get("interact.scroll-to")
+        ?.execute({ target, tabId: 7, timeoutMs: 150_000 }, makeExec()),
+    ).toEqual({ session: "s1", tabId: 7, x: 10, y: 20, width: 100, height: 80 });
+    expect(calls[1].args).toEqual([
+      "scroll-to",
+      "--session",
+      "s1",
+      "--tab-id",
+      "7",
+      "--timeout",
+      "150000ms",
+      target,
+    ]);
+    expect(calls[1].options.timeoutMs).toBe(165_000);
   });
 
   it("interact.fill passes value and --no-clear", async () => {
