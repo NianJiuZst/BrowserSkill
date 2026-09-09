@@ -5,7 +5,7 @@ import { OVERLAY_HOST_MARKER_ATTR } from "@/lib/overlay-bridge";
 import type { CdpRunner } from "../../shared";
 import { captureObservationFacts, semanticCapture } from "../capture-coordinator";
 import { buildSemanticGraph } from "../semantic-graph/build";
-import { REQUESTED_STYLES } from "../snapshot";
+import { REQUESTED_STYLES, type SnapshotReply } from "../snapshot";
 
 function fixture(
   options: { frames?: CdpFrame[]; fail?: string; omitDocument?: string; overlay?: string } = {},
@@ -43,7 +43,11 @@ function fixture(
         throw new Error("fixture failure");
       let result: unknown = {};
       if (method === "Page.getLayoutMetrics")
-        result = { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
+        result = {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
+        };
       if (method === "DOMSnapshot.captureSnapshot") {
         expect((params as { computedStyles: unknown }).computedStyles).toEqual(REQUESTED_STYLES);
         result = {
@@ -74,6 +78,8 @@ function fixture(
               const children = localFrames.filter((f) => f.parentFrameId === frame.frameId);
 
               return {
+                scrollOffsetX: 0,
+                scrollOffsetY: 0,
                 frameId: frame.frameId,
                 nodes: {
                   backendNodeId: [
@@ -140,6 +146,35 @@ function fixture(
 }
 
 describe("captureObservationFacts", () => {
+  it("normalizes snapshot-owned root scroll instead of mixing in stale CSS scroll", async () => {
+    const { cdp } = fixture({ frames: [{ frameId: "main", target: { tabId: 4 } }] });
+    const original = cdp.sendToTarget!;
+    cdp.sendToTarget = async (target, method, params) => {
+      if (method === "Page.getLayoutMetrics")
+        return {
+          visualViewport: { clientWidth: 2000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 999, pageY: 999 },
+        } as never;
+      const reply = await original(target, method, params);
+      if (method === "DOMSnapshot.captureSnapshot") {
+        const doc = (reply as SnapshotReply).documents![0];
+        doc.scrollOffsetX = 40;
+        doc.scrollOffsetY = 200;
+        doc.layout!.bounds![1] = [200, 800, 240, 80];
+      }
+      return reply as never;
+    };
+    cdp.send = (tabId, method, params) => cdp.sendToTarget!({ tabId }, method, params);
+    const facts = await captureObservationFacts(cdp, 4);
+    expect(facts.documents[0].domNodes.find((node) => node.backendNodeId === 2)).toMatchObject({
+      localRect: { x: 80, y: 300, w: 120, h: 40 },
+      rect: { x: 80, y: 300, w: 120, h: 40 },
+      rendered: true,
+    });
+    expect(facts.issues).toEqual([]);
+  });
+
   it("collects each target once and scopes equal backend IDs", async () => {
     const { cdp, logs } = fixture();
     const facts = await captureObservationFacts(cdp, 4);
@@ -329,6 +364,8 @@ function childSnapshot(frameId: string, backendNodeId: number) {
     strings,
     documents: [
       {
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
         frameId,
         nodes: {
           parentIndex: [-1, 0],
@@ -357,7 +394,11 @@ describe("OOPIF capture", () => {
   it("captures and positions multiple OOPIF documents missing from the root snapshot", async () => {
     const sendToTarget = vi.fn(async (target, method) => {
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 300, clientHeight: 200, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 300, clientHeight: 200, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable" || method === "Accessibility.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -379,7 +420,11 @@ describe("OOPIF capture", () => {
           return { model: { content: [x, 100, x + 300, 100, x + 300, 300, x, 300] } };
         }
         if (method === "Page.getLayoutMetrics") {
-          return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
+          return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
+            cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
+          };
         }
         throw new Error(`unexpected root ${method}`);
       }) as CdpRunner["send"],
@@ -457,7 +502,11 @@ describe("OOPIF capture", () => {
     };
     const reply = async (_target: unknown, method: string) => {
       if (method === "Page.getLayoutMetrics")
-        return { cssLayoutViewport: { clientWidth: 300, clientHeight: 200 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 300, clientHeight: 200 },
+        };
       if (method === "DOMSnapshot.captureSnapshot")
         return typeof _target === "number" ? childSnapshot("main", 11) : snapshot;
       if (method === "DOM.getBoxModel")
@@ -515,7 +564,11 @@ describe("OOPIF capture", () => {
         if (method === "Accessibility.getFullAXTree") return { nodes: [] };
         if (method === "DOM.getBoxModel") throw new Error("owner geometry unavailable");
         if (method === "Page.getLayoutMetrics") {
-          return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
+          return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
+            cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
+          };
         }
         throw new Error(`unexpected root ${method}`);
       }) as CdpRunner["send"],
@@ -558,7 +611,7 @@ describe("OOPIF capture", () => {
       expect.objectContaining({ backendDOMNodeId: 101, frameId: "child" }),
     ]);
     expect(childDocument?.domNodes.find((node) => node.backendNodeId === 101)).toEqual(
-      expect.objectContaining({ rect: null, localRect: { x: 10, y: 20, w: 100, h: 40 } }),
+      expect.objectContaining({ rect: null, localRect: null, rendered: true }),
     );
   });
 });
@@ -568,6 +621,8 @@ function siblingCaptureFixture(
   beforeReply: (method: string, params: Record<string, unknown>) => Promise<void> = async () => {},
 ) {
   const document = (id: number, owners: number[], childIndexes: number[]) => ({
+    scrollOffsetX: 0,
+    scrollOffsetY: 0,
     frameId: `frame-${id}`,
     nodes: {
       parentIndex: [-1, ...owners.map(() => 0)],
@@ -599,7 +654,11 @@ function siblingCaptureFixture(
       await beforeReply(method, args);
       if (method === "DOMSnapshot.captureSnapshot") return snapshot;
       if (method === "Page.getLayoutMetrics")
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
+        };
       if (method === "DOM.getBoxModel")
         return { model: { content: [0, 0, 200, 0, 200, 100, 0, 100] } };
       if (method === "DOM.resolveNode") return { object: { objectId: String(args.backendNodeId) } };
@@ -803,7 +862,11 @@ describe("snapshot document provenance", () => {
         (method === "DOMSnapshot.captureSnapshot"
           ? { ...f.snapshot, documents: [f.snapshot.documents[1]] }
           : method === "Page.getLayoutMetrics"
-            ? { cssLayoutViewport: { clientWidth: 200, clientHeight: 100 } }
+            ? {
+                visualViewport: { clientWidth: 1000 },
+                cssVisualViewport: { clientWidth: 1000 },
+                cssLayoutViewport: { clientWidth: 200, clientHeight: 100 },
+              }
             : {}) as T,
     };
     const facts = await captureObservationFacts(cdp, 4);

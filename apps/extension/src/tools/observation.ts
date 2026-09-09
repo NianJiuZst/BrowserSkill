@@ -929,7 +929,7 @@ export async function captureVomObservation(
   const notices: string[] = [];
   if (facts.issues.some((issue) => issue.stage === "geometry"))
     notices.push(
-      "@warning iframe geometry incomplete: some frame content has no top-level coordinates.",
+      "@warning geometry incomplete: some page or frame content has no top-level coordinates.",
     );
   const incompleteStages = ["dom", "ax", "forms", "ownership"].filter((stage) =>
     facts.issues.some((issue) => issue.stage === stage),

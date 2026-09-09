@@ -2690,6 +2690,8 @@ describe("handleSnapshot", () => {
           strings,
           documents: [
             {
+              scrollOffsetX: 0,
+              scrollOffsetY: 0,
               frameId: "root",
               nodes: {
                 parentIndex: [-1, 0],
@@ -2786,6 +2788,8 @@ describe("handleSnapshot", () => {
           strings,
           documents: [
             {
+              scrollOffsetX: 0,
+              scrollOffsetY: 0,
               frameId: "root",
               nodes: {
                 parentIndex: [-1, 0],
@@ -2885,6 +2889,8 @@ describe("handleSnapshot", () => {
           strings,
           documents: [
             {
+              scrollOffsetX: 0,
+              scrollOffsetY: 0,
               frameId: "root",
               nodes: {
                 parentIndex: [-1, 0],
@@ -3154,6 +3160,8 @@ describe("handleSnapshot", () => {
       strings: S,
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 2],
@@ -3212,6 +3220,8 @@ describe("handleSnapshot", () => {
       strings: S,
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 1, 1, 1],
@@ -3371,7 +3381,11 @@ describe("handleSnapshot", () => {
     });
     const sendToTarget = vi.fn(async (_target, method: string) => {
       if (method === "Page.getLayoutMetrics" && ownerGeometry !== "unavailable")
-        return { cssLayoutViewport: { clientWidth: 400, clientHeight: 300 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 400, clientHeight: 300 },
+        };
       if (method === "Accessibility.enable" || method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot")
         return { ...snapshot, documents: [snapshot.documents[1]] };
@@ -3414,6 +3428,8 @@ describe("handleSnapshot", () => {
       strings: ["body", "a", "href", "//outside.test/docs", "https://page.test/start"],
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "main",
           ...(hasSnapshotUrl ? { documentURL: 4 } : {}),
           nodes: {
@@ -3535,6 +3551,8 @@ describe("handleSnapshot", () => {
       strings,
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 1, 3],
@@ -3685,7 +3703,7 @@ describe("handleSnapshot", () => {
       expect(result.text).toContain("Frame action");
       expect(result.matchNodes.find((node) => node.backendNodeId === 22)).toMatchObject({
         rect: null,
-        localRect: { x: 20, y: 30, w: 120, h: 40 },
+        localRect: null,
       });
     }
     if (maxTokens === 100) expect(Math.ceil(result.text.length / 4)).toBeLessThanOrEqual(maxTokens);
@@ -3774,7 +3792,7 @@ describe("handleSnapshot", () => {
     expect(result.matchNodes.find((node) => node.backendNodeId === 22)).toMatchObject({
       frameId: "child",
       tag: "button",
-      localRect: { x: 20, y: 30, w: 120, h: 40 },
+      localRect: null,
     });
     expect(result.refs.find((ref) => ref.backendNodeId === 22)).toMatchObject({
       frameId: "child",
@@ -4118,6 +4136,8 @@ describe("handleSnapshot", () => {
       strings: S,
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "root",
           nodes: {
             parentIndex: [-1, 0, 1, 0, 3, 4, 5],

@@ -5,9 +5,14 @@ import {
   type FrameProjectionState,
   projectSnapshotRect,
   type SnapshotCoordinates,
+  snapshotCoordinates,
   snapshotViewportRect,
 } from "../geometry/coordinate-types";
-import { cssViewport, GeometryContext } from "../geometry/frame-context";
+import {
+  GeometryContext,
+  type LayoutMetrics,
+  snapshotLayoutScale,
+} from "../geometry/frame-context";
 import {
   createCaptureCheckpoint,
   isAbortError as isCaptureAbort,
@@ -28,7 +33,6 @@ export interface FrameContext {
   targetProjection?: GeometryProjection | null;
   target: CdpTarget;
   coordinates: SnapshotCoordinates | null;
-  layoutUnitsPerCssPixel: number | null;
 }
 
 export interface NormalizedDocument {
@@ -137,17 +141,20 @@ export async function normalizeSnapshot(
     }
     sources.set(id, doc);
   }
-  let viewport: Viewport = { width: 0, height: 0 };
-  let scrollX = 0,
-    scrollY = 0;
+  let metrics: LayoutMetrics = {};
   try {
-    const measured = cssViewport(await geometry.layoutMetrics(target));
-    viewport = { width: measured.width, height: measured.height };
-    scrollX = measured.scrollX;
-    scrollY = measured.scrollY;
+    metrics = await geometry.layoutMetrics(target);
   } catch (error) {
     if (isCaptureAbort(error)) throw error;
   }
+  const viewport: Viewport = {
+    width: metrics.cssLayoutViewport?.clientWidth ?? 0,
+    height: metrics.cssLayoutViewport?.clientHeight ?? 0,
+  };
+  const layoutUnitsPerCssPixel = snapshotLayoutScale(metrics);
+  const viewportAvailable = [viewport.width, viewport.height].every(
+    (size) => Number.isFinite(size) && size > 0,
+  );
 
   const children = new Map<string, CdpFrame[]>();
   const pending: CdpFrame[] = [];
@@ -193,12 +200,24 @@ export async function normalizeSnapshot(
     const doc = sources.get(frame.frameId);
     if (!doc) continue;
     const source = { target, frameId: frame.frameId };
-    const state: FrameProjectionState | null =
+    const coordinates = snapshotCoordinates(
+      doc,
+      layoutUnitsPerCssPixel,
       frame.frameId === rootFrameId
-        ? {
-            status: "available",
-            projection: { source, geometry: { sourceClips: [], edges: [], topViewport: viewport } },
-          }
+        ? { x: metrics.cssLayoutViewport?.pageX, y: metrics.cssLayoutViewport?.pageY }
+        : undefined,
+    );
+    let state: FrameProjectionState | null =
+      frame.frameId === rootFrameId
+        ? viewportAvailable && coordinates
+          ? {
+              status: "available",
+              projection: {
+                source,
+                geometry: { sourceClips: [], edges: [], topViewport: viewport },
+              },
+            }
+          : { status: "unavailable", source, reason: "snapshot-coordinates-unavailable" }
         : (projections.get(frame.frameId) ?? null);
     if (!state && frame.frameId !== rootFrameId)
       issues.push({
@@ -207,6 +226,8 @@ export async function normalizeSnapshot(
         stage: "ownership",
         reason: "frame-ownership-unresolved",
       });
+    if (!coordinates && (!state || state.status === "available"))
+      state = { status: "unavailable", source, reason: "snapshot-coordinates-unavailable" };
     projections.set(frame.frameId, state);
     const projection = state?.status === "available" ? state.projection : null;
     if (!projection || (target.sessionId && !targetProjection))
@@ -251,6 +272,14 @@ export async function normalizeSnapshot(
             projections.set(child.frameId, null);
             continue;
           }
+          if (!snapshotCoordinates(sources.get(child.frameId)!, layoutUnitsPerCssPixel)) {
+            projections.set(child.frameId, {
+              status: "unavailable",
+              source: childSource,
+              reason: "snapshot-coordinates-unavailable",
+            });
+            continue;
+          }
           try {
             projections.set(
               child.frameId,
@@ -279,8 +308,7 @@ export async function normalizeSnapshot(
         projection: state,
         target,
         ...(target.sessionId ? { targetProjection } : {}),
-        scrollX: doc.scrollOffsetX ?? (frame.frameId === rootFrameId ? scrollX : 0),
-        scrollY: doc.scrollOffsetY ?? (frame.frameId === rootFrameId ? scrollY : 0),
+        coordinates,
       },
       signal,
     );

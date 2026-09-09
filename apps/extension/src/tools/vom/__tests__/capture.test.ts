@@ -215,7 +215,11 @@ function makeCdp(snapshot: unknown) {
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") return snapshot;
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "Runtime.evaluate") {
         return {
@@ -277,6 +281,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return hoverTriggerSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -340,6 +346,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return twoHoverTriggerSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -388,6 +396,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return nestedHoverTriggerSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -733,6 +743,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return fakeSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 200 },
           };
         }
@@ -745,7 +757,7 @@ describe("snapshot capture and hover", () => {
     expect(div?.rect).toMatchObject({ y: 0, h: 600 });
   });
 
-  it("keeps CSS snapshot bounds independent of legacy metrics ratio", async () => {
+  it("normalizes raw snapshot bounds before viewport clipping", async () => {
     const S = ["html", "body", "div", "position", "fixed", "static", "pointer-events", "auto"];
     const i = (s: string) => S.indexOf(s);
     const snapshot = {
@@ -780,6 +792,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 2000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
             layoutViewport: { clientWidth: 2000, clientHeight: 1600 },
           };
@@ -797,8 +811,8 @@ describe("snapshot capture and hover", () => {
     expect(nodes.find((n) => n.backendNodeId === 12)?.localRect).toEqual({
       x: 0,
       y: 0,
-      w: 2000,
-      h: 1600,
+      w: 1000,
+      h: 800,
     });
   });
 
@@ -856,6 +870,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -946,6 +962,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -1035,6 +1053,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -1097,6 +1117,8 @@ describe("snapshot capture and hover", () => {
           },
         },
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "child",
           nodes: {
             parentIndex: [-1, 0, 1],
@@ -1119,6 +1141,8 @@ describe("snapshot capture and hover", () => {
           },
         },
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "nested",
           nodes: {
             parentIndex: [-1, 0],
@@ -1146,6 +1170,8 @@ describe("snapshot capture and hover", () => {
           if (method === "DOMSnapshot.captureSnapshot") return snapshot;
           if (method === "Page.getLayoutMetrics") {
             return {
+              visualViewport: { clientWidth: 1000 },
+              cssVisualViewport: { clientWidth: 1000 },
               cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
             };
           }
@@ -1225,6 +1251,8 @@ describe("snapshot capture and hover", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 2000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 100 },
             layoutViewport: { clientWidth: 2000, clientHeight: 1600 },
           };
@@ -1233,7 +1261,7 @@ describe("snapshot capture and hover", () => {
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
     const { nodes } = semanticCapture(await captureObservationFacts(cdp, 4)).captured;
-    expect(nodes.find((n) => n.backendNodeId === 12)?.rect?.y).toBe(400 - 100);
+    expect(nodes.find((n) => n.backendNodeId === 12)?.rect?.y).toBe(400 / 2 - 100);
   });
 
   it("collectOverlayExcludedBackendIds walks the pierced overlay host subtree", async () => {
