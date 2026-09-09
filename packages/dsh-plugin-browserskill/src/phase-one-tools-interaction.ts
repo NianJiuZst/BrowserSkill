@@ -13,7 +13,7 @@ import type { ToolDeps } from "./tools";
 
 const MODIFIERS = ["alt", "ctrl", "meta", "shift"] as const;
 
-/** Add hover and select without bypassing session ownership or observation. */
+/** Add hover, focus, blur and select without bypassing session ownership or observation. */
 export function registerPhaseOneInteractionTools(
   deps: ToolDeps,
   register: ToolRegistrar,
@@ -99,6 +99,88 @@ export function registerPhaseOneInteractionTools(
       presentResult: runtime.presentTerminalResult,
     }),
   );
+
+  for (const action of ["focus", "blur"] as const) {
+    register(
+      defineTool({
+        name: `interact.${action}`,
+        description:
+          action === "focus"
+            ? "Focus an element and verify its DOM focus state."
+            : "Remove focus from an element and report whether it was focused.",
+        parameters: {
+          target: {
+            type: "string",
+            required: true,
+            description: "Snapshot ref (@e3 / e3) or CSS selector of the element.",
+          },
+          session: SESSION_PARAM,
+          tabId: TAB_ID_PARAM,
+          timeoutMs: TIMEOUT_MS_PARAM,
+        },
+        output: {
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              session: { type: "string", required: true },
+              tabId: { type: "integer", required: true },
+              focused: { type: "boolean", required: true },
+              wasFocused: {
+                type: "boolean",
+                description: "Whether the target was focused before blur.",
+              },
+            },
+          },
+          render: (_args, value) => [
+            {
+              type: "text",
+              text:
+                `[session ${value.session}] ${action} on tab ${value.tabId}: focused=${value.focused}` +
+                (value.wasFocused === undefined ? "" : `, wasFocused=${value.wasFocused}`),
+            },
+          ],
+        },
+        async execute(args, exec) {
+          requireNonEmpty(args.target, "target");
+          requirePositive(args.timeoutMs, "timeoutMs");
+          const sessionId = registry.resolve(args.session, `browser_interact(action=${action})`);
+          const cmdArgs = [action, "--session", sessionId];
+          appendTabId(cmdArgs, args.tabId);
+          if (args.timeoutMs !== undefined) cmdArgs.push("--timeout", `${args.timeoutMs}ms`);
+          appendTarget(cmdArgs, args.target);
+          const reply = (await runtime.run(
+            exec,
+            cmdArgs,
+            action,
+            sessionId,
+            runnerTimeout(deps, args.timeoutMs),
+          )) as {
+            tab_id: number;
+            focused: boolean;
+            was_focused?: boolean;
+          };
+          return {
+            session: sessionId,
+            tabId: reply.tab_id,
+            focused: reply.focused,
+            ...(action === "blur" ? { wasFocused: reply.was_focused } : {}),
+          };
+        },
+        presentCall: (args) => ({
+          card: "terminal",
+          title: runtime.commandLine([
+            action,
+            args.target,
+            "--session",
+            args.session ?? "(current)",
+          ]),
+          description: action === "focus" ? "Focus an element" : "Remove focus from an element",
+        }),
+        presentResult: runtime.presentTerminalResult,
+      }),
+    );
+  }
 
   register(
     defineTool({
