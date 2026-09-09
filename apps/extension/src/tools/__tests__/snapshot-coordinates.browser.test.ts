@@ -1,10 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { CdpFrame, CdpFrameGraph, CdpTarget } from "@/browser-driver/frame-graph";
-import { GeometryContext } from "../geometry/frame-context";
 import type { CdpRunner } from "../shared";
-import { captureViewModel } from "../vom/capture";
-import { captureFrameData } from "../vom/frame-capture";
+import { captureObservationFacts } from "../vom/capture-coordinator";
 
 type Send = <T = Record<string, unknown>>(
   method: string,
@@ -180,14 +178,12 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
             );
             oracles.set(frame.frameId, reply.result.value);
           }
-          const geometry = new GeometryContext(cdp, 1, graph);
-          const captured = await captureViewModel(cdp, 1, { geometry });
-          await captureFrameData(cdp, 1, captured, undefined, geometry);
-          expect(captured.frameGeometryIssues).toEqual([]);
+          const facts = await captureObservationFacts(cdp, 1);
+          expect(facts.issues).toEqual([]);
           for (const frame of frames) {
-            const node = captured.frameNodes
-              ?.get(frame.frameId)
-              ?.find((node) => node.attrs.id === "probe");
+            const node = facts.documents
+              .find((doc) => doc.frame.frameId === frame.frameId)
+              ?.domNodes.find((node) => node.attrs.id === "probe");
             expect(node, `missing probe in ${names.get(frame.frameId) || "root"}`).toBeDefined();
             const local = oracles.get(frame.frameId)!.probe;
             const top = { ...local };
@@ -206,7 +202,7 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
                 frame: names.get(frame.frameId),
                 local,
                 top,
-                viewport: captured.viewport,
+                viewport: facts.viewport,
               }),
             ).not.toBeNull();
             for (const key of ["x", "y", "w", "h"] as const) {

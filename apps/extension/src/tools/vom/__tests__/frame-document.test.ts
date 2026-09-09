@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CdpFrameGraph } from "@/browser-driver/frame-graph";
-import type { CapturedNode, CapturedViewModel } from "../capture";
-import { buildFrameDocuments, type FrameAxBatch, type FrameOwnedAxNode } from "../frame-document";
+import type { CapturedNode } from "../capture";
+import {
+  buildFrameDocuments,
+  type FrameAxBatch,
+  type FrameDomInput,
+  type FrameOwnedAxNode,
+} from "../frame-document";
 
 function domNode(frameId: string, backendNodeId: number): CapturedNode {
   return {
@@ -17,14 +22,11 @@ function domNode(frameId: string, backendNodeId: number): CapturedNode {
   };
 }
 
-function captured(frameNodes: Map<string, CapturedNode[]>): CapturedViewModel {
+function captured(frameNodes: Map<string, CapturedNode[]>): FrameDomInput {
   return {
     nodes: frameNodes.get("main") ?? [],
-    viewport: { width: 800, height: 600 },
-    iframeNodes: new Map(),
     frameNodes,
     rootFrameId: "main",
-    excludedBackendNodeIds: new Set(),
   };
 }
 
@@ -157,10 +159,12 @@ describe("buildFrameDocuments", () => {
       ["child", [domNode("child", 9)]],
     ]);
     const capture = captured(frameNodes);
-    capture.frameOwnerBackendNodeIds = new Map([["child", 7]]);
-    capture.frameParentIds = new Map([["child", "left"]]);
     const frames = ["main", "left", "right", "child"].map((frameId) => ({
-      frame: { frameId, target: { tabId: 4 } },
+      frame: {
+        frameId,
+        target: { tabId: 4 },
+        ...(frameId === "child" ? { parentFrameId: "left", ownerBackendNodeId: 7 } : {}),
+      },
       nodes: [],
     }));
 
@@ -171,6 +175,23 @@ describe("buildFrameDocuments", () => {
       ownerBackendNodeId: 7,
     });
   });
+  it("rejects explicit AX frame ownership in a different target", async () => {
+    const frames = [
+      { frameId: "main", target: { tabId: 4 } },
+      { frameId: "remote", target: { tabId: 4, sessionId: "remote" } },
+    ];
+    const unresolved = vi.fn();
+    const documents = await buildFrameDocuments(
+      { rootFrameId: "main", frames },
+      [{ frame: frames[0], nodes: [{ nodeId: "wrong", frameId: "remote" }] }],
+      captured(new Map()),
+      undefined,
+      unresolved,
+    );
+    expect(documents.every((doc) => doc.axNodes.length === 0)).toBe(true);
+    expect(unresolved).toHaveBeenCalledOnce();
+  });
+
   it("resolves a reverse-ordered deep AX parent chain without recursion", async () => {
     const frame = { frameId: "main", target: { tabId: 4 } };
     const nodes: FrameOwnedAxNode[] = Array.from({ length: 10000 }, (_, i) => ({

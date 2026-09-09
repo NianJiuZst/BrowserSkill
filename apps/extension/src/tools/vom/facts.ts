@@ -1,6 +1,10 @@
+import type { Viewport } from "@browser-skill/vom";
+import type { CdpFrame, CdpTarget } from "@/browser-driver/frame-graph";
 import { isOverlayHostNode } from "@/lib/overlay-bridge";
+import type { FrameProjectionIssue } from "../geometry/coordinate-types";
 import { createCaptureCheckpoint } from "./capture-abort";
 import type { CapturedNode } from "./capture-types";
+import type { FrameOwnedAxNode } from "./frame-document";
 
 /** Bounds retain their raw snapshot document layout units until normalization. */
 export interface SnapshotLayout {
@@ -92,3 +96,46 @@ export async function buildDocumentIndex<T extends DecodedNode>(
   }
   return { nodes, excludedBackendNodeIds };
 }
+
+/** Narrow input shared by the existing semantic scene/hover consumers. */
+export interface CapturedSceneInput {
+  nodes: CapturedNode[];
+  viewport: Viewport;
+  rootFrameId?: string;
+  excludedBackendNodeIds: ReadonlySet<number>;
+}
+
+export interface CaptureIssue {
+  /** Owner failure or inherited blockage; absent for other geometry failures. */
+  projectionIssue?: FrameProjectionIssue;
+  target: CdpTarget;
+  frameId?: string;
+  stage: "dom" | "ax" | "ownership" | "geometry" | "forms";
+  reason: "capture-unavailable" | "frame-ownership-unresolved" | "geometry-unavailable";
+}
+
+export interface DocumentFacts<T extends FrameOwnedAxNode> {
+  readonly frame: CdpFrame;
+  readonly index: DocumentIndex;
+  readonly domNodes: CapturedNode[];
+  readonly axNodes: T[];
+}
+
+export interface ObservationFacts<T extends FrameOwnedAxNode> {
+  readonly rootFrameId: string;
+  readonly viewport: Viewport;
+  readonly documents: readonly DocumentFacts<T>[];
+  readonly issues: readonly CaptureIssue[];
+  readonly startedAt: number;
+  readonly finishedAt: number;
+}
+
+export interface CapturedSurfaceProbe {
+  triggerBackendNodeId: number;
+  triggerPoint?: { x: number; y: number };
+  triggerAction: "hover" | "focus" | string;
+  subItems: string[];
+  confidence?: "high" | "medium" | "low";
+}
+
+export type { CapturedNode } from "./capture-types";
