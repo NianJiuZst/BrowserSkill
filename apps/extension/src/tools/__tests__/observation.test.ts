@@ -65,7 +65,11 @@ function makeFakeCdp(handlers: Record<string, (params?: object) => unknown>) {
     sent.push({ method, params });
     const handler = handlers[method];
     if (!handler && method === "Page.getLayoutMetrics") {
-      return { cssLayoutViewport: { clientWidth: 1280, clientHeight: 720 } };
+      return {
+        visualViewport: { clientWidth: 1000 },
+        cssVisualViewport: { clientWidth: 1000 },
+        cssLayoutViewport: { clientWidth: 1280, clientHeight: 720 },
+      };
     }
     if (!handler) throw new Error(`unexpected CDP call ${method}`);
     return handler(params);
@@ -266,7 +270,15 @@ describe("handleScreenshot", () => {
     expect(sent.find((c) => c.method === "Page.captureScreenshot")).toBeUndefined();
   });
 
-  it("captures a clipped PNG when ref is given", async () => {
+  it.each([
+    { zoom: 1, scroll: 0, expected: { x: 10, y: 20, width: 100, height: 40 } },
+    { zoom: 0.9, scroll: 100, expected: { x: 9, y: 108, width: 90, height: 36 } },
+    { zoom: 1.25, scroll: 100, expected: { x: 12.5, y: 150, width: 125, height: 50 } },
+  ])("captures a ref in page DIP at zoom $zoom and scroll $scroll", async ({
+    zoom,
+    scroll,
+    expected,
+  }) => {
     const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
     const ctx = await sm.start("aa11");
     ctx.refStore.set("e5", 999, { tabId: 7 });
@@ -274,6 +286,10 @@ describe("handleScreenshot", () => {
       "DOM.scrollIntoViewIfNeeded": () => ({}),
       "DOM.getContentQuads": () => ({ quads: [[10, 20, 110, 20, 110, 60, 10, 60]] }),
       "Page.captureScreenshot": () => ({ data: TINY_PNG }),
+      "Page.getLayoutMetrics": () => ({
+        cssLayoutViewport: { clientWidth: 1280, clientHeight: 720, pageX: 0, pageY: scroll },
+        cssVisualViewport: { zoom },
+      }),
     });
     const captureVisibleTab = vi.fn();
     const res = await handleScreenshot(
@@ -297,7 +313,8 @@ describe("handleScreenshot", () => {
         clip?: { x: number; y: number; width: number; height: number };
       }
     )?.clip;
-    expect(clip).toMatchObject({ x: 10, y: 20, width: 100, height: 40 });
+    expect(clip).toMatchObject(expected);
+    expect(sent.filter((c) => c.method === "Page.getLayoutMetrics")).toHaveLength(1);
   });
 
   it("returns not_found for unknown ref", async () => {
@@ -2481,7 +2498,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") throw new Error("snapshot unsupported");
@@ -2568,7 +2589,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes: [root, button] };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -2659,7 +2684,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes: [root, button] };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -2753,7 +2782,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes: [root, button] };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -2918,7 +2951,11 @@ describe("handleSnapshot", () => {
         };
       }
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -3131,10 +3168,14 @@ describe("handleSnapshot", () => {
   }
 
   const VP_METRICS = {
+    visualViewport: { clientWidth: 1000 },
+    cssVisualViewport: { clientWidth: 1000 },
     cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
   };
 
-  function makeFrameAwareDeps() {
+  function makeFrameAwareDeps(
+    ownerGeometry: "unavailable" | "available" | "clipped" = "unavailable",
+  ) {
     const strings = ["html", "body", "iframe", "button", "title", "Remote", "static", "auto"];
     const i = (value: string) => strings.indexOf(value);
     const styles = [i("static"), i("auto"), i("auto")];
@@ -3142,6 +3183,8 @@ describe("handleSnapshot", () => {
       strings,
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "main",
           nodes: {
             parentIndex: [-1, 0, 1],
@@ -3162,6 +3205,8 @@ describe("handleSnapshot", () => {
           },
         },
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "child",
           nodes: {
             parentIndex: [-1, 0, 1],
@@ -3214,6 +3259,16 @@ describe("handleSnapshot", () => {
     ];
     const send = vi.fn(async (_tabId: number, method: string) => {
       if (method === "Page.getLayoutMetrics") return VP_METRICS;
+      if (ownerGeometry !== "unavailable") {
+        if (method === "DOM.getBoxModel") {
+          const x = ownerGeometry === "clipped" ? 10000 : 100;
+          return { model: { content: [x, 100, x + 400, 100, x + 400, 400, x, 400] } };
+        }
+        if (method === "DOM.resolveNode") return { object: { objectId: "owner" } };
+        if (method === "Runtime.callFunctionOn")
+          return { result: { value: { width: 400, height: 300 } } };
+        if (method === "Runtime.releaseObject") return {};
+      }
       if (method === "DOMSnapshot.enable" || method === "Accessibility.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") return snapshot;
       if (method === "Accessibility.getFullAXTree") return { nodes: mainAx };
@@ -3452,6 +3507,43 @@ describe("handleSnapshot", () => {
     expect(dumped).not.toContain("domNodes");
     expect(dumped).not.toContain("attrs");
     expect(result.text).toContain("•••");
+  });
+
+  it.each([
+    undefined,
+    100,
+    0,
+  ])("reports unavailable iframe geometry within the observation budget %s", async (maxTokens) => {
+    const result = await captureVomObservation(makeFrameAwareDeps().cdp, 4, "https://example.com", {
+      maxTokens,
+    });
+    expect(result.text.match(/@warning/g)).toHaveLength(1);
+    expect(result.text).toContain("geometry incomplete");
+    expect(result.text.startsWith("@vom 1\n")).toBe(true);
+    if (maxTokens === undefined) {
+      expect(result.truncated).toBe(false);
+      expect(result.text).toContain("Frame action");
+      expect(result.matchNodes.find((node) => node.backendNodeId === 22)).toMatchObject({
+        rect: null,
+        localRect: { x: 20, y: 30, w: 120, h: 40 },
+      });
+    }
+    if (maxTokens === 100) expect(Math.ceil(result.text.length / 4)).toBeLessThanOrEqual(maxTokens);
+  });
+
+  it.each([
+    "available",
+    "clipped",
+  ] as const)("does not report successful %s geometry as an observation failure", async (ownerGeometry) => {
+    const result = await captureVomObservation(
+      makeFrameAwareDeps(ownerGeometry).cdp,
+      4,
+      "https://example.com",
+    );
+    expect(result.text).not.toContain("@warning");
+    const node = result.matchNodes.find((item) => item.backendNodeId === 22);
+    if (ownerGeometry === "clipped") expect(node?.rect).toBeNull();
+    else expect(node?.rect).toEqual({ x: 120, y: 130, w: 120, h: 40 });
   });
 
   it("keeps frames and rendered refs on the same frame identity", async () => {

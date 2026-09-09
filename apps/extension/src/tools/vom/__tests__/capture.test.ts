@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { OVERLAY_HOST_MARKER_ATTR, OVERLAY_HOST_NAME } from "../../../lib/overlay-bridge";
+import type { CdpRunner } from "../../shared";
 import { captureViewModel, collectOverlayExcludedBackendIds, probeHoverSurfaces } from "../capture";
 
 // Minimal but format-accurate captureSnapshot reply: a body with one
@@ -210,7 +211,11 @@ function makeCdp(snapshot: unknown) {
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") return snapshot;
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "Runtime.evaluate") {
         return {
@@ -298,6 +303,8 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return hoverTriggerSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -361,6 +368,8 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return twoHoverTriggerSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -409,6 +418,8 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return nestedHoverTriggerSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -742,6 +753,8 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return fakeSnapshotReply();
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 200 },
           };
         }
@@ -754,7 +767,46 @@ describe("captureViewModel", () => {
     expect(div?.rect).toMatchObject({ y: 0, h: 600 });
   });
 
-  it("normalizes device-pixel bounds by devicePixelRatio", async () => {
+  it("normalizes snapshot-owned scroll before using a stale CSS metrics fallback", async () => {
+    const snapshot = {
+      strings: ["html", "button"],
+      documents: [
+        {
+          frameId: "root",
+          scrollOffsetX: 40,
+          scrollOffsetY: 200,
+          nodes: {
+            parentIndex: [-1, 0],
+            nodeName: [0, 1],
+            backendNodeId: [10, 11],
+            attributes: [[], []],
+          },
+          layout: { nodeIndex: [1], bounds: [[200, 800, 240, 80]] },
+        },
+      ],
+    };
+    const cdp: CdpRunner = {
+      send: vi.fn(async (_tab: number, method: string) => {
+        if (method === "DOMSnapshot.captureSnapshot") return snapshot;
+        if (method === "Page.getLayoutMetrics")
+          return {
+            visualViewport: { clientWidth: 2000 },
+            cssVisualViewport: { clientWidth: 1000 },
+            cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 999, pageY: 999 },
+          };
+        return {};
+      }) as CdpRunner["send"],
+    };
+    const captured = await captureViewModel(cdp, 4);
+    expect(captured.nodes.find((node) => node.backendNodeId === 11)).toMatchObject({
+      localRect: { x: 80, y: 300, w: 120, h: 40 },
+      rect: { x: 80, y: 300, w: 120, h: 40 },
+      rendered: true,
+    });
+    expect(captured.frameGeometryIssues).toEqual([]);
+  });
+
+  it("normalizes raw snapshot bounds before viewport clipping", async () => {
     const S = ["html", "body", "div", "position", "fixed", "static", "pointer-events", "auto"];
     const i = (s: string) => S.indexOf(s);
     const snapshot = {
@@ -788,6 +840,8 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 2000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
             layoutViewport: { clientWidth: 2000, clientHeight: 1600 },
           };
@@ -797,6 +851,12 @@ describe("captureViewModel", () => {
     };
     const { nodes } = await captureViewModel(cdp, 4);
     expect(nodes.find((n) => n.backendNodeId === 12)?.rect).toEqual({
+      x: 0,
+      y: 0,
+      w: 1000,
+      h: 800,
+    });
+    expect(nodes.find((n) => n.backendNodeId === 12)?.localRect).toEqual({
       x: 0,
       y: 0,
       w: 1000,
@@ -857,6 +917,8 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
@@ -947,9 +1009,17 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
+        if (method === "DOM.getBoxModel")
+          return { model: { content: [100, 300, 900, 300, 900, 700, 100, 700] } };
+        if (method === "DOM.resolveNode") return { object: { objectId: "owner" } };
+        if (method === "Runtime.callFunctionOn")
+          return { result: { value: { width: 800, height: 400 } } };
+        if (method === "Runtime.releaseObject") return {};
         throw new Error(method);
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
@@ -979,7 +1049,7 @@ describe("captureViewModel", () => {
     expect(frameParentIds?.get("child-frame")).toBe("main-frame");
   });
 
-  it("captures iframe documents without requiring owner-frame geometry", async () => {
+  it("projects iframe documents independently of owner snapshot geometry", async () => {
     const S = [
       "html",
       "body",
@@ -1037,9 +1107,17 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 1000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
           };
         }
+        if (method === "DOM.getBoxModel")
+          return { model: { content: [100, 300, 900, 300, 900, 700, 100, 700] } };
+        if (method === "DOM.resolveNode") return { object: { objectId: "owner" } };
+        if (method === "Runtime.callFunctionOn")
+          return { result: { value: { width: 800, height: 400 } } };
+        if (method === "Runtime.releaseObject") return {};
         throw new Error(method);
       }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
@@ -1048,7 +1126,7 @@ describe("captureViewModel", () => {
     const input = iframeNodes.get(13)?.find((n) => n.backendNodeId === 101);
 
     expect(input?.localRect).toEqual({ x: 20, y: 20, w: 120, h: 60 });
-    expect(input?.rect).toBeNull();
+    expect(input?.rect).toEqual({ x: 120, y: 320, w: 120, h: 60 });
   });
 
   it("recursively normalizes nested iframe sub-documents", async () => {
@@ -1097,6 +1175,8 @@ describe("captureViewModel", () => {
             attributes: [[], [], []],
             contentDocumentIndex: { index: [2], value: [2] },
           },
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           layout: {
             nodeIndex: [1, 2],
             styles: [
@@ -1117,6 +1197,8 @@ describe("captureViewModel", () => {
             backendNodeId: [30, 31],
             attributes: [[], [i("type"), i("text")]],
           },
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           layout: {
             nodeIndex: [1],
             styles: [[i("static"), i("auto")]],
@@ -1127,16 +1209,45 @@ describe("captureViewModel", () => {
       ],
     };
     const cdp = {
-      send: vi.fn(async (_t: number, method: string) => {
-        if (method === "DOMSnapshot.enable") return {};
-        if (method === "DOMSnapshot.captureSnapshot") return snapshot;
-        if (method === "Page.getLayoutMetrics") {
-          return {
-            cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
-          };
-        }
-        throw new Error(method);
-      }) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
+      send: vi.fn(
+        async (
+          _t: number,
+          method: string,
+          params?: { backendNodeId?: number; objectId?: string },
+        ) => {
+          if (method === "DOMSnapshot.enable") return {};
+          if (method === "DOMSnapshot.captureSnapshot") return snapshot;
+          if (method === "Page.getLayoutMetrics") {
+            return {
+              visualViewport: { clientWidth: 1000 },
+              cssVisualViewport: { clientWidth: 1000 },
+              cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+            };
+          }
+          if (method === "DOM.getBoxModel")
+            return {
+              model: {
+                content:
+                  params?.backendNodeId === 13
+                    ? [10, 20, 310, 20, 310, 220, 10, 220]
+                    : [15, 26, 115, 26, 115, 106, 15, 106],
+              },
+            };
+          if (method === "DOM.resolveNode")
+            return { object: { objectId: String(params?.backendNodeId) } };
+          if (method === "Runtime.callFunctionOn")
+            return {
+              result: {
+                value:
+                  params?.objectId === "13"
+                    ? { width: 300, height: 200 }
+                    : { width: 100, height: 80 },
+              },
+            };
+          if (method === "Runtime.releaseObject") return {};
+          throw new Error(method);
+        },
+      ) as unknown as <T>(tabId: number, method: string, params?: object) => Promise<T>,
     };
 
     const { iframeNodes } = await captureViewModel(cdp, 4);
@@ -1150,7 +1261,7 @@ describe("captureViewModel", () => {
     expect(input?.rect).toEqual({ x: 16, y: 28, w: 40, h: 20 });
   });
 
-  it("normalizes bounds then subtracts CSS scroll at dpr>1", async () => {
+  it("subtracts CSS scroll once without dividing snapshot bounds by a metrics ratio", async () => {
     const S = ["html", "body", "div", "position", "fixed", "static", "pointer-events", "auto"];
     const i = (s: string) => S.indexOf(s);
     const snapshot = {
@@ -1184,6 +1295,8 @@ describe("captureViewModel", () => {
         if (method === "DOMSnapshot.captureSnapshot") return snapshot;
         if (method === "Page.getLayoutMetrics") {
           return {
+            visualViewport: { clientWidth: 2000 },
+            cssVisualViewport: { clientWidth: 1000 },
             cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 100 },
             layoutViewport: { clientWidth: 2000, clientHeight: 1600 },
           };
@@ -1215,5 +1328,202 @@ describe("captureViewModel", () => {
     };
     const excluded = await collectOverlayExcludedBackendIds(cdp, 4);
     expect(excluded).toEqual(new Set([200, 201, 202]));
+  });
+});
+
+// Six sibling frames and one nested frame exercise scheduling through the real capture entry.
+function siblingCaptureFixture(
+  beforeReply: (method: string, params: Record<string, unknown>) => Promise<void> = async () => {},
+) {
+  const document = (id: number, owners: number[], childIndexes: number[]) => ({
+    scrollOffsetX: 0,
+    scrollOffsetY: 0,
+    frameId: `frame-${id}`,
+    nodes: {
+      parentIndex: [-1, ...owners.map(() => 0)],
+      nodeName: [0, ...owners.map(() => 1)],
+      backendNodeId: [1000 + id, ...owners],
+      attributes: [[], ...owners.map(() => [])],
+      contentDocumentIndex: { index: owners.map((_, i) => i + 1), value: childIndexes },
+    },
+    layout: {
+      nodeIndex: [0, ...owners.map((_, i) => i + 1)],
+      bounds: [[0, 0, 200, 100], ...owners.map(() => [0, 0, 200, 100])],
+    },
+  });
+  const snapshot = {
+    strings: ["body", "iframe"],
+    documents: [
+      document(0, [100, 101, 102, 103, 104, 105], [1, 2, 3, 4, 5, 6]),
+      document(1, [200], [7]),
+      ...Array.from({ length: 6 }, (_, i) => document(i + 2, [], [])),
+    ],
+  };
+  let active = 0;
+  let peak = 0;
+  const send = vi.fn(async (_tabId: number, method: string, params: object = {}) => {
+    const args = params as Record<string, unknown>;
+    active++;
+    peak = Math.max(peak, active);
+    try {
+      await beforeReply(method, args);
+      if (method === "DOMSnapshot.captureSnapshot") return snapshot;
+      if (method === "Page.getLayoutMetrics")
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
+        };
+      if (method === "DOM.getBoxModel")
+        return { model: { content: [0, 0, 200, 0, 200, 100, 0, 100] } };
+      if (method === "DOM.resolveNode") return { object: { objectId: String(args.backendNodeId) } };
+      if (method === "Runtime.callFunctionOn")
+        return { result: { value: { width: 200, height: 100 } } };
+      return {};
+    } finally {
+      active--;
+    }
+  });
+  return {
+    cdp: { send: send as CdpRunner["send"] },
+    send,
+    peak: () => peak,
+    active: () => active,
+    measured: () =>
+      send.mock.calls
+        .filter(([, method]) => method === "DOM.getBoxModel")
+        .map(([, , params]) => (params as { backendNodeId: number }).backendNodeId),
+  };
+}
+
+describe("sibling frame measurement scheduling", () => {
+  it("batches same-target owner sizes without changing projected results", async () => {
+    const fixture = siblingCaptureFixture();
+    const original = fixture.cdp.send;
+    const methods: string[] = [];
+    fixture.cdp.send = async (tabId, method, params) => {
+      methods.push(method);
+      if (method === "Runtime.evaluate")
+        return {
+          result: {
+            deepSerializedValue: {
+              type: "array",
+              value: [100, 101, 102, 103, 104, 105, 200].map((backendNodeId) => ({
+                type: "array",
+                value: [
+                  { type: "node", value: { backendNodeId } },
+                  { type: "string", value: JSON.stringify({ width: 200, height: 100 }) },
+                ],
+              })),
+            },
+          },
+        } as never;
+      return original(tabId, method, params);
+    };
+    const captured = await captureViewModel(fixture.cdp, 4);
+    expect(captured.frameGeometryIssues).toEqual([]);
+    expect([...captured.iframeNodes.keys()]).toEqual([100, 200, 101, 102, 103, 104, 105]);
+    expect(captured.iframeNodes.get(200)?.[0].rect).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    expect(methods.filter((method) => method === "DOM.getBoxModel")).toHaveLength(7);
+    expect(methods.filter((method) => method === "Runtime.evaluate")).toHaveLength(1);
+    expect(methods.filter((method) => method === "Runtime.releaseObjectGroup")).toHaveLength(1);
+    expect(methods).not.toContain("DOM.resolveNode");
+    expect(methods).not.toContain("Runtime.callFunctionOn");
+  });
+
+  it("bounds concurrent reads, fills free slots and preserves depth-first output despite reordered replies", async () => {
+    const pending = new Map<number, () => void>();
+    const fixture = siblingCaptureFixture(async (method, params) => {
+      if (method === "DOM.getBoxModel" && Number(params.backendNodeId) < 200)
+        await new Promise<void>((resolve) => pending.set(Number(params.backendNodeId), resolve));
+    });
+    const capture = captureViewModel(fixture.cdp, 4);
+    await vi.waitFor(() => expect(pending.size).toBe(4));
+    expect(fixture.measured()).toEqual([100, 101, 102, 103]);
+    pending.get(103)!();
+    await vi.waitFor(() => expect(pending.has(104)).toBe(true));
+    pending.get(104)!();
+    await vi.waitFor(() => expect(pending.has(105)).toBe(true));
+    expect(fixture.measured()).not.toContain(200);
+    for (const id of [105, 102, 101, 100]) pending.get(id)!();
+    const captured = await capture;
+    expect(captured.frameGeometryIssues).toEqual([]);
+    expect(fixture.peak()).toBe(4);
+    expect(fixture.active()).toBe(0);
+    expect(fixture.measured()).toEqual([100, 101, 102, 103, 104, 105, 200]);
+    expect([...captured.iframeNodes.keys()]).toEqual([100, 200, 101, 102, 103, 104, 105]);
+    expect(captured.iframeNodes.get(200)?.[0].rect).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    for (const method of [
+      "DOM.getBoxModel",
+      "DOM.resolveNode",
+      "Runtime.callFunctionOn",
+      "Runtime.releaseObject",
+    ])
+      expect(fixture.send.mock.calls.filter(([, name]) => name === method)).toHaveLength(7);
+  });
+
+  it("does not measure descendants of a failed owner and retains sibling geometry and local nodes", async () => {
+    const fixture = siblingCaptureFixture(async (method, params) => {
+      if (method === "DOM.resolveNode" && params.backendNodeId === 100)
+        throw new Error("owner replaced");
+    });
+    const captured = await captureViewModel(fixture.cdp, 4);
+    expect(captured.frameGeometryIssues).toEqual([
+      {
+        status: "unavailable",
+        source: { target: { tabId: 4 }, frameId: "frame-1" },
+        ownerBackendNodeId: 100,
+      },
+      {
+        status: "blocked",
+        source: { target: { tabId: 4 }, frameId: "frame-7" },
+        cause: captured.frameGeometryIssues?.[0],
+      },
+    ]);
+    expect(fixture.measured()).not.toContain(200);
+    expect(captured.iframeNodes.get(200)?.[0]).toMatchObject({
+      tag: "body",
+      rect: null,
+      localRect: { x: 0, y: 0, w: 200, h: 100 },
+    });
+    expect(captured.iframeNodes.get(101)?.[0].rect).toEqual({ x: 0, y: 0, w: 200, h: 100 });
+    expect([...captured.iframeNodes.keys()]).toEqual([100, 200, 101, 102, 103, 104, 105]);
+  });
+
+  it("stops scheduling on cancellation and waits for resolved objects to be released", async () => {
+    const controller = new AbortController();
+    const resolutions = new Map<string, () => void>();
+    const releases = new Map<string, () => void>();
+    const fixture = siblingCaptureFixture(async (method, params) => {
+      if (method === "DOM.resolveNode")
+        await new Promise<void>((resolve) =>
+          resolutions.set(String(params.backendNodeId), resolve),
+        );
+      if (method === "Runtime.releaseObject")
+        await new Promise<void>((resolve) => releases.set(String(params.objectId), resolve));
+    });
+    let settled = false;
+    const capture = captureViewModel(fixture.cdp, 4, { signal: controller.signal });
+    const rejected = expect(capture).rejects.toMatchObject({ name: "AbortError" });
+    void capture.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(resolutions.size).toBe(4));
+    controller.abort();
+    for (const resolve of resolutions.values()) resolve();
+    await vi.waitFor(() => expect(releases.size).toBe(4));
+    expect(settled).toBe(false);
+    expect(fixture.measured()).toEqual([100, 101, 102, 103]);
+    for (const release of releases.values()) release();
+    await rejected;
+    expect(fixture.active()).toBe(0);
+    expect(fixture.send.mock.calls.some(([, method]) => method === "Runtime.callFunctionOn")).toBe(
+      false,
+    );
   });
 });
