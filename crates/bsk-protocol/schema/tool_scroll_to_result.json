@@ -41,7 +41,7 @@
       "format": "double"
     },
     "x": {
-      "description": "Visible target bounds in top-level viewport CSS pixels.",
+      "description": "Bounding rectangle of the element's visible border-box portion, in top-level viewport CSS pixels, after ancestor and viewport clipping. Partial visibility is sufficient. This is not an occlusion or hit test.",
       "type": "number",
       "format": "double"
     },

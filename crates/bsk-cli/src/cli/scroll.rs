@@ -7,9 +7,10 @@ use bsk_protocol::Method;
 use bsk_protocol::tools::{ScrollToParams, ScrollToResult};
 use clap::Args;
 
+use crate::cli::dialogs::print_dialog_summaries;
 use crate::cli::ensure_daemon::ensure_daemon;
 use crate::cli::error::{CliError, Format};
-use crate::cli::interaction::looks_like_ref;
+use crate::cli::interaction::split_target;
 use crate::cli::navigate::parse_timeout_ms;
 
 #[derive(Debug, Clone, Args)]
@@ -34,8 +35,8 @@ pub struct ScrollToArgs {
 }
 
 pub fn dispatch(args: ScrollToArgs, format: Format) -> Result<(), CliError> {
-    let info = ensure_daemon().context("ensure daemon is running")?;
     let (ref_, selector) = split_target(args.target, args.ref_, args.selector)?;
+    let info = ensure_daemon().context("ensure daemon is running")?;
     let params = ScrollToParams {
         session_id: args.session,
         ref_,
@@ -63,28 +64,10 @@ pub fn dispatch(args: ScrollToArgs, format: Format) -> Result<(), CliError> {
                 "scroll-to ok tab={} target={target} bounds=({}, {}, {}, {})",
                 reply.tab_id, reply.x, reply.y, reply.width, reply.height
             );
+            print_dialog_summaries(&reply.dialogs);
         }
     }
     Ok(())
-}
-
-fn split_target(
-    positional: Option<String>,
-    explicit_ref: Option<String>,
-    explicit_selector: Option<String>,
-) -> Result<(Option<String>, Option<String>), CliError> {
-    match (positional, explicit_ref, explicit_selector) {
-        (None, None, None) => Err(CliError::Local(anyhow::anyhow!(
-            "missing target: pass <ref-or-selector>, --ref @eN, or --selector <css>"
-        ))),
-        (None, Some(r), None) => Ok((Some(r), None)),
-        (None, None, Some(s)) => Ok((None, Some(s))),
-        (Some(target), None, None) if looks_like_ref(&target) => Ok((Some(target), None)),
-        (Some(target), None, None) => Ok((None, Some(target))),
-        _ => Err(CliError::Local(anyhow::anyhow!(
-            "pass exactly one of: <target>, --ref, or --selector"
-        ))),
-    }
 }
 
 fn format_used_target(used_ref: Option<&str>, used_selector: Option<&str>) -> String {

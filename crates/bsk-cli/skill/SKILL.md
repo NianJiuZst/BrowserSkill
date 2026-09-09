@@ -59,7 +59,12 @@ bsk click|hover|focus|blur|fill|select|press ... --session <id>
 bsk observe --session <id>             # after navigation or a meaningful DOM change
 ```
 
-`bsk scroll-to <ref-or-selector>` scrolls an element and its frame owners into the visible viewport.
+`bsk scroll-to <ref-or-selector> --session <id>` scrolls an element and its frame owners into view.
+Use a fresh element ref for iframe/shadow-root targets; CSS selectors search the main document.
+The result is the visible border-box portion's bounds in top-level viewport CSS pixels after
+ancestor clipping. Partial visibility is enough; hidden or fully clipped targets fail with
+`element_not_visible`. The result does not guarantee that other elements do not cover the target.
+For a specific tab or deadline: `bsk scroll-to @e3 --session <id> --tab-id 42 --timeout 5s`.
 
 `bsk focus <ref>` explicitly focuses a target; `bsk blur <ref>` removes focus and reports whether
 it was focused. Use these for UI states triggered by focus changes.

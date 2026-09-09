@@ -482,6 +482,7 @@ export interface ScrollToResult {
   tab_id: number;
   used_ref?: string;
   used_selector?: string;
+  /** Clipped border-box bounds in top-level viewport CSS pixels; not an occlusion test. */
   x: number;
   y: number;
   width: number;

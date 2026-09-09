@@ -34,7 +34,9 @@ pub struct ScrollToResult {
     pub used_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub used_selector: Option<String>,
-    /// Visible target bounds in top-level viewport CSS pixels.
+    /// Bounding rectangle of the element's visible border-box portion, in
+    /// top-level viewport CSS pixels, after ancestor and viewport clipping.
+    /// Partial visibility is sufficient. This is not an occlusion or hit test.
     pub x: f64,
     pub y: f64,
     pub width: f64,

@@ -602,6 +602,7 @@ describe("ToolDispatcher", () => {
   it.each([
     "focus",
     "blur",
+    "scroll_to",
   ] as const)("routes %s with hover cleanup and cooperative cancellation", async (action) => {
     const tab = { id: 7, windowId: 4242, active: true };
     vi.stubGlobal("chrome", {
@@ -654,7 +655,15 @@ describe("ToolDispatcher", () => {
     });
     expect(cdp.send).not.toHaveBeenCalledWith(7, "DOM.focus", expect.anything());
     expect(cdp.send).not.toHaveBeenCalledWith(7, "Runtime.callFunctionOn", expect.anything());
-    expect(cdp.send).toHaveBeenCalledWith(7, "Runtime.releaseObject", { objectId: "focus-target" });
+    if (action === "scroll_to") {
+      expect(cdp.send).toHaveBeenCalledWith(7, "Runtime.releaseObjectGroup", {
+        objectGroup: expect.any(String),
+      });
+    } else {
+      expect(cdp.send).toHaveBeenCalledWith(7, "Runtime.releaseObject", {
+        objectId: "focus-target",
+      });
+    }
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
       7,
       expect.objectContaining({ enabled: false }),
