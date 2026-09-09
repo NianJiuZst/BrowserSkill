@@ -74,12 +74,20 @@ pub enum Method {
     ToolHover,
     #[serde(rename = "tool.scroll_to")]
     ToolScrollTo,
+    #[serde(rename = "tool.focus")]
+    ToolFocus,
+    #[serde(rename = "tool.blur")]
+    ToolBlur,
     #[serde(rename = "tool.fill")]
     ToolFill,
     #[serde(rename = "tool.press")]
     ToolPress,
     #[serde(rename = "tool.select")]
     ToolSelect,
+    #[serde(rename = "tool.upload")]
+    ToolUpload,
+    #[serde(rename = "tool.download")]
+    ToolDownload,
     #[serde(rename = "tool.snapshot")]
     ToolSnapshot,
     #[serde(rename = "tool.observe")]
@@ -106,6 +114,17 @@ pub enum Method {
     ToolRecordStop,
     #[serde(rename = "tool.record_await")]
     ToolRecordAwait,
+
+    #[serde(rename = "transfer.begin")]
+    TransferBegin,
+    #[serde(rename = "transfer.chunk")]
+    TransferChunk,
+    #[serde(rename = "transfer.finish")]
+    TransferFinish,
+    #[serde(rename = "transfer.read")]
+    TransferRead,
+    #[serde(rename = "transfer.release")]
+    TransferRelease,
 
     #[serde(rename = "cancel")]
     Cancel,
@@ -156,9 +175,13 @@ impl Method {
             | Method::ToolReload
             | Method::ToolClick
             | Method::ToolScrollTo
+            | Method::ToolFocus
+            | Method::ToolBlur
             | Method::ToolFill
             | Method::ToolPress
             | Method::ToolSelect
+            | Method::ToolUpload
+            | Method::ToolDownload
             | Method::ToolEvaluate
             // May navigate via optional `url` and changes Agent Window
             // chrome; gate behind pending-interrupt like other writes.
@@ -197,6 +220,11 @@ impl Method {
             | Method::SystemPing
             | Method::SystemStatus
             | Method::BrowserList
+            | Method::TransferBegin
+            | Method::TransferChunk
+            | Method::TransferFinish
+            | Method::TransferRead
+            | Method::TransferRelease
             | Method::Cancel => MethodEffect::ControlPlane,
         }
     }
@@ -287,6 +315,8 @@ mod tests {
         assert!(Method::ToolReload.is_mutating());
         assert!(Method::ToolClick.is_mutating());
         assert!(Method::ToolScrollTo.is_mutating());
+        assert!(Method::ToolFocus.is_mutating());
+        assert!(Method::ToolBlur.is_mutating());
         assert!(Method::ToolFill.is_mutating());
         assert!(Method::ToolPress.is_mutating());
         assert!(Method::ToolSelect.is_mutating());
@@ -332,6 +362,8 @@ mod tests {
         assert_eq!(Method::ToolObserve.effect(), MethodEffect::TransientInput);
         assert_eq!(Method::ToolClick.effect(), MethodEffect::BrowserMutation);
         assert_eq!(Method::ToolScrollTo.effect(), MethodEffect::BrowserMutation);
+        assert_eq!(Method::ToolFocus.effect(), MethodEffect::BrowserMutation);
+        assert_eq!(Method::ToolBlur.effect(), MethodEffect::BrowserMutation);
         assert_eq!(Method::Cancel.effect(), MethodEffect::ControlPlane);
     }
 
@@ -342,6 +374,8 @@ mod tests {
         assert!(Method::ToolObserve.requires_interrupt_gate());
         assert!(Method::ToolClick.requires_interrupt_gate());
         assert!(Method::ToolScrollTo.requires_interrupt_gate());
+        assert!(Method::ToolFocus.requires_interrupt_gate());
+        assert!(Method::ToolBlur.requires_interrupt_gate());
         assert!(!Method::Cancel.requires_interrupt_gate());
     }
 }

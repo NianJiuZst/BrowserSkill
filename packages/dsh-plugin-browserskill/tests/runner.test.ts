@@ -1,7 +1,15 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
-import { type BskRunResult, createBskRunner, isCommandNotFound, parseBskJson } from "../src/runner";
+import { PassThrough } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type BskRunResult,
+  createBskRunner,
+  isCommandNotFound,
+  isSessionBusyResult,
+  parseBskJson,
+  runWithSessionBusyRetry,
+} from "../src/runner";
 
 /** Minimal fake ChildProcess driven by the test. */
 class FakeChild extends EventEmitter {
@@ -63,7 +71,7 @@ describe("createBskRunner", () => {
     controller.abort();
     const result = await promise;
     expect(result.aborted).toBe(true);
-    expect(child.killedWith).toContain("SIGTERM");
+    expect(child.killedWith).toContain("SIGINT");
   });
 
   it("kills the child on timeout", async () => {
@@ -80,8 +88,79 @@ describe("createBskRunner", () => {
     const promise = runner.run(["session", "list"]);
     runner.killAll();
     const result = await promise;
-    expect(child.killedWith).toContain("SIGTERM");
+    expect(child.killedWith).toContain("SIGINT");
     expect(result.code).toBeNull();
+  });
+});
+
+describe("Windows parent cancellation", () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  beforeEach(() => Object.defineProperty(process, "platform", { value: "win32" }));
+  afterEach(() => {
+    Object.defineProperty(process, "platform", originalPlatform);
+    vi.useRealTimers();
+  });
+
+  it("opts in to stdin cancellation and waits for CLI reconciliation", async () => {
+    const child = Object.assign(new FakeChild(), { stdin: new PassThrough() });
+    const spawn = vi.fn(() => child as unknown as ChildProcess);
+    const runner = createBskRunner("bsk", spawn);
+    const abort = new AbortController();
+    const result = runner.run(["snapshot"], { signal: abort.signal });
+    expect(spawn.mock.calls[0]).toEqual([
+      "bsk",
+      ["snapshot", "--json"],
+      {
+        windowsHide: true,
+        env: { ...process.env, BSK_CANCEL_ON_STDIN_CLOSE: "1" },
+      },
+    ]);
+    abort.abort();
+    expect(child.stdin.writableEnded).toBe(true);
+    expect(child.killedWith).toEqual([]);
+    // Closing an already-exited child's pipe must not crash the host.
+    child.stdin.emit("error", Object.assign(new Error("closed"), { code: "EPIPE" }));
+    child.finish(2, '{"code":"cancelled"}');
+    expect(await result).toMatchObject({ code: 2, aborted: true });
+  });
+
+  it("bounds cancellation of an old or unresponsive CLI", async () => {
+    vi.useFakeTimers();
+    const child = Object.assign(new FakeChild(), { stdin: new PassThrough() });
+    const runner = createBskRunner("bsk", fakeSpawn([child]));
+    const result = runner.run(["snapshot"], { timeoutMs: 5 });
+    await vi.advanceTimersByTimeAsync(5);
+    expect(child.stdin.writableEnded).toBe(true);
+    expect(child.killedWith).toEqual([]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(child.killedWith).toEqual([]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(child.killedWith).toEqual(["SIGKILL"]);
+    expect(await result).toMatchObject({ timedOut: true });
+  });
+
+  it("cancels only the requested tag and clears the fallback after exit", async () => {
+    vi.useFakeTimers();
+    const a = Object.assign(new FakeChild(), { stdin: new PassThrough() });
+    const b = Object.assign(new FakeChild(), { stdin: new PassThrough() });
+    const runner = createBskRunner("bsk", fakeSpawn([a, b]));
+    const first = runner.run(["snapshot"], { tag: "a" });
+    const second = runner.run(["snapshot"], { tag: "b" });
+    expect(runner.killFor("a")).toBe(1);
+    expect(a.stdin.writableEnded).toBe(true);
+    expect(b.stdin.writableEnded).toBe(false);
+    a.finish(2);
+    b.finish(0);
+    await Promise.all([first, second]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not start work for an already-aborted call", async () => {
+    const spawn = vi.fn();
+    const runner = createBskRunner("bsk", spawn);
+    const signal = AbortSignal.abort();
+    expect(await runner.run(["snapshot"], { signal })).toMatchObject({ aborted: true });
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
 
@@ -117,6 +196,28 @@ describe("parseBskJson", () => {
     expect(() => parseBskJson({ ...base, code: 1, stderr: "boom" }, "x")).toThrow(/boom/);
   });
 
+  it("surfaces fill recovery guidance to the model without retrying", async () => {
+    const hint =
+      "observe the field before retrying; the page may have formatted the value. Continue if the visible result satisfies the user's intent";
+    const reply = {
+      ...base,
+      code: 3,
+      stdout: JSON.stringify({
+        code: "cdp_failed",
+        message: "fill could not verify the expected value",
+        data: { reason: "fill_value_mismatch" },
+        hint,
+      }),
+    };
+    let calls = 0;
+    const result = await runWithSessionBusyRetry(async () => {
+      calls++;
+      return reply;
+    });
+    expect(calls).toBe(1);
+    expect(() => parseBskJson(result, "fill")).toThrow(hint);
+  });
+
   it("reports killed-by-interrupt children (null exit code) as interrupted", () => {
     expect(() => parseBskJson({ ...base, code: null }, "navigate")).toThrow(/interrupted/);
   });
@@ -138,5 +239,53 @@ describe("isCommandNotFound", () => {
       isCommandNotFound(Object.assign(new Error("spawn bsk ENOENT"), { code: "ENOENT" })),
     ).toBe(true);
     expect(isCommandNotFound(new Error("other"))).toBe(false);
+  });
+});
+
+describe("session busy reconciliation", () => {
+  const busy: BskRunResult = {
+    code: 4,
+    stdout: JSON.stringify({
+      code: "timeout",
+      message: "session already has an unfinished command",
+      data: { reason: "session_busy" },
+    }),
+    stderr: "",
+    timedOut: false,
+    aborted: false,
+  };
+  const ok: BskRunResult = {
+    code: 0,
+    stdout: "{}",
+    stderr: "",
+    timedOut: false,
+    aborted: false,
+  };
+
+  it("recognizes only the structured session_busy reason", () => {
+    expect(isSessionBusyResult(busy)).toBe(true);
+    expect(isSessionBusyResult({ ...busy, stdout: '{"code":"timeout"}' })).toBe(false);
+    expect(isSessionBusyResult(ok)).toBe(false);
+  });
+
+  it("retries one transient busy result and returns the settled response", async () => {
+    const replies = [busy, ok];
+    let calls = 0;
+    const result = await runWithSessionBusyRetry(async () => {
+      calls += 1;
+      return replies.shift() ?? ok;
+    });
+    expect(result).toBe(ok);
+    expect(calls).toBe(2);
+  });
+
+  it("does not loop on a persistent busy result", async () => {
+    let calls = 0;
+    const result = await runWithSessionBusyRetry(async () => {
+      calls += 1;
+      return busy;
+    });
+    expect(result).toBe(busy);
+    expect(calls).toBe(2);
   });
 });

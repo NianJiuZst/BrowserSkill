@@ -81,12 +81,20 @@ fn main() {
     dump!(HoverResult, "tool_hover_result");
     dump!(ScrollToParams, "tool_scroll_to_params");
     dump!(ScrollToResult, "tool_scroll_to_result");
+    dump!(FocusParams, "tool_focus_params");
+    dump!(FocusResult, "tool_focus_result");
+    dump!(BlurParams, "tool_blur_params");
+    dump!(BlurResult, "tool_blur_result");
     dump!(FillParams, "tool_fill_params");
     dump!(FillResult, "tool_fill_result");
     dump!(PressParams, "tool_press_params");
     dump!(PressResult, "tool_press_result");
     dump!(SelectParams, "tool_select_params");
     dump!(SelectResult, "tool_select_result");
+    dump!(UploadParams, "tool_upload_params");
+    dump!(UploadResult, "tool_upload_result");
+    dump!(DownloadParams, "tool_download_params");
+    dump!(DownloadResult, "tool_download_result");
 
     dump!(SnapshotParams, "tool_snapshot_params");
     dump!(SnapshotResult, "tool_snapshot_result");
@@ -115,8 +123,12 @@ fn main() {
     dump!(RequestHelpParams, "tool_request_help_params");
     dump!(RequestHelpResult, "tool_request_help_result");
 
-    dump!(Trace, "trace");
-    dump!(Step, "trace_step");
+    dump!(TraceV2, "trace_v2");
+    dump!(TraceV3, "trace_v3");
+    dump!(RecordedTrace, "trace");
+    dump!(StepV2, "trace_step_v2");
+    dump!(StepV3, "trace_step_v3");
+    dump!(RecordedStep, "trace_step");
     dump!(RecordStartParams, "tool_record_start_params");
     dump!(RecordStartResult, "tool_record_start_result");
     dump!(RecordStopParams, "tool_record_stop_params");
