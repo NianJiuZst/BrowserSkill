@@ -11,7 +11,8 @@ import {
   isAbortError as isCaptureAbort,
   throwIfAborted as throwCaptureAborted,
 } from "./capture-abort";
-import type { CapturedSceneInput } from "./facts";
+import { verifyDocumentIdentity } from "./document-identity";
+import type { CapturedSceneInput, DocumentIdentity } from "./facts";
 import { buildDocumentIndex, type CaptureIssue, type ObservationFacts } from "./facts";
 import { enrichFormControlStates } from "./form-capture";
 import {
@@ -26,6 +27,7 @@ import { describeSnapshotFrames, REQUESTED_STYLES, type SnapshotReply } from "./
 interface TargetBatch<T extends FrameOwnedAxNode> {
   target: CdpTarget;
   frames: CdpFrame[];
+  snapshotAttachmentId?: string;
   documents: NormalizedFrameDocument[];
   ax: FrameAxBatch<T>[];
   fallbackExcluded: Set<number>;
@@ -121,6 +123,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
         throwCaptureAborted(signal);
         await scoped.send(tabId, "DOMSnapshot.enable", {});
         throwCaptureAborted(signal);
+        batch.snapshotAttachmentId = cdp.getAttachmentId?.(tabId);
         const snapshot = await scoped.send<SnapshotReply>(tabId, "DOMSnapshot.captureSnapshot", {
           computedStyles: REQUESTED_STYLES,
           includePaintOrder: true,
@@ -246,6 +249,53 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
   const rootBatch = batches.find((batch) => !batch.target.sessionId);
   const rootFrameId =
     rootBatch?.rootFrameId ?? graph?.rootFrameId ?? rootBatch?.frames[0]?.frameId ?? "root";
+  const ownershipInvalid = new Set(invalid);
+  const identities = new Map<string, DocumentIdentity>();
+  const selected = new Map(currentFrames.map((frame) => [frame.frameId, frame]));
+  const checks = batches.flatMap((batch) => {
+    const docs = new Map(batch.documents.map((doc) => [doc.frame.frameId, doc]));
+    return batch.frames
+      .filter(
+        (frame) =>
+          !invalid.has(frame.frameId) &&
+          cdpTargetKey(selected.get(frame.frameId)!.target) === cdpTargetKey(batch.target),
+      )
+      .map((frame) => ({ batch, frame, doc: docs.get(frame.frameId) }));
+  });
+  await collectTasks(
+    checks,
+    async ({ batch, frame, doc }) => {
+      throwCaptureAborted(signal);
+      if (!batch.snapshotAttachmentId || doc?.documentElementBackendNodeId === undefined) {
+        issues.push({
+          target: frame.target,
+          frameId: frame.frameId,
+          stage: "identity",
+          reason: "identity-unverified",
+        });
+        return;
+      }
+      const identity: DocumentIdentity = {
+        attachmentId: batch.snapshotAttachmentId,
+        target: frame.target,
+        frameId: frame.frameId,
+        documentElementBackendNodeId: doc.documentElementBackendNodeId,
+      };
+      const verified = await verifyDocumentIdentity(cdp, identity, signal);
+      const status = cdp.getAttachmentId?.(tabId) === identity.attachmentId ? verified : "changed";
+      if (status === "current") identities.set(frame.frameId, identity);
+      else {
+        invalid.add(frame.frameId);
+        issues.push({
+          target: frame.target,
+          frameId: frame.frameId,
+          stage: "identity",
+          reason: status === "changed" ? "document-changed" : "identity-unavailable",
+        });
+      }
+    },
+    signal,
+  );
   const children = new Map<string, string[]>();
   for (const frame of currentFrames) {
     if (!frame.parentFrameId) continue;
@@ -263,7 +313,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
     }
   }
   for (const frame of currentFrames) {
-    if (invalid.has(frame.frameId))
+    if (ownershipInvalid.has(frame.frameId))
       issues.push({
         target: frame.target,
         frameId: frame.frameId,
@@ -271,7 +321,12 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
         reason: "frame-ownership-unresolved",
       });
   }
-  if (invalid.has(rootFrameId)) throw new Error("observation root document ownership is ambiguous");
+  if (invalid.has(rootFrameId))
+    throw new Error(
+      ownershipInvalid.has(rootFrameId)
+        ? "observation root document ownership is ambiguous"
+        : "observation document identity changed or could not be verified; observe again",
+    );
   const frames = currentFrames.filter((frame) => !invalid.has(frame.frameId));
   const frameById = new Map(frames.map((frame) => [frame.frameId, frame]));
   const belongs = (frame: CdpFrame) => {
@@ -319,6 +374,7 @@ export async function captureObservationFacts<T extends FrameOwnedAxNode>(
     } = document;
     facts.push({
       frame,
+      identity: identities.get(document.frameId),
       index: fallback?.size ? { ...index, excludedBackendNodeIds: fallback } : index,
       domNodes,
       axNodes,

@@ -38,6 +38,7 @@ export interface FrameContext {
 export interface NormalizedDocument {
   nodes: NodeFacts[];
   index: DocumentIndex;
+  documentElementBackendNodeId?: number;
 }
 
 /** Interpret one document using a supplied projection. No live reads or frame scheduling. */
@@ -98,6 +99,12 @@ export async function normalizeDocument(
       (node) => !node.tag.startsWith("#") && !index.excludedBackendNodeIds.has(node.backendNodeId),
     ),
     index,
+    documentElementBackendNodeId: nodes.find(
+      (node) =>
+        node.nodeType === 1 &&
+        node.parentBackendNodeId !== null &&
+        index.nodes.get(node.parentBackendNodeId)?.nodeType === 9,
+    )?.backendNodeId,
   };
 }
 

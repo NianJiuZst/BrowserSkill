@@ -130,6 +130,7 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
               return send(method, params, sessionFor(target));
             },
             getFrameGraph: async () => graph,
+            getAttachmentId: () => rootSession,
           };
           const oracles = new Map<string, Oracle>();
           for (const frame of frames) {

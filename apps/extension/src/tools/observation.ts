@@ -938,6 +938,18 @@ export async function captureVomObservation(
     notices.push(
       `@warning observation incomplete: some ${incompleteStages.join(", ")} data is unavailable or omitted.`,
     );
+  if (
+    facts.issues.some(
+      (issue) => issue.stage === "identity" && issue.reason !== "identity-unverified",
+    )
+  )
+    notices.push(
+      "@warning observation incomplete: some documents were omitted because their identity changed or could not be revalidated.",
+    );
+  if (facts.issues.some((issue) => issue.reason === "identity-unverified"))
+    notices.push(
+      "@warning document identity unverified: some retained documents could not be checked for changes during capture.",
+    );
   const captureNotice = notices.join("\n");
   const rendered = renderVom(decoratedScene, {
     maxDepth: options.maxDepth,

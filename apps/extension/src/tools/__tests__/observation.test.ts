@@ -3695,7 +3695,8 @@ describe("handleSnapshot", () => {
     const result = await captureVomObservation(makeFrameAwareDeps().cdp, 4, "https://example.com", {
       maxTokens,
     });
-    expect(result.text.match(/@warning/g)).toHaveLength(1);
+    expect(result.text.match(/@warning/g)).toHaveLength(2);
+    expect(result.text).toContain("document identity unverified");
     expect(result.text).toContain("geometry incomplete");
     expect(result.text.startsWith("@vom 1\n")).toBe(true);
     if (maxTokens === undefined) {
@@ -3722,7 +3723,8 @@ describe("handleSnapshot", () => {
     for (const maxTokens of [undefined, 100, 0]) {
       const result = await captureVomObservation(cdp, 4, "https://example.com", { maxTokens });
       expect(result.text).toContain(`@warning observation incomplete: some ${stage} data`);
-      expect(result.text.match(/@warning/g)).toHaveLength(1);
+      expect(result.text.match(/@warning/g)).toHaveLength(2);
+      expect(result.text).toContain("document identity unverified");
       expect(result.text.startsWith("@vom 1\n")).toBe(true);
       if (maxTokens === undefined) {
         expect(result.frames.map((frame) => frame.frameId)).toEqual(["main", "child"]);
@@ -3770,7 +3772,8 @@ describe("handleSnapshot", () => {
       4,
       "https://example.com",
     );
-    expect(result.text).not.toContain("@warning");
+    expect(result.text).not.toContain("iframe geometry incomplete");
+    expect(result.text).toContain("document identity unverified");
     const node = result.matchNodes.find((item) => item.backendNodeId === 22);
     if (ownerGeometry === "clipped") expect(node?.rect).toBeNull();
     else expect(node?.rect).toEqual({ x: 120, y: 130, w: 120, h: 40 });

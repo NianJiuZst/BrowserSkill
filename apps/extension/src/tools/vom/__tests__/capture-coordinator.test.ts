@@ -2,13 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import type { CdpFrame, CdpTarget } from "@/browser-driver/frame-graph";
 import { cdpTargetKey } from "@/browser-driver/frame-graph";
 import { OVERLAY_HOST_MARKER_ATTR } from "@/lib/overlay-bridge";
+import { captureVomObservation } from "../../observation";
 import type { CdpRunner } from "../../shared";
 import { captureObservationFacts, semanticCapture } from "../capture-coordinator";
 import { buildSemanticGraph } from "../semantic-graph/build";
 import { REQUESTED_STYLES, type SnapshotReply } from "../snapshot";
 
 function fixture(
-  options: { frames?: CdpFrame[]; fail?: string; omitDocument?: string; overlay?: string } = {},
+  options: {
+    frames?: CdpFrame[];
+    after?: Record<string, { element?: number; missing?: boolean; unreadable?: boolean }>;
+    fail?: string;
+    missingIdentity?: boolean;
+    omitDocument?: string;
+    attachmentChanged?: boolean;
+    overlay?: string;
+  } = {},
 ) {
   const frames = options.frames ?? [
     { frameId: "main", target: { tabId: 4 } },
@@ -34,7 +43,10 @@ function fixture(
   const elements = new Map(
     frames.map((frame, i) => [frame.frameId, frame.target.sessionId ? 1 : i * 10 + 1]),
   );
+  const contexts = new Map(frames.map((frame, i) => [i + 1, frame.frameId]));
   const logs: Array<{ target: CdpTarget; method: string; params: Record<string, unknown> }> = [];
+  let snapshots = 0;
+  const targetCount = new Set(frames.map((frame) => cdpTargetKey(frame.target))).size;
   const send = vi.fn(
     async <T>(target: CdpTarget, method: string, params: object = {}): Promise<T> => {
       logs.push({ target, method, params: params as Record<string, unknown> });
@@ -42,6 +54,27 @@ function fixture(
       if (options.fail === `${target.sessionId ?? "main"}:${method}`)
         throw new Error("fixture failure");
       let result: unknown = {};
+      if (method === "Page.createIsolatedWorld")
+        result = {
+          executionContextId: frames.findIndex((frame) => frame.frameId === args.frameId) + 1,
+        };
+      if (method === "Runtime.evaluate" && args.contextId) {
+        const id = contexts.get(Number(args.contextId))!;
+        const change = options.after?.[id];
+        result =
+          options.missingIdentity || change?.unreadable
+            ? {}
+            : {
+                result: {
+                  deepSerializedValue: change?.missing
+                    ? { type: "null" }
+                    : {
+                        type: "node",
+                        value: { backendNodeId: change?.element ?? elements.get(id) },
+                      },
+                },
+              };
+      }
       if (method === "Page.getLayoutMetrics")
         result = {
           visualViewport: { clientWidth: 1000 },
@@ -49,6 +82,7 @@ function fixture(
           cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
         };
       if (method === "DOMSnapshot.captureSnapshot") {
+        snapshots++;
         expect((params as { computedStyles: unknown }).computedStyles).toEqual(REQUESTED_STYLES);
         result = {
           strings: [
@@ -137,6 +171,12 @@ function fixture(
     },
   );
   const cdp: CdpRunner = {
+    getAttachmentId: () =>
+      options.missingIdentity
+        ? undefined
+        : options.attachmentChanged && snapshots === targetCount
+          ? "new-attachment"
+          : "attachment",
     getFrameGraph: async () => ({ rootFrameId: frames[0].frameId, frames }),
     send: (tabId, method, params) =>
       (send as NonNullable<CdpRunner["sendToTarget"]>)({ tabId }, method, params),
@@ -181,6 +221,9 @@ describe("captureObservationFacts", () => {
     expect(logs.filter((call) => call.method === "DOMSnapshot.captureSnapshot")).toHaveLength(2);
     expect(logs.filter((call) => call.method === "Accessibility.enable")).toHaveLength(2);
     expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(4);
+    expect(facts.documents.every((doc) => doc.identity)).toBe(true);
+    expect(logs.filter((call) => call.method === "DOM.describeNode")).toHaveLength(0);
+    expect(logs.filter((call) => call.method === "Page.createIsolatedWorld")).toHaveLength(4);
     const main = facts.documents.find((doc) => doc.frame.frameId === "main")!;
     const remote = facts.documents.find((doc) => doc.frame.frameId === "remote")!;
     expect(main.index.nodes.get(2)).not.toBe(remote.index.nodes.get(2));
@@ -189,6 +232,219 @@ describe("captureObservationFacts", () => {
     expect(remote.axNodes[0].frameId).toBe("remote");
     expect(main.index.nodes.get(2)).toBe(main.domNodes.find((node) => node.backendNodeId === 2));
     expect(facts.finishedAt).toBeGreaterThanOrEqual(facts.startedAt);
+  });
+
+  it.each([
+    { element: 99 },
+    { missing: true },
+  ])("isolates changed child identity %j and dependent descendants", async (change) => {
+    const { cdp } = fixture({ after: { same: change } });
+    const facts = await captureObservationFacts(cdp, 4);
+    expect(facts.documents.map((doc) => doc.frame.frameId)).toEqual(["main", "remote"]);
+    expect(facts.issues).toContainEqual(
+      expect.objectContaining({ frameId: "same", reason: "document-changed" }),
+    );
+  });
+
+  it.each([
+    { after: { main: { element: 99 } } },
+    { attachmentChanged: true },
+  ])("rejects a root replacement or reattachment %j", async (options) => {
+    await expect(captureObservationFacts(fixture(options).cdp, 4)).rejects.toThrow(
+      "document identity",
+    );
+  });
+
+  it.each([
+    "main",
+    "same",
+  ])("does not publish a previously identified %s document after identity reads fail", async (frameId) => {
+    const { cdp } = fixture({ after: { [frameId]: { unreadable: true } } });
+    if (frameId === "main")
+      await expect(captureObservationFacts(cdp, 4)).rejects.toThrow("document identity");
+    else {
+      const facts = await captureObservationFacts(cdp, 4);
+      expect(facts.documents.map((doc) => doc.frame.frameId)).toEqual(["main", "remote"]);
+      expect(facts.issues).toContainEqual(
+        expect.objectContaining({ frameId, reason: "identity-unavailable" }),
+      );
+    }
+  });
+
+  it("validates newly discovered snapshot documents without a pre-snapshot identity read", async () => {
+    const { cdp, logs } = fixture();
+    const graph = await cdp.getFrameGraph!(4);
+    cdp.getFrameGraph = async () => ({ ...graph, frames: graph.frames.slice(0, 1) });
+    const facts = await captureObservationFacts(cdp, 4);
+    expect(facts.documents.map((doc) => doc.frame.frameId)).toEqual(["main", "same", "nested"]);
+    expect(facts.documents.every((doc) => doc.identity)).toBe(true);
+    expect(logs.filter((call) => call.method === "Page.createIsolatedWorld")).toHaveLength(3);
+    expect(logs.findIndex((call) => call.method === "Page.createIsolatedWorld")).toBeGreaterThan(
+      logs.findIndex((call) => call.method === "Accessibility.getFullAXTree"),
+    );
+  });
+
+  it("rejects a snapshot root that no longer matches the current frame root", async () => {
+    const { cdp } = fixture();
+    const original = cdp.sendToTarget!;
+    cdp.sendToTarget = async (target, method, params) => {
+      const result = await original(target, method, params);
+      if (method === "DOMSnapshot.captureSnapshot" && !target.sessionId) {
+        const snapshot = result as {
+          documents: { frameId: string; nodes: { backendNodeId: number[] } }[];
+        };
+        snapshot.documents[0].nodes.backendNodeId[2] = 999;
+      }
+      return result as never;
+    };
+    cdp.send = (tabId, method, params) => cdp.sendToTarget!({ tabId }, method, params);
+    await expect(captureObservationFacts(cdp, 4)).rejects.toThrow("document identity");
+  });
+
+  it("starts after-identity reads only after every target finishes and propagates cancellation during identity cleanup", async () => {
+    const { cdp, logs } = fixture();
+    const controller = new AbortController();
+    const original = cdp.sendToTarget!;
+    let identityCleanup = 0;
+    cdp.sendToTarget = async (target, method, params) => {
+      if (method === "Page.createIsolatedWorld") {
+        expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(
+          4,
+        );
+      }
+      const result = await original(target, method, params);
+      if (
+        method === "Runtime.releaseObjectGroup" &&
+        String((params as { objectGroup?: string })?.objectGroup).startsWith(
+          "bsk-document-identity-",
+        ) &&
+        target.sessionId === "remote"
+      ) {
+        if (++identityCleanup === 1) controller.abort();
+      }
+      return result as never;
+    };
+    cdp.send = (tabId, method, params) => cdp.sendToTarget!({ tabId }, method, params);
+    await expect(captureObservationFacts(cdp, 4, controller.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(identityCleanup).toBe(1);
+  });
+
+  it.each([
+    1, 10, 100,
+  ])("bounds identity reads for %i same-target documents after snapshot and AX collection", async (count) => {
+    const frames: CdpFrame[] = Array.from({ length: count }, (_, i) => ({
+      frameId: `frame-${i}`,
+      target: { tabId: 4 },
+      ...(i ? { parentFrameId: "frame-0", ownerBackendNodeId: 90000 + i } : {}),
+    }));
+    const { cdp, logs } = fixture({ frames });
+    const original = cdp.sendToTarget!;
+    let active = 0;
+    let peak = 0;
+    let released = 0;
+    cdp.sendToTarget = async (target, method, params) => {
+      if (method === "Page.createIsolatedWorld") {
+        peak = Math.max(peak, ++active);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      if (method === "DOMSnapshot.captureSnapshot") {
+        expect(active).toBe(0);
+        expect(released).toBe(0);
+      }
+      if (method === "Page.createIsolatedWorld") {
+        expect(logs.filter((call) => call.method === "Accessibility.getFullAXTree")).toHaveLength(
+          count,
+        );
+      }
+      const result = await original(target, method, params);
+      if (
+        method === "Runtime.releaseObjectGroup" &&
+        String((params as { objectGroup?: string })?.objectGroup).startsWith(
+          "bsk-document-identity-",
+        )
+      ) {
+        active--;
+        released++;
+      }
+      return result as never;
+    };
+    cdp.send = (tabId, method, params) => cdp.sendToTarget!({ tabId }, method, params);
+    const facts = await captureObservationFacts(cdp, 4);
+    expect(facts.documents.every((doc) => doc.identity)).toBe(true);
+    expect(peak).toBe(Math.min(count, 4));
+    expect(active).toBe(0);
+    expect(released).toBe(count);
+    for (const method of [
+      "Page.createIsolatedWorld",
+      "Runtime.evaluate",
+      "Runtime.releaseObjectGroup",
+    ])
+      expect(logs.filter((call) => call.method === method)).toHaveLength(count);
+    expect(logs.filter((call) => call.method === "DOMSnapshot.captureSnapshot")).toHaveLength(1);
+    expect(logs.filter((call) => call.method === "Page.getFrameTree")).toHaveLength(0);
+  });
+
+  it("joins identity cleanup on cancellation without starting queued frames", async () => {
+    const frames: CdpFrame[] = Array.from({ length: 5 }, (_, i) => ({
+      frameId: `frame-${i}`,
+      target: { tabId: 4 },
+      ...(i ? { parentFrameId: "frame-0", ownerBackendNodeId: 90000 + i } : {}),
+    }));
+    const { cdp, logs } = fixture({ frames });
+    const original = cdp.sendToTarget!;
+    const controller = new AbortController();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let held = 0;
+    cdp.sendToTarget = async (target, method, params) => {
+      const result = await original(target, method, params);
+      if (
+        method === "Runtime.releaseObjectGroup" &&
+        String((params as { objectGroup?: string })?.objectGroup).startsWith(
+          "bsk-document-identity-",
+        )
+      ) {
+        if (++held === 4) ready();
+        await gate;
+      }
+      return result as never;
+    };
+    cdp.send = (tabId, method, params) => cdp.sendToTarget!({ tabId }, method, params);
+    let settled = false;
+    const pending = captureObservationFacts(cdp, 4, controller.signal).finally(() => {
+      settled = true;
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await blocked;
+    controller.abort();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release();
+    await rejected;
+    expect(held).toBe(4);
+    expect(logs.filter((call) => call.method === "Page.createIsolatedWorld")).toHaveLength(4);
+  });
+
+  it.each([
+    [{ after: { same: { element: 99 } } }, "omitted", false],
+    [{ after: { same: { unreadable: true } } }, "omitted", false],
+    [{ missingIdentity: true }, "document identity unverified", true],
+    [{}, "", true],
+  ] as const)("publishes identity integrity without silently losing content %j", async (options, notice, retained) => {
+    const { cdp } = fixture(options);
+    const result = await captureVomObservation(cdp, 4, "https://example.com");
+    expect(result.frames.some((frame) => frame.frameId === "same")).toBe(retained);
+    if (notice) expect(result.text).toContain(notice);
+    else expect(result.text).not.toContain("identity");
+    if (!retained) expect(result.text).not.toContain("document identity unverified");
   });
 
   it("does not retry failed or missing documents and retains valid AX-only semantics", async () => {
@@ -207,6 +463,12 @@ describe("captureObservationFacts", () => {
     expect(facts.issues).toContainEqual(
       expect.objectContaining({ target: { tabId: 4, sessionId: "remote" }, stage: "dom" }),
     );
+  });
+
+  it("keeps missing identity explicit without manufacturing a verified document", async () => {
+    const facts = await captureObservationFacts(fixture({ missingIdentity: true }).cdp, 4);
+    expect(facts.documents.every((doc) => !doc.identity)).toBe(true);
+    expect(facts.issues.filter((issue) => issue.reason === "identity-unverified")).toHaveLength(4);
   });
 
   it("excludes overlay AX in its own document without excluding equal IDs elsewhere", async () => {
@@ -906,7 +1168,7 @@ describe("sibling frame measurement scheduling", () => {
       return original(tabId, method, params);
     };
     const captured = await captureObservationFacts(fixture.cdp, 4);
-    expect(captured.issues).toEqual([]);
+    expect(captured.issues.filter((issue) => issue.stage === "geometry")).toEqual([]);
     expect(captured.documents.map((doc) => doc.frame.frameId)).toEqual(
       Array.from({ length: 8 }, (_, i) => `frame-${i}`),
     );

@@ -97,6 +97,13 @@ export async function buildDocumentIndex<T extends DecodedNode>(
   return { nodes, excludedBackendNodeIds };
 }
 
+export interface DocumentIdentity {
+  attachmentId: string;
+  target: CdpTarget;
+  frameId: string;
+  documentElementBackendNodeId: number;
+}
+
 /** Narrow input shared by the existing semantic scene/hover consumers. */
 export interface CapturedSceneInput {
   nodes: CapturedNode[];
@@ -110,12 +117,19 @@ export interface CaptureIssue {
   projectionIssue?: FrameProjectionIssue;
   target: CdpTarget;
   frameId?: string;
-  stage: "dom" | "ax" | "ownership" | "geometry" | "forms";
-  reason: "capture-unavailable" | "frame-ownership-unresolved" | "geometry-unavailable";
+  stage: "dom" | "ax" | "identity" | "ownership" | "geometry" | "forms";
+  reason:
+    | "document-changed"
+    | "identity-unavailable"
+    | "identity-unverified"
+    | "capture-unavailable"
+    | "frame-ownership-unresolved"
+    | "geometry-unavailable";
 }
 
 export interface DocumentFacts<T extends FrameOwnedAxNode> {
   readonly frame: CdpFrame;
+  readonly identity?: DocumentIdentity;
   readonly index: DocumentIndex;
   readonly domNodes: CapturedNode[];
   readonly axNodes: T[];
