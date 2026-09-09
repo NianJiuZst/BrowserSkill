@@ -676,6 +676,7 @@ function legacyFrameDocuments(
       ...(pageUrl ? { url: pageUrl } : {}),
       axNodes: [],
       domNodes: captured.nodes.map((node) => ({ ...node, frameId: node.frameId ?? rootFrameId })),
+      excludedBackendNodeIds: captured.frameExcludedBackendNodeIds?.get(rootFrameId),
     },
   ];
   const pending = [...captured.iframeNodes.entries()];
@@ -699,6 +700,7 @@ function legacyFrameDocuments(
         target: parent.target,
         axNodes: [],
         domNodes: domNodes.map((node) => ({ ...node, frameId: node.frameId ?? frameId })),
+        excludedBackendNodeIds: captured.frameExcludedBackendNodeIds?.get(frameId),
       });
       pending.splice(index, 1);
       progress = true;

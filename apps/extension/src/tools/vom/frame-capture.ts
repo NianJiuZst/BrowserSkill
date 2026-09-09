@@ -56,6 +56,11 @@ async function captureMissingFrameDocuments(
         geometry,
         target: frame.target,
       });
+      if (child.frameExcludedBackendNodeIds?.size) {
+        captured.frameExcludedBackendNodeIds ??= new Map();
+        for (const [id, excluded] of child.frameExcludedBackendNodeIds)
+          captured.frameExcludedBackendNodeIds.set(id, excluded);
+      }
       if (child.frameGeometryIssues?.length) {
         (captured.frameGeometryIssues ??= []).push(...child.frameGeometryIssues);
       }
@@ -174,5 +179,5 @@ export async function captureFrameData<T extends FrameAxNode>(
   if (graph) await captureMissingFrameDocuments(cdp, tabId, graph, captured, geometry, signal);
   throwIfAborted(signal);
   const batches = await captureAxTrees<T>(cdp, tabId, frames, captured, signal);
-  return buildFrameDocuments(graph, batches, captured);
+  return buildFrameDocuments(graph, batches, captured, signal);
 }

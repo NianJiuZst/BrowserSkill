@@ -538,6 +538,9 @@ describe("captureViewModel", () => {
       strings: S,
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
+          frameId: "main",
           nodes: {
             parentIndex: [-1, 0, 1, 0, 3, 4],
             nodeName: [i("html"), i("body"), i("div"), i(OVERLAY_HOST_NAME), i("div"), i("button")],
@@ -568,8 +571,12 @@ describe("captureViewModel", () => {
       ],
     };
 
-    const { excludedBackendNodeIds } = await captureViewModel(makeCdp(snapshot), 4);
+    const { excludedBackendNodeIds, frameExcludedBackendNodeIds } = await captureViewModel(
+      makeCdp(snapshot),
+      4,
+    );
     expect(excludedBackendNodeIds).toEqual(new Set([13, 14, 15]));
+    expect(frameExcludedBackendNodeIds?.get("main")).toEqual(excludedBackendNodeIds);
   });
 
   it("excludes overlay host matched by tag name only", async () => {
@@ -1168,6 +1175,8 @@ describe("captureViewModel", () => {
           },
         },
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           nodes: {
             parentIndex: [-1, 0, 1],
             nodeName: [i("html"), i("body"), i("iframe")],
@@ -1175,8 +1184,6 @@ describe("captureViewModel", () => {
             attributes: [[], [], []],
             contentDocumentIndex: { index: [2], value: [2] },
           },
-          scrollOffsetX: 0,
-          scrollOffsetY: 0,
           layout: {
             nodeIndex: [1, 2],
             styles: [
@@ -1191,14 +1198,14 @@ describe("captureViewModel", () => {
           },
         },
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           nodes: {
             parentIndex: [-1, 0],
             nodeName: [i("body"), i("input")],
             backendNodeId: [30, 31],
             attributes: [[], [i("type"), i("text")]],
           },
-          scrollOffsetX: 0,
-          scrollOffsetY: 0,
           layout: {
             nodeIndex: [1],
             styles: [[i("static"), i("auto")]],

@@ -4,7 +4,8 @@ import {
   type CdpTarget,
   cdpTargetKey,
 } from "@/browser-driver/frame-graph";
-import type { CapturedNode, CapturedViewModel } from "./capture";
+import { createCaptureCheckpoint } from "./capture-abort";
+import type { CapturedNode } from "./capture-types";
 
 export interface FrameOwnedAxNode {
   nodeId: string;
@@ -23,6 +24,17 @@ export interface FrameDocument<T extends FrameOwnedAxNode> extends CdpFrame {
   contextScopeId: string;
   axNodes: T[];
   domNodes: CapturedNode[];
+  excludedBackendNodeIds?: ReadonlySet<number>;
+}
+
+/** Explicit snapshot document data used to join DOM and AX ownership. */
+export interface FrameDomInput {
+  nodes: CapturedNode[];
+  rootFrameId?: string;
+  frameNodes?: ReadonlyMap<string, CapturedNode[]>;
+  frameOwnerBackendNodeIds?: ReadonlyMap<string, number>;
+  frameParentIds?: ReadonlyMap<string, string>;
+  frameExcludedBackendNodeIds?: ReadonlyMap<string, ReadonlySet<number>>;
 }
 
 interface Ownership {
@@ -47,7 +59,7 @@ function targetBackendKey(target: CdpTarget, backendNodeId: number): string {
 function frameList<T extends FrameOwnedAxNode>(
   graph: CdpFrameGraph | null,
   batches: FrameAxBatch<T>[],
-  captured: CapturedViewModel,
+  captured: FrameDomInput,
 ): CdpFrame[] {
   const frames = new Map<string, CdpFrame>();
   for (const frame of graph?.frames ?? []) frames.set(frame.frameId, frame);
@@ -70,11 +82,14 @@ function frameList<T extends FrameOwnedAxNode>(
   });
 }
 
-export function buildFrameDocuments<T extends FrameOwnedAxNode>(
+export async function buildFrameDocuments<T extends FrameOwnedAxNode>(
   graph: CdpFrameGraph | null,
   batches: FrameAxBatch<T>[],
-  captured: CapturedViewModel,
-): FrameDocument<T>[] {
+  captured: FrameDomInput,
+  signal?: AbortSignal,
+): Promise<FrameDocument<T>[]> {
+  const checkpoint = createCaptureCheckpoint(signal);
+  let work = 0;
   const frames = frameList(graph, batches, captured);
   const frameById = new Map(frames.map((frame) => [frame.frameId, frame]));
   const rootFrameId = graph?.rootFrameId ?? captured.rootFrameId ?? frames[0]?.frameId;
@@ -83,54 +98,68 @@ export function buildFrameDocuments<T extends FrameOwnedAxNode>(
   const backendOwner = new Map<string, string>();
   for (const frame of frames) {
     for (const node of domNodesForFrame(frame.frameId)) {
+      if (work++ % 256 === 0) {
+        const pending = checkpoint();
+        if (pending) await pending;
+      }
       backendOwner.set(targetBackendKey(frame.target, node.backendNodeId), frame.frameId);
     }
   }
 
   const candidates = new Map<string, OwnedCandidate<T>>();
   for (const batch of batches) {
-    const nodeById = new Map(batch.nodes.map((node) => [node.nodeId, node]));
-    const ownershipByNodeId = new Map<string, Ownership>();
-    const resolving = new Set<string>();
-    const resolveOwnership = (node: T): Ownership => {
-      const cached = ownershipByNodeId.get(node.nodeId);
-      if (cached) return cached;
-      if (node.frameId && frameById.has(node.frameId)) {
-        const ownership = { frameId: node.frameId, strength: 4 };
-        ownershipByNodeId.set(node.nodeId, ownership);
-        return ownership;
-      }
-      if (typeof node.backendDOMNodeId === "number") {
-        const frameId = backendOwner.get(
-          targetBackendKey(batch.frame.target, node.backendDOMNodeId),
-        );
-        if (frameId) {
-          const ownership = { frameId, strength: 3 };
-          ownershipByNodeId.set(node.nodeId, ownership);
-          return ownership;
-        }
-      }
-      if (node.parentId && !resolving.has(node.nodeId)) {
-        const parent = nodeById.get(node.parentId);
-        if (parent) {
-          resolving.add(node.nodeId);
-          const inherited = resolveOwnership(parent);
-          resolving.delete(node.nodeId);
-          const ownership = {
-            frameId: inherited.frameId,
-            strength: Math.min(2, inherited.strength),
-          };
-          ownershipByNodeId.set(node.nodeId, ownership);
-          return ownership;
-        }
-      }
-      const ownership = { frameId: batch.frame.frameId, strength: 1 };
-      ownershipByNodeId.set(node.nodeId, ownership);
-      return ownership;
-    };
-
+    const nodeById = new Map<string, T>();
     for (const node of batch.nodes) {
-      const ownership = resolveOwnership(node);
+      if (work++ % 256 === 0) {
+        const pending = checkpoint();
+        if (pending) await pending;
+      }
+      nodeById.set(node.nodeId, node);
+    }
+    const ownershipByNodeId = new Map<string, Ownership>();
+    for (const node of batch.nodes) {
+      const path: T[] = [];
+      const visiting = new Set<string>();
+      let current: T | undefined = node;
+      let ownership: Ownership = { frameId: batch.frame.frameId, strength: 1 };
+      while (current) {
+        if (work++ % 256 === 0) {
+          const pending = checkpoint();
+          if (pending) await pending;
+        }
+        const cached = ownershipByNodeId.get(current.nodeId);
+        if (cached) {
+          ownership = cached;
+          break;
+        }
+        if (visiting.has(current.nodeId)) break;
+        visiting.add(current.nodeId);
+        if (current.frameId && frameById.has(current.frameId)) {
+          ownership = { frameId: current.frameId, strength: 4 };
+          ownershipByNodeId.set(current.nodeId, ownership);
+          break;
+        }
+        const frameId =
+          typeof current.backendDOMNodeId === "number"
+            ? backendOwner.get(targetBackendKey(batch.frame.target, current.backendDOMNodeId))
+            : undefined;
+        if (frameId) {
+          ownership = { frameId, strength: 3 };
+          ownershipByNodeId.set(current.nodeId, ownership);
+          break;
+        }
+        path.push(current);
+        current = current.parentId ? nodeById.get(current.parentId) : undefined;
+      }
+      for (let i = path.length - 1; i >= 0; i--) {
+        if (work++ % 256 === 0) {
+          const pending = checkpoint();
+          if (pending) await pending;
+        }
+        ownership = { frameId: ownership.frameId, strength: Math.min(2, ownership.strength) };
+        ownershipByNodeId.set(path[i].nodeId, ownership);
+      }
+      if (!ownershipByNodeId.has(node.nodeId)) ownershipByNodeId.set(node.nodeId, ownership);
       const key = targetNodeKey(batch.frame.target, node.nodeId);
       const existing = candidates.get(key);
       if (!existing || ownership.strength > existing.ownership.strength) {
@@ -144,6 +173,10 @@ export function buildFrameDocuments<T extends FrameOwnedAxNode>(
   );
   const axNodesByFrame = new Map<string, T[]>();
   for (const candidate of candidates.values()) {
+    if (work++ % 256 === 0) {
+      const pending = checkpoint();
+      if (pending) await pending;
+    }
     const { node, target, ownership } = candidate;
     const parentFrameId = node.parentId
       ? ownershipByTargetNode.get(targetNodeKey(target, node.parentId))
@@ -169,5 +202,6 @@ export function buildFrameDocuments<T extends FrameOwnedAxNode>(
     contextScopeId: frame.frameId,
     axNodes: axNodesByFrame.get(frame.frameId) ?? [],
     domNodes: domNodesForFrame(frame.frameId),
+    excludedBackendNodeIds: captured.frameExcludedBackendNodeIds?.get(frame.frameId),
   }));
 }

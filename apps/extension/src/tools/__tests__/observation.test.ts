@@ -672,6 +672,60 @@ describe("buildVomScene", () => {
     expect(nestedInput?.parentId).toBe(result.nodes.find((item) => item.backendNodeId === 210)?.id);
   });
 
+  it("excludes an overlay only in its owning document when target backend ids collide", () => {
+    const owner = (id: number): CapturedNode => ({
+      backendNodeId: id,
+      parentBackendNodeId: null,
+      frameId: "main",
+      tag: "iframe",
+      attrs: {},
+      rect: { x: id * 10, y: 0, w: 200, h: 100 },
+      paintOrder: 0,
+      position: "static",
+      pointerEvents: "auto",
+    });
+    const owners = [owner(10), owner(20)];
+    const result = buildFrameVomScene(
+      [
+        {
+          frameId: "main",
+          contextScopeId: "main",
+          target: { tabId: 7 },
+          domNodes: owners,
+          axNodes: [],
+        },
+        ...["left", "right"].map((frameId, i) => ({
+          frameId,
+          contextScopeId: frameId,
+          parentFrameId: "main",
+          ownerBackendNodeId: owners[i].backendNodeId,
+          target: { tabId: 7, sessionId: frameId },
+          excludedBackendNodeIds: new Set(i === 0 ? [7] : []),
+          domNodes: [],
+          axNodes: [
+            {
+              nodeId: "button",
+              frameId,
+              backendDOMNodeId: 7,
+              role: { type: "role", value: "button" },
+              name: { type: "computedString", value: frameId + " action" },
+            },
+          ],
+        })),
+      ],
+      {
+        nodes: owners,
+        viewport: { width: 800, height: 600 },
+        iframeNodes: new Map(),
+        excludedBackendNodeIds: new Set(),
+      },
+    );
+    const rendered = renderVom(result);
+    expect(rendered.text).not.toContain("left action");
+    expect(rendered.text).toContain("right action");
+    expect(rendered.refs.find((ref) => ref.backendNodeId === 7)?.frameId).toBe("right");
+  });
+
   it("does not place a child document at the page root when its frame boundary is unresolved", () => {
     const childNode: CapturedNode = {
       backendNodeId: 101,

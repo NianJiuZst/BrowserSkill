@@ -1,20 +1,14 @@
-// CDP capture adapter: DOMSnapshot.captureSnapshot + Page.getLayoutMetrics
-// → CapturedNode[] + Viewport. This is the ONLY VOM module that touches
-// raw CDP. The captureSnapshot reply is columnar (parallel arrays + a
-// shared string table); requested computed styles are decoded through
-// STYLE_COL so capture and visibility policy share one explicit contract.
+// Coordinate DOMSnapshot acquisition, frame geometry and hover probes.
+// Snapshot decoding and form enrichment live in their own modules.
 
-import type { Rect, Viewport } from "@browser-skill/vom";
+import type { Viewport } from "@browser-skill/vom";
 import type { CdpTarget } from "@/browser-driver/frame-graph";
 import { evaluateHoverTrigger } from "@/lib/hover-trigger-policy";
-import { isOverlayHostNode, OVERLAY_HOST_SELECTOR } from "../../lib/overlay-bridge";
+import { OVERLAY_HOST_SELECTOR } from "../../lib/overlay-bridge";
 import {
   type FrameProjectionIssue,
   type FrameProjectionState,
-  projectSnapshotRect,
-  type SnapshotCoordinates,
   snapshotCoordinates,
-  snapshotViewportRect,
 } from "../geometry/coordinate-types";
 import {
   GeometryContext,
@@ -22,48 +16,20 @@ import {
   snapshotLayoutScale,
 } from "../geometry/frame-context";
 import type { CdpRunner } from "../shared";
+import { isAbortError, throwIfAborted } from "./capture-abort";
+import type { CapturedNode } from "./capture-types";
+import { enrichFormControlStates } from "./form-capture";
 import { clearHover, ProbeBudget, waitForHover } from "./hover-perception";
+import { type FrameContext, normalizeDocument } from "./normalize";
+import {
+  REQUESTED_STYLES,
+  type SnapshotDocument,
+  type SnapshotReply,
+  snapshotFrameId,
+  sparseIndexMap,
+} from "./snapshot";
 
-const REQUESTED_STYLES = ["position", "pointer-events", "cursor", "visibility", "opacity"] as const;
-const STYLE_COL = Object.fromEntries(
-  REQUESTED_STYLES.map((name, index) => [name, index]),
-) as Record<(typeof REQUESTED_STYLES)[number], number>;
-
-export interface CapturedNode {
-  backendNodeId: number;
-  parentBackendNodeId: number | null;
-  frameId?: string;
-  /** Owning iframe backend node id; `null` for the top-level document. */
-  ownerFrameBackendNodeId?: number | null;
-  tag: string;
-  attrs: Record<string, string>;
-  /** Top-level viewport-relative CSS px, clipped to the owning frame viewport. */
-  rect: Rect | null;
-  /** Frame-local viewport-relative CSS px before top-level projection. */
-  localRect?: Rect | null;
-  paintOrder: number;
-  position: string;
-  pointerEvents: string;
-  /**
-   * computed `cursor`. `cursor: pointer` is the strongest CDP-free signal
-   * that a non-semantic element (a `<div>`/`<span>` with a click handler)
-   * is actually an interactive control — used by the adapter to surface
-   * custom buttons/checkboxes the AX tree drops as `generic`. Optional like
-   * `textContent`: the live parser always sets it, hand-built fixtures may not.
-   */
-  cursor?: string;
-  /**
-   * Whether the live DOM snapshot provides a painted, non-hidden box for this
-   * node. Semantic resolution uses this only for DOM fallback nodes; AX-backed
-   * nodes remain authoritative even when they are outside the viewport.
-   */
-  rendered?: boolean;
-  textContent?: string;
-  formState?: "empty" | "filled" | "default";
-  formValue?: string;
-  formDefaultValue?: string;
-  formPlaceholder?: string;
-}
+export type { CapturedNode } from "./capture-types";
 
 export type CapturedIframeNodes = Map<number, CapturedNode[]>;
 
@@ -80,6 +46,7 @@ export interface CapturedViewModel {
   viewport: Viewport;
   iframeNodes: CapturedIframeNodes;
   frameNodes?: Map<string, CapturedNode[]>;
+  frameExcludedBackendNodeIds?: Map<string, ReadonlySet<number>>;
   frameOwnerBackendNodeIds?: Map<string, number>;
   /** Explicit DOMSnapshot frame ancestry; never inferred from backend node ids. */
   frameParentIds?: Map<string, string>;
@@ -96,244 +63,9 @@ export interface CaptureViewModelOptions {
   target?: CdpTarget;
 }
 
-function captureAbortError(): Error {
-  const error = new Error("observation aborted");
-  error.name = "AbortError";
-  return error;
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { name?: string }).name === "AbortError"
-  );
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw captureAbortError();
-}
-
-/** Sparse array format Chrome uses for infrequently-set per-node fields. */
-interface SparseArray {
-  index: number[];
-  value: number[];
-}
-
-interface RareBooleanData {
-  index: number[];
-}
-
-interface SnapshotDocument {
-  frameId?: string | number;
-  scrollOffsetX?: number;
-  scrollOffsetY?: number;
-  nodes?: {
-    parentIndex?: number[];
-    nodeName?: number[];
-    backendNodeId?: number[];
-    attributes?: number[][];
-    /**
-     * Per-node text value (index into strings), set for `#text` / CDATA nodes.
-     * Element nodes carry -1. Same length as `backendNodeId`.
-     */
-    nodeValue?: number[];
-    /** Maps node array index → index into `documents[]` for frame content. */
-    contentDocumentIndex?: SparseArray;
-    inputValue?: SparseArray;
-    textValue?: SparseArray;
-    inputChecked?: RareBooleanData;
-    optionSelected?: RareBooleanData;
-  };
-  layout?: {
-    nodeIndex?: number[];
-    styles?: number[][];
-    bounds?: number[][];
-    paintOrders?: number[];
-  };
-}
-
-function snapshotFrameId(document: SnapshotDocument, strings: string[]): string | undefined {
-  if (typeof document.frameId === "string") return document.frameId || undefined;
-  if (typeof document.frameId === "number") return str(strings, document.frameId) || undefined;
-  return undefined;
-}
-
-interface SnapshotReply {
-  strings?: string[];
-  documents?: SnapshotDocument[];
-}
-
-function isFormControlTag(tag: string): boolean {
-  return tag === "input" || tag === "textarea" || tag === "select";
-}
-
-function isSensitiveFormControl(node: Pick<CapturedNode, "tag" | "attrs">): boolean {
-  return node.tag === "input" && (node.attrs.type ?? "").toLowerCase() === "password";
-}
-
-function snapshotFormState(
-  value: string | undefined,
-  defaultValue: string,
-  hasDefaultValue: boolean,
-  sensitive: boolean,
-): CapturedNode["formState"] {
-  if (sensitive) {
-    if (value === undefined && !hasDefaultValue) return undefined;
-    return (value ?? defaultValue) === "" ? "empty" : "filled";
-  }
-  if (value === undefined) return undefined;
-  if (value === "") return "empty";
-  return value === defaultValue ? "default" : "filled";
-}
-
-const MAX_FORM_ENRICH_CONTROLS = 250;
-
-interface CapturedFormState {
-  value?: string;
-  defaultValue?: string;
-  placeholder?: string;
-  state?: "empty" | "filled" | "default";
-  sensitive?: boolean;
-}
-
-interface DeepSerializedValue {
-  type: string;
-  value?: unknown;
-}
-
-function formStateBatchExpression(maxControls: number): string {
-  return `(() => {
-    const maxControls = ${JSON.stringify(maxControls)};
-    let remaining = maxControls;
-    const controlSelector = "input,textarea,select";
-    const controlState = (el) => {
-      const tag = el.tagName.toLowerCase();
-      const type = tag === "input" ? String(el.type || "text").toLowerCase() : tag;
-      const sensitive = type === "password" || type === "credit-card";
-      const rawValue = typeof el.value === "string" ? el.value : "";
-      const defaultValue = typeof el.defaultValue === "string" ? el.defaultValue : "";
-      const placeholder = typeof el.placeholder === "string" ? el.placeholder : "";
-      const state = rawValue === "" ? "empty" : rawValue === defaultValue ? "default" : "filled";
-      return {
-        state,
-        sensitive,
-        placeholder,
-        ...(sensitive ? {} : { value: rawValue, defaultValue }),
-      };
-    };
-    const controls = [];
-    const collect = (doc) => {
-      for (const el of Array.from(doc.querySelectorAll(controlSelector))) {
-        if (remaining <= 0) break;
-        // Deep serialization supplies the node's backend id. Keep the
-        // state as JSON so decoding needs no general-purpose V8 deserializer.
-        controls.push([el, JSON.stringify(controlState(el))]);
-        remaining -= 1;
-      }
-      for (const frame of Array.from(doc.querySelectorAll("iframe"))) {
-        if (remaining <= 0) break;
-        let childDoc = null;
-        try { childDoc = frame.contentDocument; } catch { childDoc = null; }
-        if (childDoc) collect(childDoc);
-      }
-    };
-    collect(document);
-    return controls;
-  })()`;
-}
-
-function formStatesByBackendId(result: RuntimeEvaluateReply): Map<number, CapturedFormState> {
-  const states = new Map<number, CapturedFormState>();
-  const serialized = result.result?.deepSerializedValue;
-  if (serialized?.type !== "array" || !Array.isArray(serialized.value)) return states;
-  for (const entry of serialized.value as DeepSerializedValue[]) {
-    if (entry?.type !== "array" || !Array.isArray(entry.value)) continue;
-    const [element, json] = entry.value as DeepSerializedValue[];
-    if (element?.type !== "node" || json?.type !== "string" || typeof json.value !== "string") {
-      continue;
-    }
-    const backendNodeId = (element.value as { backendNodeId?: number } | undefined)?.backendNodeId;
-    if (typeof backendNodeId !== "number" || !Number.isSafeInteger(backendNodeId)) continue;
-    try {
-      const state = JSON.parse(json.value) as CapturedFormState | null;
-      if (
-        !state ||
-        !["empty", "filled", "default"].includes(state.state ?? "") ||
-        typeof state.sensitive !== "boolean" ||
-        typeof state.placeholder !== "string" ||
-        (!state.sensitive &&
-          (typeof state.value !== "string" || typeof state.defaultValue !== "string"))
-      ) {
-        continue;
-      }
-      states.set(backendNodeId, state);
-    } catch {
-      // A malformed entry must not overwrite the snapshot's own state.
-    }
-  }
-  return states;
-}
-
-function applyFormStates(nodes: CapturedNode[], states: Map<number, CapturedFormState>): void {
-  for (const node of nodes) {
-    if (!isFormControlTag(node.tag)) continue;
-    const state = states.get(node.backendNodeId);
-    if (!state) continue;
-    node.formState = state.state;
-    node.formPlaceholder = state.placeholder ?? "";
-    if (state.sensitive || isSensitiveFormControl(node)) {
-      delete node.formValue;
-      delete node.formDefaultValue;
-      delete node.attrs.value;
-    } else {
-      node.formDefaultValue = state.defaultValue ?? "";
-      if (state.value !== undefined) node.formValue = state.value;
-    }
-  }
-}
-
-async function enrichFormControlStates(
-  cdp: CdpRunner,
-  tabId: number,
-  frameNodeGroups: CapturedNode[][],
-  signal?: AbortSignal,
-): Promise<void> {
-  const hasControls = frameNodeGroups.some((nodes) =>
-    nodes.some((node) => isFormControlTag(node.tag)),
-  );
-  if (!hasControls) return;
-  const objectGroup = `bsk-vom-forms-${crypto.randomUUID()}`;
-  try {
-    throwIfAborted(signal);
-    const result = await cdp.send<RuntimeEvaluateReply>(tabId, "Runtime.evaluate", {
-      expression: formStateBatchExpression(MAX_FORM_ENRICH_CONTROLS),
-      objectGroup,
-      serializationOptions: {
-        serialization: "deep",
-        maxDepth: 3,
-        additionalParameters: { maxNodeDepth: 0, includeShadowTree: "none" },
-      },
-    });
-    throwIfAborted(signal);
-    // Backend ids are scoped to this capture's CDP target. OOPIF targets
-    // use their own captureViewModel call and never share this lookup.
-    const states = formStatesByBackendId(result);
-    for (const nodes of frameNodeGroups) {
-      applyFormStates(nodes, states);
-    }
-  } catch (error) {
-    if (isAbortError(error)) throw error;
-    // Best-effort enrichment. DOMSnapshot/AX data still carries the nodes.
-  } finally {
-    await cdp.send(tabId, "Runtime.releaseObjectGroup", { objectGroup }).catch(() => undefined);
-  }
-}
-
 interface RuntimeEvaluateReply {
   result?: {
     value?: unknown;
-    deepSerializedValue?: DeepSerializedValue;
   };
 }
 
@@ -350,36 +82,6 @@ interface CdpDomNode {
   backendNodeId?: number;
   children?: CdpDomNode[];
   shadowRoots?: CdpDomNode[];
-}
-
-interface ParseDocumentResult {
-  nodes: CapturedNode[];
-  excludedBackendNodeIds: Set<number>;
-}
-
-interface FrameContext {
-  frameId?: string;
-  ownerFrameBackendNodeId: number | null;
-  projection: FrameProjectionState;
-  target: CdpTarget;
-  coordinates: SnapshotCoordinates | null;
-  layoutUnitsPerCssPixel: number | null;
-}
-
-function str(strings: string[], idx: number | undefined): string {
-  if (idx === undefined || idx < 0) return "";
-  return strings[idx] ?? "";
-}
-
-function sparseIndexMap(sparse: SparseArray | undefined): Map<number, number> {
-  const out = new Map<number, number>();
-  if (!sparse?.index || !sparse.value) return out;
-  for (let i = 0; i < sparse.index.length; i++) {
-    const nodeIndex = sparse.index[i];
-    const docIndex = sparse.value[i];
-    if (nodeIndex !== undefined && docIndex !== undefined) out.set(nodeIndex, docIndex);
-  }
-  return out;
 }
 
 function collectBackendIdsFromDomNode(node: CdpDomNode | undefined, out: Set<number>): void {
@@ -791,198 +493,12 @@ export async function collectOverlayExcludedBackendIds(
   return excluded;
 }
 
-/**
- * Parse one DOMSnapshot document into CapturedNode[].
- *
- * @param doc   - the raw DOMSnapshot document object
- * @param strings - the shared string table for the whole snapshot
- * @param context - frame coordinate context; output rects are top viewport-relative
- */
-function parseDocumentNodes(
-  doc: SnapshotDocument,
-  strings: string[],
-  context: FrameContext,
-): ParseDocumentResult {
-  const dn = doc.nodes;
-  const dl = doc.layout;
-  if (!dn?.backendNodeId) {
-    return { nodes: [], excludedBackendNodeIds: new Set() };
-  }
-
-  const count = dn.backendNodeId.length;
-  const layoutByNode = new Map<number, number>();
-  (dl?.nodeIndex ?? []).forEach((nodeIdx, layoutIdx) => layoutByNode.set(nodeIdx, layoutIdx));
-
-  // The agent's own overlay (WXT shadow host, marked with OVERLAY_HOST_MARKER_ATTR)
-  // is injected into the page and its open shadow root
-  // is inlined by DOMSnapshot as descendants of the host. Its fixed
-  // full-viewport click-blocker would otherwise dominate occlusion detection
-  // and hide the real page, so mark the host + its whole subtree excluded.
-  // parentIndex always references an earlier node, so one forward pass suffices.
-  const excluded = new Array<boolean>(count).fill(false);
-  const excludedBackendNodeIds = new Set<number>();
-  for (let n = 0; n < count; n++) {
-    const parentIdx = dn.parentIndex?.[n] ?? -1;
-    const inherited = parentIdx >= 0 && excluded[parentIdx];
-    let isOverlayHost = inherited;
-    if (!isOverlayHost) {
-      const pairs = dn.attributes?.[n] ?? [];
-      const attrNames: string[] = [];
-      for (let a = 0; a + 1 < pairs.length; a += 2) {
-        attrNames.push(str(strings, pairs[a]));
-      }
-      isOverlayHost = isOverlayHostNode(str(strings, dn.nodeName?.[n]), attrNames);
-    }
-    if (!isOverlayHost) continue;
-    excluded[n] = true;
-    const backendNodeId = dn.backendNodeId[n];
-    if (backendNodeId !== undefined) {
-      excludedBackendNodeIds.add(backendNodeId);
-    }
-  }
-
-  const posCol = STYLE_COL.position;
-  const peCol = STYLE_COL["pointer-events"];
-  const cursorCol = STYLE_COL.cursor;
-  const visibilityCol = STYLE_COL.visibility;
-  const opacityCol = STYLE_COL.opacity;
-  const inputValues = sparseIndexMap(dn.inputValue);
-  const textValues = sparseIndexMap(dn.textValue);
-  const checkedInputs = new Set(dn.inputChecked?.index ?? []);
-  const selectedOptions = new Set(dn.optionSelected?.index ?? []);
-
-  // Collect visible text from #text child nodes so element CapturedNodes
-  // carry a textContent value usable as a button/link label fallback.
-  // nodeValue is a parallel array: string index for text nodes, -1 otherwise.
-  const nodeTextContent = new Map<number, string>();
-  if (dn.nodeValue) {
-    for (let n = 0; n < count; n++) {
-      const nvIdx = dn.nodeValue[n] ?? -1;
-      if (nvIdx < 0) continue;
-      const text = str(strings, nvIdx).trim();
-      if (!text) continue;
-      const parentIdx = dn.parentIndex?.[n] ?? -1;
-      if (parentIdx >= 0) {
-        const existing = nodeTextContent.get(parentIdx);
-        nodeTextContent.set(parentIdx, existing ? `${existing} ${text}` : text);
-      }
-    }
-  }
-
-  // Build CapturedNodes.
-  const nodes: CapturedNode[] = [];
-  for (let n = 0; n < count; n++) {
-    if (excluded[n]) continue;
-    const backendNodeId = dn.backendNodeId[n];
-    const parentIdx = dn.parentIndex?.[n] ?? -1;
-    const parentBackendNodeId = parentIdx >= 0 ? (dn.backendNodeId[parentIdx] ?? null) : null;
-    const tag = str(strings, dn.nodeName?.[n]).toLowerCase();
-
-    const attrs: Record<string, string> = {};
-    const pairs = dn.attributes?.[n] ?? [];
-    for (let a = 0; a + 1 < pairs.length; a += 2) {
-      attrs[str(strings, pairs[a]).toLowerCase()] = str(strings, pairs[a + 1]);
-    }
-
-    let rect: Rect | null = null;
-    let localRect: Rect | null = null;
-    let paintOrder = 0;
-    let position = "static";
-    let pointerEvents = "auto";
-    let cursor = "auto";
-    let rendered = false;
-    const li = layoutByNode.get(n);
-    if (li !== undefined) {
-      const b = dl?.bounds?.[li];
-      if (b && b.length >= 4 && b[2] > 0 && b[3] > 0) {
-        const input = snapshotViewportRect(
-          b,
-          { target: context.target, frameId: context.frameId },
-          context.coordinates,
-        );
-        if (input) {
-          const { x, y, width: w, height: h } = input.rect;
-          localRect = { x, y, w, h };
-        }
-        const bounds =
-          input && context.projection.status === "available"
-            ? projectSnapshotRect(input, context.projection.projection)
-            : null;
-        rect = bounds ? { x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height } : null;
-      }
-      paintOrder = dl?.paintOrders?.[li] ?? 0;
-      const styleRow = dl?.styles?.[li] ?? [];
-      position = str(strings, styleRow[posCol]) || "static";
-      pointerEvents = str(strings, styleRow[peCol]) || "auto";
-      cursor = str(strings, styleRow[cursorCol]) || "auto";
-      const visibility = str(strings, styleRow[visibilityCol]) || "visible";
-      const opacity = str(strings, styleRow[opacityCol]) || "1";
-      rendered =
-        !!b &&
-        b.length >= 4 &&
-        b.slice(0, 4).every(Number.isFinite) &&
-        b[2] > 0 &&
-        b[3] > 0 &&
-        visibility !== "hidden" &&
-        visibility !== "collapse" &&
-        (Number.parseFloat(opacity) || 0) > 0;
-    }
-
-    // Skip non-element nodes (#text, #cdata-section, etc.) — they carry no
-    // geometry and are never queried by callers.
-    if (tag.startsWith("#")) continue;
-
-    const textContent = nodeTextContent.get(n);
-
-    const rawFormValueIndex = tag === "textarea" ? textValues.get(n) : inputValues.get(n);
-    const rawFormValue =
-      rawFormValueIndex !== undefined ? str(strings, rawFormValueIndex) : undefined;
-    const sensitive = isSensitiveFormControl({ tag, attrs });
-    const formDefaultValue = attrs.value ?? "";
-    const formValue = sensitive ? undefined : rawFormValue;
-    const formState = snapshotFormState(
-      rawFormValue,
-      formDefaultValue,
-      Object.prototype.hasOwnProperty.call(attrs, "value"),
-      sensitive,
-    );
-    if (sensitive) delete attrs.value;
-
-    nodes.push({
-      backendNodeId,
-      parentBackendNodeId,
-      ...(context.frameId ? { frameId: context.frameId } : {}),
-      ownerFrameBackendNodeId: context.ownerFrameBackendNodeId,
-      tag,
-      attrs,
-      rect,
-      localRect,
-      paintOrder,
-      position,
-      pointerEvents,
-      cursor,
-      rendered,
-      textContent,
-      ...(formValue !== undefined ? { formValue } : {}),
-      ...(tag === "input" || tag === "textarea"
-        ? {
-            formPlaceholder: attrs.placeholder ?? "",
-            ...(!sensitive ? { formDefaultValue } : {}),
-            ...(formState ? { formState } : {}),
-          }
-        : {}),
-      ...(checkedInputs.has(n) ? { formValue: "true", formState: "filled" } : {}),
-      ...(selectedOptions.has(n) ? { formValue: attrs.value ?? textContent ?? "" } : {}),
-    });
-  }
-  return { nodes, excludedBackendNodeIds };
-}
-
 interface ParseFrameDocumentsResult {
   frameGeometryIssues: FrameProjectionIssue[];
   iframeNodes: CapturedIframeNodes;
   frameOwnerBackendNodeIds: Map<string, number>;
   frameParentIds: Map<string, string>;
+  frameExcludedBackendNodeIds: Map<string, ReadonlySet<number>>;
   excludedBackendNodeIds: Set<number>;
 }
 
@@ -999,6 +515,7 @@ async function parseChildFrameDocuments(
   const iframeNodes: CapturedIframeNodes = new Map();
   const frameOwnerBackendNodeIds = new Map<string, number>();
   const frameParentIds = new Map<string, string>();
+  const frameExcludedBackendNodeIds = new Map<string, ReadonlySet<number>>();
   const excludedBackendNodeIds = new Set<number>();
   const parentDoc = documents[parentDocIndex];
   const cdi = sparseIndexMap(parentDoc?.nodes?.contentDocumentIndex);
@@ -1007,6 +524,7 @@ async function parseChildFrameDocuments(
       iframeNodes,
       frameOwnerBackendNodeIds,
       frameParentIds,
+      frameExcludedBackendNodeIds,
       excludedBackendNodeIds,
       frameGeometryIssues,
     };
@@ -1096,13 +614,14 @@ async function parseChildFrameDocuments(
     };
     const nextVisited = new Set(visited);
     nextVisited.add(childDocIndex);
-    const parsed = parseDocumentNodes(childDoc, strings, childContext);
+    const parsed = await normalizeDocument(childDoc, strings, childContext, signal);
     iframeNodes.set(iframeBackendId, parsed.nodes);
     if (childContext.frameId) {
       frameOwnerBackendNodeIds.set(childContext.frameId, iframeBackendId);
+      frameExcludedBackendNodeIds.set(childContext.frameId, parsed.index.excludedBackendNodeIds);
       if (parentContext.frameId) frameParentIds.set(childContext.frameId, parentContext.frameId);
     }
-    for (const id of parsed.excludedBackendNodeIds) excludedBackendNodeIds.add(id);
+    for (const id of parsed.index.excludedBackendNodeIds) excludedBackendNodeIds.add(id);
 
     const nested = await parseChildFrameDocuments(
       documents,
@@ -1123,6 +642,8 @@ async function parseChildFrameDocuments(
     for (const [frameId, parentFrameId] of nested.frameParentIds) {
       frameParentIds.set(frameId, parentFrameId);
     }
+    for (const [frameId, excluded] of nested.frameExcludedBackendNodeIds)
+      frameExcludedBackendNodeIds.set(frameId, excluded);
     for (const id of nested.excludedBackendNodeIds) excludedBackendNodeIds.add(id);
   }
 
@@ -1130,6 +651,7 @@ async function parseChildFrameDocuments(
     iframeNodes,
     frameOwnerBackendNodeIds,
     frameParentIds,
+    frameExcludedBackendNodeIds,
     excludedBackendNodeIds,
     frameGeometryIssues,
   };
@@ -1201,9 +723,9 @@ export async function captureViewModel(
     coordinates,
     layoutUnitsPerCssPixel,
   };
-  const mainParsed = parseDocumentNodes(doc0, strings, topContext);
+  const mainParsed = await normalizeDocument(doc0, strings, topContext, options.signal);
   const nodes = mainParsed.nodes;
-  const excludedBackendNodeIds = new Set(mainParsed.excludedBackendNodeIds);
+  const excludedBackendNodeIds = new Set(mainParsed.index.excludedBackendNodeIds);
 
   const ownerIds = new Set<number>();
   for (const document of documents) {
@@ -1222,6 +744,11 @@ export async function captureViewModel(
     options.signal,
   );
   const iframeNodes = frameParsed.iframeNodes;
+  if (topContext.frameId)
+    frameParsed.frameExcludedBackendNodeIds.set(
+      topContext.frameId,
+      mainParsed.index.excludedBackendNodeIds,
+    );
   for (const id of frameParsed.excludedBackendNodeIds) {
     excludedBackendNodeIds.add(id);
   }
@@ -1251,6 +778,7 @@ export async function captureViewModel(
       ...frameParsed.frameGeometryIssues,
     ],
     frameOwnerBackendNodeIds: frameParsed.frameOwnerBackendNodeIds,
+    frameExcludedBackendNodeIds: frameParsed.frameExcludedBackendNodeIds,
     frameParentIds: frameParsed.frameParentIds,
     ...(topContext.frameId ? { rootFrameId: topContext.frameId } : {}),
     excludedBackendNodeIds,

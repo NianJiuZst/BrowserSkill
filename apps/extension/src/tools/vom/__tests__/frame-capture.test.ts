@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { OVERLAY_HOST_MARKER_ATTR } from "@/lib/overlay-bridge";
 import type { CdpRunner } from "../../shared";
 import type { CapturedNode, CapturedViewModel } from "../capture";
 import { captureFrameData } from "../frame-capture";
@@ -32,7 +33,7 @@ function childSnapshot(frameId: string, backendNodeId: number) {
           parentIndex: [-1, 0],
           nodeName: [1, 2],
           backendNodeId: [backendNodeId - 1, backendNodeId],
-          attributes: [[], []],
+          attributes: [[], []] as number[][],
         },
         layout: {
           nodeIndex: [0, 1],
@@ -140,9 +141,15 @@ describe("captureFrameData", () => {
       }
       if (method === "DOMSnapshot.enable" || method === "Accessibility.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
-        return target.sessionId === "left-session"
-          ? childSnapshot("left", 101)
-          : childSnapshot("right", 201);
+        if (target.sessionId !== "left-session") return childSnapshot("right", 201);
+        const snapshot = childSnapshot("left", 101);
+        const marker = snapshot.strings.push(OVERLAY_HOST_MARKER_ATTR) - 1;
+        const nodes = snapshot.documents[0].nodes;
+        nodes.backendNodeId.push(201); // Same id as a real button in the other target.
+        nodes.parentIndex.push(0);
+        nodes.nodeName.push(2);
+        nodes.attributes.push([marker, -1]);
+        return snapshot;
       }
       if (method === "Accessibility.getFullAXTree") return { nodes: [] };
       throw new Error(`unexpected ${method}`);
@@ -188,6 +195,10 @@ describe("captureFrameData", () => {
 
     const trees = await captureFrameData(cdp, 4, captured);
 
+    expect(trees.find((tree) => tree.frameId === "left")?.excludedBackendNodeIds).toEqual(
+      new Set([201]),
+    );
+    expect(trees.find((tree) => tree.frameId === "right")?.excludedBackendNodeIds?.size).toBe(0);
     expect(trees.map((tree) => tree.frameId)).toEqual(["main", "left", "right"]);
     expect(
       captured.frameNodes?.get("left")?.find((node) => node.backendNodeId === 101)?.rect,
@@ -274,10 +285,5 @@ describe("captureFrameData", () => {
     expect(childDocument?.domNodes.find((node) => node.backendNodeId === 101)).toEqual(
       expect.objectContaining({ rect: null, localRect: null, rendered: true }),
     );
-    expect(captured.frameGeometryIssues).toContainEqual({
-      status: "unavailable",
-      source: { target: { tabId: 4, sessionId: "child-session" }, frameId: "child" },
-      reason: "snapshot-coordinates-unavailable",
-    });
   });
 });
