@@ -2,6 +2,7 @@ import type { CdpTarget } from "@/browser-driver/frame-graph";
 import {
   type FrameProjectionState,
   projectSnapshotRect,
+  type SnapshotCoordinates,
   snapshotViewportRect,
 } from "../geometry/coordinate-types";
 import { createCaptureCheckpoint } from "./capture-abort";
@@ -13,8 +14,8 @@ export interface FrameContext {
   ownerFrameBackendNodeId: number | null;
   projection: FrameProjectionState;
   target: CdpTarget;
-  scrollX: number;
-  scrollY: number;
+  coordinates: SnapshotCoordinates | null;
+  layoutUnitsPerCssPixel: number | null;
 }
 
 export interface NormalizedDocument {
@@ -38,10 +39,11 @@ export async function normalizeDocument(
       if (pending) await pending;
     }
     const node = decoded.nodes[i];
+    const bounds = node.layout?.bounds ?? [];
     const input = snapshotViewportRect(
-      node.layout?.bounds ?? [],
+      bounds,
       { target: context.target, frameId: context.frameId },
-      { x: context.scrollX, y: context.scrollY },
+      context.coordinates,
     );
     const local = input?.rect;
     const rect =
@@ -57,7 +59,10 @@ export async function normalizeDocument(
       localRect: local ? { x: local.x, y: local.y, w: local.width, h: local.height } : null,
       rect: rect ? { x: rect.x, y: rect.y, w: rect.width, h: rect.height } : null,
       rendered:
-        !!local &&
+        bounds.length >= 4 &&
+        bounds.slice(0, 4).every(Number.isFinite) &&
+        bounds[2] > 0 &&
+        bounds[3] > 0 &&
         visibility !== "hidden" &&
         visibility !== "collapse" &&
         (Number.parseFloat(opacity) || 0) > 0,

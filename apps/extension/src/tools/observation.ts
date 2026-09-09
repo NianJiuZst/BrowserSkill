@@ -1138,7 +1138,7 @@ export async function captureVomObservation(
   // Reserve space using the renderer's character-based token estimate. Like VOM
   // headers, this integrity notice remains visible even under a tiny token budget.
   const geometryNotice = captured.frameGeometryIssues?.length
-    ? "@warning iframe geometry incomplete: some frame content has no top-level coordinates.\n"
+    ? "@warning geometry incomplete: some page or frame content has no top-level coordinates.\n"
     : "";
   const rendered = renderVom(decoratedScene, {
     maxDepth: options.maxDepth,

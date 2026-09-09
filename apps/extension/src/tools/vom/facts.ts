@@ -2,9 +2,9 @@ import { isOverlayHostNode } from "@/lib/overlay-bridge";
 import { createCaptureCheckpoint } from "./capture-abort";
 import type { CapturedNode } from "./capture-types";
 
-/** Bounds retain their snapshot document CSS units until normalization. */
+/** Bounds retain their raw snapshot document layout units until normalization. */
 export interface SnapshotLayout {
-  readonly boundsSpace: "snapshot-document-css";
+  readonly boundsSpace: "snapshot-document-layout";
   bounds?: number[];
   styles: Readonly<Record<string, string>>;
 }

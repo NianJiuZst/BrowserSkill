@@ -173,7 +173,7 @@ export async function decodeDocument(
       li === undefined
         ? undefined
         : {
-            boundsSpace: "snapshot-document-css" as const,
+            boundsSpace: "snapshot-document-layout" as const,
             bounds: dl?.bounds?.[li],
             styles,
           };

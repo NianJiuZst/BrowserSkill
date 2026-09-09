@@ -77,7 +77,7 @@ describe("document facts", () => {
     );
     expect(nodes[0].attrs).toEqual({ "aria-hidden": "true", inert: "" });
     expect(nodes[0].layout).toEqual({
-      boundsSpace: "snapshot-document-css",
+      boundsSpace: "snapshot-document-layout",
       bounds: [10, 20, 120, 40],
       styles: {
         position: "static",
