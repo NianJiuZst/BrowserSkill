@@ -33,12 +33,9 @@ BSK_AUTO_UPDATE=off pnpm eval:browser smoke --case snapshot-coordinates --bsk ./
 Smoke alone does **not** certify coordinate accuracy; CLI observations do not expose raw boxes.
 Use the geometric test above for the regression's numeric assertions.
 
-## Separate existing boundary
+## Related scrollbar regression
 
-The OOPIF root uses non-occupying scrollbars in the unit-conversion regression. Root and
-same-process frames retain normal scrollbars. Append `&classic-scrollbars` to the fixture URL
-to reproduce the separate existing OOPIF projection issue: `targetProjection()` maps the CSS
-layout viewport (which excludes occupying scrollbars) onto the entire owner content quad.
-This inflates the projected coordinates when scrollbars occupy space. Main already has that
-mapping; fixing it also changes shared live geometry and is outside this snapshot-unit fix.
-The test does not relax its numeric tolerance to absorb that error.
+The unit-conversion fixture keeps non-occupying OOPIF scrollbars by default. The same
+browser test also runs the dedicated [OOPIF scrollbar fixture](../oopif-scrollbars/README.md),
+which covers occupied scrollbars, two OOPIF boundaries, clipping and real clicks.
+Append `&classic-scrollbars` to this fixture's URL to enable its normal OOPIF scrollbars.

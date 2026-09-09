@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { CdpFrame, CdpFrameGraph, CdpTarget } from "@/browser-driver/frame-graph";
+import { resolveNodeGeometry } from "../frame-geometry";
 import type { CdpRunner } from "../shared";
 import { captureObservationFacts } from "../vom/capture-coordinator";
 
@@ -11,12 +12,28 @@ type Send = <T = Record<string, unknown>>(
 ) => Promise<T>;
 type Tree = { frame: { id: string; parentId?: string; name?: string }; childFrames?: Tree[] };
 type Rect = { x: number; y: number; w: number; h: number };
-type Oracle = { probe: Rect; owners: Record<string, { x: number; y: number; scale: number }> };
+type Oracle = {
+  probes: Record<string, Rect>;
+  viewport: { width: number; height: number };
+  owners: Record<string, { x: number; y: number; scale: number }>;
+};
+
+function clip(rect: Rect, viewport: Oracle["viewport"]): Rect | null {
+  const x = Math.max(0, rect.x),
+    y = Math.max(0, rect.y);
+  const right = Math.min(viewport.width, rect.x + rect.w);
+  const bottom = Math.min(viewport.height, rect.y + rect.h);
+  return right > x && bottom > y ? { x, y, w: right - x, h: bottom - y } : null;
+}
 
 // The independent oracle uses DOM border boxes and this fixture's axis-aligned
 // iframe transforms. No production snapshot conversion/projection builds expectations.
 const oracleExpression = `(() => {
-  const box = document.querySelector('#probe').getBoundingClientRect();
+  const probes = {};
+  for (const node of document.querySelectorAll('[data-geometry-probe]')) {
+    const box = node.getBoundingClientRect();
+    probes[node.id] = { x: box.x, y: box.y, w: box.width, h: box.height };
+  }
   const owners = {};
   for (const frame of document.querySelectorAll('iframe')) {
     const rect = frame.getBoundingClientRect();
@@ -28,17 +45,31 @@ const oracleExpression = `(() => {
       scale,
     };
   }
-  return { probe: { x: box.x, y: box.y, w: box.width, h: box.height }, owners };
+  return { probes, viewport: { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight }, owners };
 })()`;
 
 describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate contract", () => {
-  it.each([
-    { deviceScale: 1, zoom: 1 },
-    { deviceScale: 0.8, zoom: 1 },
-    { deviceScale: 1, zoom: 1.25 },
-    { deviceScale: 2, zoom: 1 },
-    { deviceScale: 2, zoom: 0.8 },
-  ])("matches DOM geometry at device scale $deviceScale and zoom $zoom", async (configuration) => {
+  it.each(
+    [
+      { deviceScale: 1, zoom: 1 },
+      { deviceScale: 0.8, zoom: 1 },
+      { deviceScale: 1, zoom: 1.25 },
+      { deviceScale: 2, zoom: 1 },
+      { deviceScale: 2, zoom: 0.8 },
+    ]
+      .flatMap((configuration) => [
+        { ...configuration, fixture: "snapshot-coordinates", scrollbars: "none" },
+        { ...configuration, fixture: "oopif-scrollbars", scrollbars: "both" },
+      ])
+      .concat(
+        ["vertical", "horizontal", "none"].map((scrollbars) => ({
+          deviceScale: 1,
+          zoom: 1,
+          fixture: "oopif-scrollbars",
+          scrollbars,
+        })),
+      ),
+  )("$fixture: device scale $deviceScale, zoom $zoom, scrollbars $scrollbars", async (configuration) => {
     const evalRoot = new URL("../../../../../evals/browser/", import.meta.url);
     const { createEvalServer } = await import(new URL("lib/server.mjs", evalRoot).href);
     const { withChrome } = await import(
@@ -59,7 +90,9 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
           );
           await send(
             "Page.navigate",
-            { url: `${baseUrl}/snapshot-coordinates?run=coordinates` },
+            {
+              url: `${baseUrl}/${configuration.fixture}?run=coordinates&scrollbars=${configuration.scrollbars}`,
+            },
             rootSession,
           );
           await expect
@@ -86,7 +119,7 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
             });
             sessions.push(sessionId);
           }
-          expect(sessions.length).toBe(2); // The cross-site fixture must actually be an OOPIF.
+          expect(sessions.length).toBe(configuration.fixture === "oopif-scrollbars" ? 3 : 2);
           const frames: CdpFrame[] = [];
           const names = new Map<string, string>();
           const sessionFor = (target: CdpTarget) => target.sessionId ?? rootSession;
@@ -107,7 +140,7 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
             };
             visit(frameTree);
           }
-          expect(frames).toHaveLength(5);
+          expect(frames).toHaveLength(configuration.fixture === "oopif-scrollbars" ? 3 : 5);
           for (const frame of frames) {
             if (!frame.parentFrameId) continue;
             const parent = frames.find((item) => item.frameId === frame.parentFrameId)!;
@@ -127,6 +160,11 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
             },
             sendToTarget: (target, method, params) => {
               calls.push(`${target.sessionId ?? target.tabId}:${method}`);
+              if (
+                method === "Runtime.evaluate" &&
+                (params as { expression?: string })?.expression?.includes("window.innerWidth")
+              )
+                calls.push(`${target.sessionId ?? target.tabId}:viewport-size`);
               return send(method, params, sessionFor(target));
             },
             getFrameGraph: async () => graph,
@@ -179,47 +217,130 @@ describe.skipIf(!process.env.BSK_GEOMETRY_CHROME)("real DOMSnapshot coordinate c
             );
             oracles.set(frame.frameId, reply.result.value);
           }
+          const childViewport = await send<{
+            result: {
+              value: { width: number; height: number; clientWidth: number; clientHeight: number };
+            };
+          }>(
+            "Runtime.evaluate",
+            {
+              expression:
+                "({ width: innerWidth, height: innerHeight, clientWidth: document.documentElement.clientWidth, clientHeight: document.documentElement.clientHeight })",
+              returnByValue: true,
+            },
+            sessions[1],
+          );
+          for (const dimension of ["Width", "Height"] as const) {
+            const occupied =
+              childViewport.result.value[dimension === "Width" ? "width" : "height"] -
+              childViewport.result.value[`client${dimension}`];
+            if (
+              configuration.scrollbars === "both" ||
+              configuration.scrollbars === (dimension === "Width" ? "vertical" : "horizontal")
+            )
+              expect(occupied).toBeGreaterThan(0);
+            else expect(occupied).toBe(0);
+          }
           const facts = await captureObservationFacts(cdp, 1);
           expect(facts.issues).toEqual([]);
-          for (const frame of frames) {
-            const node = facts.documents
-              .find((doc) => doc.frame.frameId === frame.frameId)
-              ?.domNodes.find((node) => node.attrs.id === "probe");
-            expect(node, `missing probe in ${names.get(frame.frameId) || "root"}`).toBeDefined();
-            const local = oracles.get(frame.frameId)!.probe;
-            const top = { ...local };
-            let current = frame;
-            while (current.parentFrameId) {
-              const owner = oracles.get(current.parentFrameId)!.owners[names.get(current.frameId)!];
-              top.x = owner.x + top.x * owner.scale;
-              top.y = owner.y + top.y * owner.scale;
-              top.w *= owner.scale;
-              top.h *= owner.scale;
-              current = frames.find((item) => item.frameId === current.parentFrameId)!;
-            }
-            expect(
-              node!.rect,
-              JSON.stringify({
-                frame: names.get(frame.frameId),
-                local,
-                top,
-                viewport: facts.viewport,
-              }),
-            ).not.toBeNull();
-            for (const key of ["x", "y", "w", "h"] as const) {
-              expect(
-                Math.abs(node!.localRect![key] - local[key]),
-                `${names.get(frame.frameId)} local ${key}`,
-              ).toBeLessThan(2);
-              expect(
-                Math.abs(node!.rect![key] - top[key]),
-                `${names.get(frame.frameId)} top ${key}`,
-              ).toBeLessThan(2);
-            }
-          }
           expect(calls.filter((call) => call.endsWith(":Page.getLayoutMetrics"))).toHaveLength(
             sessions.length,
           );
+          // Identity verification also uses Runtime.evaluate; count the full viewport reads separately.
+          const viewportReadsBeforeLive = calls.filter((call) => call.endsWith(":viewport-size"));
+          expect(new Set(viewportReadsBeforeLive).size).toBe(viewportReadsBeforeLive.length);
+          expect(viewportReadsBeforeLive.length).toBeLessThanOrEqual(sessions.length - 1);
+          for (const frame of frames) {
+            for (const [id, local] of Object.entries(oracles.get(frame.frameId)!.probes)) {
+              const node = facts.documents
+                .find((doc) => doc.frame.frameId === frame.frameId)
+                ?.domNodes.find((node) => node.attrs.id === id);
+              expect(node, `missing ${id} in ${names.get(frame.frameId) || "root"}`).toBeDefined();
+              let top = clip(local, oracles.get(frame.frameId)!.viewport);
+              let current = frame;
+              while (top && current.parentFrameId) {
+                const parentOracle = oracles.get(current.parentFrameId)!;
+                const owner = parentOracle.owners[names.get(current.frameId)!];
+                top = clip(
+                  {
+                    x: owner.x + top.x * owner.scale,
+                    y: owner.y + top.y * owner.scale,
+                    w: top.w * owner.scale,
+                    h: top.h * owner.scale,
+                  },
+                  parentOracle.viewport,
+                );
+                current = frames.find((item) => item.frameId === current.parentFrameId)!;
+              }
+              for (const key of ["x", "y", "w", "h"] as const)
+                expect(
+                  Math.abs(node!.localRect![key] - local[key]),
+                  `${names.get(frame.frameId)} ${id} local ${key}`,
+                ).toBeLessThan(2);
+              if (!top) {
+                expect(node!.rect, `${id} must be clipped out`).toBeNull();
+                if (configuration.fixture === "oopif-scrollbars")
+                  expect(
+                    await resolveNodeGeometry(cdp, 1, {
+                      target: frame.target,
+                      frameId: frame.frameId,
+                      backendNodeId: node!.backendNodeId,
+                    }),
+                  ).toMatchObject({ code: "permission_denied" });
+                continue;
+              }
+              expect(node!.rect).not.toBeNull();
+              for (const key of ["x", "y", "w", "h"] as const)
+                expect(
+                  Math.abs(node!.rect![key] - top[key]),
+                  `${names.get(frame.frameId)} ${id} top ${key}`,
+                ).toBeLessThan(2);
+              if (configuration.fixture !== "oopif-scrollbars") continue;
+              const live = await resolveNodeGeometry(cdp, 1, {
+                target: frame.target,
+                frameId: frame.frameId,
+                backendNodeId: node!.backendNodeId,
+              });
+              if ("code" in live) throw new Error(live.message);
+              for (const [key, liveKey] of [
+                ["x", "x"],
+                ["y", "y"],
+                ["w", "width"],
+                ["h", "height"],
+              ] as const)
+                expect(
+                  Math.abs(live.topBounds[liveKey] - top[key]),
+                  `${id} live ${key}`,
+                ).toBeLessThan(2);
+              const before = server.snapshot("coordinates").events.length;
+              for (const type of ["mousePressed", "mouseReleased"])
+                await send(
+                  "Input.dispatchMouseEvent",
+                  { type, ...live.actionPoint, button: "left", clickCount: 1 },
+                  rootSession,
+                );
+              await expect
+                .poll(
+                  () =>
+                    server
+                      .snapshot("coordinates")
+                      .events.slice(before)
+                      .some(
+                        (event: { type: string; path: string; data: { probe?: string } }) =>
+                          event.type === "geometry.clicked" &&
+                          event.data.probe === id &&
+                          event.path ===
+                            (frame.parentFrameId
+                              ? names.get(frame.frameId) === "nested"
+                                ? "/oopif-scrollbars/nested"
+                                : "/oopif-scrollbars/frame"
+                              : "/oopif-scrollbars"),
+                      ),
+                  { timeout: 3000 },
+                )
+                .toBe(true);
+            }
+          }
           const metrics = await send<{
             cssVisualViewport: { zoom: number };
             visualViewport: { clientWidth: number };

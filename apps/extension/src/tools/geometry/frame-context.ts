@@ -9,8 +9,10 @@ import {
   type Polygon,
   type ProjectiveEdge,
   parseCdpQuad,
+  projectPolygon,
   type Quad,
   type Size,
+  viewportPolygon,
 } from "../geometry";
 import { type CdpRunner, sendToCdpTarget } from "../shared";
 import type { CoordinateOwner, CssViewport, SnapshotProjectionResult } from "./coordinate-types";
@@ -67,6 +69,7 @@ export function cssViewport(metrics: LayoutMetrics): CssViewport {
 /** One read-only measurement phase. Discard after scrolling or any later operation. */
 export class GeometryContext {
   private readonly metrics = new Map<string, Promise<LayoutMetrics>>();
+  private readonly frameViewports = new Map<string, Promise<Size | null>>();
   private readonly owners = new Map<string, Promise<Quad | null>>();
   private readonly projections = new Map<string, Promise<GeometryProjection | null>>();
   private readonly snapshotOwners = new Map<string, Promise<{ quad: Quad; size: Size } | null>>();
@@ -155,6 +158,35 @@ export class GeometryContext {
     return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0
       ? { width, height }
       : null;
+  }
+
+  /** The full OOPIF viewport maps to its owner's content quad. Layout metrics
+   * exclude occupied scrollbars and remain the clipping boundary, not the scale. */
+  private frameViewport(target: CdpTarget): Promise<Size | null> {
+    const key = cdpTargetKey(target);
+    let promise = this.frameViewports.get(key);
+    if (!promise) {
+      promise = this.request<{ result?: { value?: Size }; exceptionDetails?: unknown }>(
+        target,
+        "Runtime.evaluate",
+        {
+          expression: "({ width: window.innerWidth, height: window.innerHeight })",
+          returnByValue: true,
+        },
+      ).then(({ result, exceptionDetails }) => {
+        const size = result?.value;
+        return !exceptionDetails &&
+          size &&
+          Number.isFinite(size.width) &&
+          Number.isFinite(size.height) &&
+          size.width > 0 &&
+          size.height > 0
+          ? size
+          : null;
+      });
+      this.frameViewports.set(key, promise);
+    }
+    return promise;
   }
 
   ownerContent(target: CdpTarget, backendNodeId: number): Promise<Quad | null> {
@@ -342,12 +374,19 @@ export class GeometryContext {
       const parent = frames.get(root.parentFrameId);
       if (!parent || root.ownerBackendNodeId === undefined) return null;
       const destinationQuad = await this.ownerContent(parent.target, root.ownerBackendNodeId);
-      const source = await this.viewport(root.target);
+      if (!destinationQuad) return null;
+      const source = await this.frameViewport(root.target);
+      const visible = await this.viewport(root.target);
       const parentRoot = this.targetRoot(frames, parent);
-      if (!destinationQuad || !source || !parentRoot) return null;
+      if (!source || !visible || !parentRoot) return null;
       const destinationClips = await this.clips(frames, parent, parentRoot);
       if (!destinationClips) return null;
-      edges.push({ sourceViewport: source, destinationQuad, destinationClips });
+      const edge = { sourceViewport: source, destinationQuad, destinationClips };
+      // Keep scrollbar strips clipped at every target boundary, including
+      // intermediate OOPIFs. Project the clip with the same full-viewport scale.
+      if (source.width !== visible.width || source.height !== visible.height)
+        destinationClips.push(projectPolygon(viewportPolygon(visible), edge));
+      edges.push(edge);
       root = parentRoot;
     }
     const topViewport = await this.viewport(root.target);

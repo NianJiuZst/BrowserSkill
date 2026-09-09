@@ -201,6 +201,7 @@ describe("handleClick", () => {
       if (method === "DOM.getContentQuads") {
         return { quads: [[10, 20, 110, 20, 110, 60, 10, 60]] };
       }
+      if (method === "Runtime.evaluate") return { result: { value: { width: 200, height: 100 } } };
       if (method === "Page.getLayoutMetrics") {
         return { cssLayoutViewport: { clientWidth: 200, clientHeight: 100 } };
       }
@@ -220,6 +221,7 @@ describe("handleClick", () => {
       { sessionId: "child-session", method: "DOM.scrollIntoViewIfNeeded" },
       { sessionId: "child-session", method: "DOM.getContentQuads" },
       { sessionId: "child-session", method: "Page.getLayoutMetrics" },
+      { sessionId: "child-session", method: "Runtime.evaluate" },
     ]);
     expect(fake.sent.filter((call) => call.method === "Input.dispatchMouseEvent")).toHaveLength(3);
   });
