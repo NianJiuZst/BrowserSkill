@@ -2,12 +2,14 @@ import { OVERLAY_AUTOMATION_BYPASS } from "@/lib/overlay-bridge";
 import type { SessionManager } from "@/session-manager/manager";
 import type { Transport } from "@/transport/transport";
 import type {
+  BlurParams,
   ClickParams,
   ConsoleParams,
   DownloadParams,
   EmulateParams,
   EvaluateParams,
   FillParams,
+  FocusParams,
   GetHtmlParams,
   HoverParams,
   HoverResult,
@@ -39,7 +41,15 @@ import { type EmulateCdpRunner, handleEmulate } from "./emulate";
 import { classifyCdpError } from "./errors";
 import { handleEvaluate } from "./evaluate";
 import { handleRequestHelp } from "./human-loop";
-import { handleClick, handleFill, handleHover, handlePress, handleSelect } from "./interaction";
+import {
+  handleBlur,
+  handleClick,
+  handleFill,
+  handleFocus,
+  handleHover,
+  handlePress,
+  handleSelect,
+} from "./interaction";
 import {
   handleNavigate,
   handleNavigateBack,
@@ -515,6 +525,28 @@ export class ToolDispatcher {
         );
         return this.rememberHover((req.params as HoverParams).session_id, result);
       }
+      case "tool.focus":
+        return this.withHoverReleaseForRequest(
+          req.params as FocusParams,
+          () =>
+            handleFocus(
+              this.sessions,
+              req.params as FocusParams,
+              this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+            ),
+          signal,
+        );
+      case "tool.blur":
+        return this.withHoverReleaseForRequest(
+          req.params as BlurParams,
+          () =>
+            handleBlur(
+              this.sessions,
+              req.params as BlurParams,
+              this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+            ),
+          signal,
+        );
       case "tool.fill":
         return this.withHoverReleaseForRequest(
           req.params as FillParams,
@@ -785,6 +817,8 @@ function sessionIdForBrowserControlMethod(req: RequestFrame): string | null {
     case "tool.reload":
     case "tool.click":
     case "tool.hover":
+    case "tool.focus":
+    case "tool.blur":
     case "tool.fill":
     case "tool.press":
     case "tool.select":

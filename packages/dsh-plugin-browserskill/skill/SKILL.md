@@ -51,8 +51,8 @@ Use `browser_inspect` action `observe` as the primary semantic page view. It ret
 text, and `@eN` refs. Prefer fresh refs over raw selectors. Refs invalidate after navigation and may
 also become stale after large DOM changes, so observe again before the next interaction.
 
-Use `browser_interact` for click, hover, fill, select, and key actions. An observation marks a
-hover-only surface as `@e1 button "Products" [hover first: Shoes | Bags]`. The listed items are
+Use `browser_interact` for click, hover, focus, blur, fill, select, and key actions. Focus and blur
+explicitly enter or leave UI states triggered by focus changes. An observation marks a hover-only surface as `@e1 button "Products" [hover first: Shoes | Bags]`. The listed items are
 labels, not usable refs: hover the trigger, observe again, then act on the revealed item's own ref.
 Do not click the trigger itself unless the user wants the trigger's action.
 

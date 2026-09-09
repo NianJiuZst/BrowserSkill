@@ -102,6 +102,8 @@ const ACTION_ROUTES: Record<string, readonly [string, string]> = {
   "inspect.network": ["browser_inspect", "network"],
   "interact.click": ["browser_interact", "click"],
   "interact.hover": ["browser_interact", "hover"],
+  "interact.focus": ["browser_interact", "focus"],
+  "interact.blur": ["browser_interact", "blur"],
   "interact.fill": ["browser_interact", "fill"],
   "interact.select": ["browser_interact", "select"],
   "interact.press": ["browser_interact", "press"],
@@ -200,7 +202,7 @@ const EXPECTED_ACTIONS = {
   browser_session: ["start", "stop", "list"],
   browser_page: ["navigate", "back", "forward", "reload", "wait"],
   browser_inspect: ["observe", "snapshot", "html", "screenshot", "console", "network"],
-  browser_interact: ["click", "hover", "fill", "select", "press"],
+  browser_interact: ["click", "hover", "focus", "blur", "fill", "select", "press"],
   browser_tabs: ["list", "create", "select", "close", "borrow", "return"],
   browser_assist: ["resize", "emulate", "request-help"],
 } as const;
@@ -497,6 +499,60 @@ describe("interaction tools", () => {
       "2",
       "@e1",
     ]);
+  });
+
+  it.each([
+    "focus",
+    "blur",
+  ] as const)("interact.%s maps focus state, target, tab and timeout", async (action) => {
+    const { tools, calls } = setup({
+      "session start": START_REPLY("s1"),
+      [action]: {
+        tab_id: 7,
+        focused: action === "focus",
+        ...(action === "blur" ? { was_focused: true } : {}),
+      },
+    });
+    await startSession(tools);
+    const target = action === "focus" ? "@e3" : "#field";
+    const value = await tools
+      .get(`interact.${action}`)
+      ?.execute({ target, tabId: 7, timeoutMs: 150_000 }, makeExec());
+    expect(value).toEqual({
+      session: "s1",
+      tabId: 7,
+      focused: action === "focus",
+      ...(action === "blur" ? { wasFocused: true } : {}),
+    });
+    expect(calls[1].args).toEqual([
+      action,
+      "--session",
+      "s1",
+      "--tab-id",
+      "7",
+      "--timeout",
+      "150000ms",
+      target,
+    ]);
+    expect(calls[1].options.timeoutMs).toBe(165_000);
+  });
+
+  it.each([
+    "focus",
+    "blur",
+  ] as const)("interact.%s validates arguments and session ownership before running", async (action) => {
+    const { tools, calls } = setup({ "session start": START_REPLY("s1") });
+    await startSession(tools);
+    const tool = tools.get(`interact.${action}`)!;
+    await expect(tool.execute({}, makeExec())).rejects.toThrow(/invalid arguments/i);
+    await expect(tool.execute({ target: " " }, makeExec())).rejects.toThrow(/non-empty/i);
+    await expect(tool.execute({ target: "e1", timeoutMs: 0 }, makeExec())).rejects.toThrow(
+      /greater than zero/i,
+    );
+    await expect(tool.execute({ target: "e1", session: "foreign" }, makeExec())).rejects.toThrow(
+      /session/i,
+    );
+    expect(calls).toHaveLength(1);
   });
 
   it("interact.fill passes value and --no-clear", async () => {

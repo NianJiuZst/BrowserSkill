@@ -72,6 +72,10 @@ pub enum Method {
     ToolClick,
     #[serde(rename = "tool.hover")]
     ToolHover,
+    #[serde(rename = "tool.focus")]
+    ToolFocus,
+    #[serde(rename = "tool.blur")]
+    ToolBlur,
     #[serde(rename = "tool.fill")]
     ToolFill,
     #[serde(rename = "tool.press")]
@@ -168,6 +172,8 @@ impl Method {
             | Method::ToolNavigateForward
             | Method::ToolReload
             | Method::ToolClick
+            | Method::ToolFocus
+            | Method::ToolBlur
             | Method::ToolFill
             | Method::ToolPress
             | Method::ToolSelect
@@ -305,6 +311,8 @@ mod tests {
         assert!(Method::ToolNavigateForward.is_mutating());
         assert!(Method::ToolReload.is_mutating());
         assert!(Method::ToolClick.is_mutating());
+        assert!(Method::ToolFocus.is_mutating());
+        assert!(Method::ToolBlur.is_mutating());
         assert!(Method::ToolFill.is_mutating());
         assert!(Method::ToolPress.is_mutating());
         assert!(Method::ToolSelect.is_mutating());
@@ -349,6 +357,8 @@ mod tests {
         assert_eq!(Method::ToolHover.effect(), MethodEffect::TransientInput);
         assert_eq!(Method::ToolObserve.effect(), MethodEffect::TransientInput);
         assert_eq!(Method::ToolClick.effect(), MethodEffect::BrowserMutation);
+        assert_eq!(Method::ToolFocus.effect(), MethodEffect::BrowserMutation);
+        assert_eq!(Method::ToolBlur.effect(), MethodEffect::BrowserMutation);
         assert_eq!(Method::Cancel.effect(), MethodEffect::ControlPlane);
     }
 
@@ -358,6 +368,8 @@ mod tests {
         assert!(Method::ToolHover.requires_interrupt_gate());
         assert!(Method::ToolObserve.requires_interrupt_gate());
         assert!(Method::ToolClick.requires_interrupt_gate());
+        assert!(Method::ToolFocus.requires_interrupt_gate());
+        assert!(Method::ToolBlur.requires_interrupt_gate());
         assert!(!Method::Cancel.requires_interrupt_gate());
     }
 }

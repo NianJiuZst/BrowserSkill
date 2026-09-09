@@ -55,9 +55,12 @@ Use this default loop:
 ```text
 bsk navigate <url> --session <id>
 bsk observe --session <id>
-bsk click|hover|fill|select|press ... --session <id>
+bsk click|hover|focus|blur|fill|select|press ... --session <id>
 bsk observe --session <id>             # after navigation or a meaningful DOM change
 ```
+
+`bsk focus <ref>` explicitly focuses a target; `bsk blur <ref>` removes focus and reports whether
+it was focused. Use these for UI states triggered by focus changes.
 
 Prefer fresh `@eN` refs over CSS selectors. Navigation invalidates refs; large DOM changes may also
 make them stale. Observe again before the next interaction.
@@ -114,7 +117,7 @@ This list of names is complete. Never invent a command outside it; read
 session start|stop|list   browsers   status   doctor   update   logs
 navigate   navigate-back   navigate-forward   reload   wait-for-navigation   wait-ms
 observe   snapshot   get-html   screenshot   console   network
-click   hover   fill   select   press   evaluate
+click   hover   focus   blur   fill   select   press   evaluate
 tab list|create|close|select|borrow|return   window resize   emulate
 upload   download   request-help   record start|stop
 ```
