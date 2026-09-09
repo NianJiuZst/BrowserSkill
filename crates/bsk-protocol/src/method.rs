@@ -82,6 +82,10 @@ pub enum Method {
     ToolPress,
     #[serde(rename = "tool.select")]
     ToolSelect,
+    #[serde(rename = "tool.upload")]
+    ToolUpload,
+    #[serde(rename = "tool.download")]
+    ToolDownload,
     #[serde(rename = "tool.snapshot")]
     ToolSnapshot,
     #[serde(rename = "tool.observe")]
@@ -108,6 +112,17 @@ pub enum Method {
     ToolRecordStop,
     #[serde(rename = "tool.record_await")]
     ToolRecordAwait,
+
+    #[serde(rename = "transfer.begin")]
+    TransferBegin,
+    #[serde(rename = "transfer.chunk")]
+    TransferChunk,
+    #[serde(rename = "transfer.finish")]
+    TransferFinish,
+    #[serde(rename = "transfer.read")]
+    TransferRead,
+    #[serde(rename = "transfer.release")]
+    TransferRelease,
 
     #[serde(rename = "cancel")]
     Cancel,
@@ -162,6 +177,8 @@ impl Method {
             | Method::ToolFill
             | Method::ToolPress
             | Method::ToolSelect
+            | Method::ToolUpload
+            | Method::ToolDownload
             | Method::ToolEvaluate
             // May navigate via optional `url` and changes Agent Window
             // chrome; gate behind pending-interrupt like other writes.
@@ -200,6 +217,11 @@ impl Method {
             | Method::SystemPing
             | Method::SystemStatus
             | Method::BrowserList
+            | Method::TransferBegin
+            | Method::TransferChunk
+            | Method::TransferFinish
+            | Method::TransferRead
+            | Method::TransferRelease
             | Method::Cancel => MethodEffect::ControlPlane,
         }
     }
