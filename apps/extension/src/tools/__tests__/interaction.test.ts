@@ -553,7 +553,7 @@ describe("handleFocus and handleBlur", () => {
       "DOM.scrollIntoViewIfNeeded": () => ({}),
       "DOM.focus": () => ({}),
       "DOM.resolveNode": () => ({ object: { objectId: "focus-target" } }),
-      "Runtime.callFunctionOn": () => ({ result: { value: { focused: true } } }),
+      "Runtime.callFunctionOn": () => ({ result: { value: true } }),
     });
 
     const res = await handleFocus(
@@ -566,9 +566,10 @@ describe("handleFocus and handleBlur", () => {
     expect(res).toMatchObject({ tab_id: 4, used_ref: "e3", focused: true });
     expect(fake.sent.map((call) => call.method)).toEqual([
       "DOM.scrollIntoViewIfNeeded",
-      "DOM.focus",
       "DOM.resolveNode",
+      "DOM.focus",
       "Runtime.callFunctionOn",
+      "Runtime.releaseObject",
     ]);
   });
 
@@ -599,9 +600,9 @@ describe("handleFocus and handleBlur", () => {
     fake.cdp.sendToTarget = vi.fn(async (target, method) => {
       targetCalls.push({ sessionId: target.sessionId, method });
       if (method === "DOM.scrollIntoViewIfNeeded") return {};
-      if (method === "DOM.focus") return {};
+      if (method === "DOM.focus" || method === "Runtime.releaseObject") return {};
       if (method === "DOM.resolveNode") return { object: { objectId: "focus-target" } };
-      if (method === "Runtime.callFunctionOn") return { result: { value: { focused: true } } };
+      if (method === "Runtime.callFunctionOn") return { result: { value: true } };
       throw new Error(`unexpected child CDP call ${method}`);
     }) as CdpRunner["sendToTarget"];
 
@@ -615,9 +616,10 @@ describe("handleFocus and handleBlur", () => {
     expect(res.focused).toBe(true);
     expect(targetCalls).toEqual([
       { sessionId: "child-session", method: "DOM.scrollIntoViewIfNeeded" },
-      { sessionId: "child-session", method: "DOM.focus" },
       { sessionId: "child-session", method: "DOM.resolveNode" },
+      { sessionId: "child-session", method: "DOM.focus" },
       { sessionId: "child-session", method: "Runtime.callFunctionOn" },
+      { sessionId: "child-session", method: "Runtime.releaseObject" },
     ]);
   });
 
@@ -649,9 +651,10 @@ describe("handleFocus and handleBlur", () => {
     ctx.refStore.set("e3", 1234, { tabId: 4 });
     const fake = makeFakeCdp({
       "DOM.resolveNode": () => ({ object: { objectId: "focus-target" } }),
-      "Runtime.callFunctionOn": () => ({
-        result: { value: { ok: true, was_focused: true, focused: false } },
-      }),
+      "Runtime.callFunctionOn": vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { ok: true, was_focused: true } } })
+        .mockResolvedValueOnce({ result: { value: false } }),
     });
 
     const res = await handleBlur(
@@ -670,6 +673,8 @@ describe("handleFocus and handleBlur", () => {
     expect(fake.sent.map((call) => call.method)).toEqual([
       "DOM.resolveNode",
       "Runtime.callFunctionOn",
+      "Runtime.callFunctionOn",
+      "Runtime.releaseObject",
     ]);
   });
 

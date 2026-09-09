@@ -164,7 +164,7 @@ pub struct FocusResult {
     pub used_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub used_selector: Option<String>,
-    /// Whether the target is the document's deep active element after the call.
+    /// Whether the target holds DOM focus in its document or shadow root after the call.
     pub focused: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<JavaScriptDialogInfo>,

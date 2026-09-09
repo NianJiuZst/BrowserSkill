@@ -14,7 +14,7 @@
       }
     },
     "focused": {
-      "description": "Whether the target is the document's deep active element after the call.",
+      "description": "Whether the target holds DOM focus in its document or shadow root after the call.",
       "type": "boolean"
     },
     "tab_id": {
