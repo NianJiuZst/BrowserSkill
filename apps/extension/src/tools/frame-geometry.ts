@@ -161,7 +161,8 @@ export async function resolveNodeGeometry(
         return geometryError(`could not resolve frame geometry for ${address.frameId}`);
       topVisibleRegions = projectRegionToViewport(localRegion, projection);
       if (address.target.sessionId) {
-        const localViewport = projection.edges[0]?.sourceViewport ?? projection.topViewport;
+        const localViewport = await context.viewport(address.target);
+        if (!localViewport) return geometryError("could not resolve target viewport geometry");
         const localVisibleRegions = localRegion
           .map((polygon) =>
             clipPolygon(

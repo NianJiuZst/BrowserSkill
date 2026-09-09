@@ -655,6 +655,7 @@ function childSnapshot(frameId: string, backendNodeId: number) {
 describe("OOPIF capture", () => {
   it("captures and positions multiple OOPIF documents missing from the root snapshot", async () => {
     const sendToTarget = vi.fn(async (target, method) => {
+      if (method === "Runtime.evaluate") return { result: { value: { width: 300, height: 200 } } };
       if (method === "Page.getLayoutMetrics") {
         return {
           visualViewport: { clientWidth: 1000 },

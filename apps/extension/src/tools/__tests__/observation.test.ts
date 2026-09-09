@@ -3380,6 +3380,7 @@ describe("handleSnapshot", () => {
       throw new Error(`unexpected root CDP method ${method}`);
     });
     const sendToTarget = vi.fn(async (_target, method: string) => {
+      if (method === "Runtime.evaluate") return { result: { value: { width: 400, height: 300 } } };
       if (method === "Page.getLayoutMetrics" && ownerGeometry !== "unavailable")
         return {
           visualViewport: { clientWidth: 1000 },
