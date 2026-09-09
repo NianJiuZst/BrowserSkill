@@ -65,7 +65,11 @@ function makeFakeCdp(handlers: Record<string, (params?: object) => unknown>) {
     sent.push({ method, params });
     const handler = handlers[method];
     if (!handler && method === "Page.getLayoutMetrics") {
-      return { cssLayoutViewport: { clientWidth: 1280, clientHeight: 720 } };
+      return {
+        visualViewport: { clientWidth: 1000 },
+        cssVisualViewport: { clientWidth: 1000 },
+        cssLayoutViewport: { clientWidth: 1280, clientHeight: 720 },
+      };
     }
     if (!handler) throw new Error(`unexpected CDP call ${method}`);
     return handler(params);
@@ -2494,7 +2498,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") throw new Error("snapshot unsupported");
@@ -2581,7 +2589,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes: [root, button] };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -2672,7 +2684,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes: [root, button] };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -2766,7 +2782,11 @@ describe("handleSnapshot", () => {
       if (method === "Accessibility.enable") return {};
       if (method === "Accessibility.getFullAXTree") return { nodes: [root, button] };
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -2931,7 +2951,11 @@ describe("handleSnapshot", () => {
         };
       }
       if (method === "Page.getLayoutMetrics") {
-        return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 } };
+        return {
+          visualViewport: { clientWidth: 1000 },
+          cssVisualViewport: { clientWidth: 1000 },
+          cssLayoutViewport: { clientWidth: 1000, clientHeight: 800 },
+        };
       }
       if (method === "DOMSnapshot.enable") return {};
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -3144,6 +3168,8 @@ describe("handleSnapshot", () => {
   }
 
   const VP_METRICS = {
+    visualViewport: { clientWidth: 1000 },
+    cssVisualViewport: { clientWidth: 1000 },
     cssLayoutViewport: { clientWidth: 1000, clientHeight: 800, pageX: 0, pageY: 0 },
   };
 
@@ -3157,6 +3183,8 @@ describe("handleSnapshot", () => {
       strings,
       documents: [
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "main",
           nodes: {
             parentIndex: [-1, 0, 1],
@@ -3177,6 +3205,8 @@ describe("handleSnapshot", () => {
           },
         },
         {
+          scrollOffsetX: 0,
+          scrollOffsetY: 0,
           frameId: "child",
           nodes: {
             parentIndex: [-1, 0, 1],
@@ -3488,7 +3518,7 @@ describe("handleSnapshot", () => {
       maxTokens,
     });
     expect(result.text.match(/@warning/g)).toHaveLength(1);
-    expect(result.text).toContain("iframe geometry incomplete");
+    expect(result.text).toContain("geometry incomplete");
     expect(result.text.startsWith("@vom 1\n")).toBe(true);
     if (maxTokens === undefined) {
       expect(result.truncated).toBe(false);

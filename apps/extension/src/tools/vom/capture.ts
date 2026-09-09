@@ -12,9 +12,15 @@ import {
   type FrameProjectionIssue,
   type FrameProjectionState,
   projectSnapshotRect,
+  type SnapshotCoordinates,
+  snapshotCoordinates,
   snapshotViewportRect,
 } from "../geometry/coordinate-types";
-import { cssViewport, GeometryContext, type LayoutMetrics } from "../geometry/frame-context";
+import {
+  GeometryContext,
+  type LayoutMetrics,
+  snapshotLayoutScale,
+} from "../geometry/frame-context";
 import type { CdpRunner } from "../shared";
 import { clearHover, ProbeBudget, waitForHover } from "./hover-perception";
 
@@ -356,8 +362,8 @@ interface FrameContext {
   ownerFrameBackendNodeId: number | null;
   projection: FrameProjectionState;
   target: CdpTarget;
-  scrollX: number;
-  scrollY: number;
+  coordinates: SnapshotCoordinates | null;
+  layoutUnitsPerCssPixel: number | null;
 }
 
 function str(strings: string[], idx: number | undefined): string {
@@ -892,7 +898,7 @@ function parseDocumentNodes(
         const input = snapshotViewportRect(
           b,
           { target: context.target, frameId: context.frameId },
-          { x: context.scrollX, y: context.scrollY },
+          context.coordinates,
         );
         if (input) {
           const { x, y, width: w, height: h } = input.rect;
@@ -912,7 +918,11 @@ function parseDocumentNodes(
       const visibility = str(strings, styleRow[visibilityCol]) || "visible";
       const opacity = str(strings, styleRow[opacityCol]) || "1";
       rendered =
-        localRect !== null &&
+        !!b &&
+        b.length >= 4 &&
+        b.slice(0, 4).every(Number.isFinite) &&
+        b[2] > 0 &&
+        b[3] > 0 &&
         visibility !== "hidden" &&
         visibility !== "collapse" &&
         (Number.parseFloat(opacity) || 0) > 0;
@@ -1009,10 +1019,13 @@ async function parseChildFrameDocuments(
     const iframeBackendId = parentBackendIds[nodeArrayIdx];
     if (visited.has(childDocIndex) || !childDoc || iframeBackendId === undefined) return [];
     const source = { target: parentContext.target, frameId: snapshotFrameId(childDoc, strings) };
+    const coordinates = snapshotCoordinates(childDoc, parentContext.layoutUnitsPerCssPixel);
     const parent = parentContext.projection;
     const projection: FrameProjectionState =
       parent.status === "available"
-        ? { status: "unavailable", source, ownerBackendNodeId: iframeBackendId }
+        ? coordinates
+          ? { status: "unavailable", source, ownerBackendNodeId: iframeBackendId }
+          : { status: "unavailable", source, reason: "snapshot-coordinates-unavailable" }
         : { status: "blocked", source, cause: parent.status === "blocked" ? parent.cause : parent };
     return [
       {
@@ -1020,6 +1033,7 @@ async function parseChildFrameDocuments(
         childDoc,
         iframeBackendId,
         source,
+        coordinates,
         projection: projection as FrameProjectionState,
       },
     ];
@@ -1041,6 +1055,7 @@ async function parseChildFrameDocuments(
       Array.from({ length: Math.min(4, children.length) }, async () => {
         while (cursor < children.length && !signal?.aborted && !failure) {
           const child = children[cursor++];
+          if (!child.coordinates) continue;
           try {
             // Owner quads are target-relative; do not apply the parent transform twice.
             child.projection = await geometry.snapshotProjection(
@@ -1061,7 +1076,14 @@ async function parseChildFrameDocuments(
   throwIfAborted(signal);
 
   // Completion order must not change document traversal or result insertion order.
-  for (const { childDocIndex, childDoc, iframeBackendId, source, projection } of children) {
+  for (const {
+    childDocIndex,
+    childDoc,
+    iframeBackendId,
+    source,
+    projection,
+    coordinates,
+  } of children) {
     throwIfAborted(signal);
     if (projection.status !== "available") frameGeometryIssues.push(projection);
     const childContext: FrameContext = {
@@ -1069,8 +1091,8 @@ async function parseChildFrameDocuments(
       target: source.target,
       ownerFrameBackendNodeId: iframeBackendId,
       projection,
-      scrollX: childDoc.scrollOffsetX ?? 0,
-      scrollY: childDoc.scrollOffsetY ?? 0,
+      coordinates,
+      layoutUnitsPerCssPixel: parentContext.layoutUnitsPerCssPixel,
     };
     const nextVisited = new Set(visited);
     nextVisited.add(childDocIndex);
@@ -1129,10 +1151,11 @@ export async function captureViewModel(
     console.debug("[bsk capture] layout metrics unavailable", error);
   }
   throwIfAborted(options.signal);
-  const measured = cssViewport(metrics);
-  const viewport: Viewport = { width: measured.width, height: measured.height };
-  const scrollX = measured.scrollX;
-  const scrollY = measured.scrollY;
+  const viewport: Viewport = {
+    width: metrics.cssLayoutViewport?.clientWidth ?? 0,
+    height: metrics.cssLayoutViewport?.clientHeight ?? 0,
+  };
+  const layoutUnitsPerCssPixel = snapshotLayoutScale(metrics);
 
   await cdp.send(tabId, "DOMSnapshot.enable", {});
   throwIfAborted(options.signal);
@@ -1155,19 +1178,28 @@ export async function captureViewModel(
     };
   }
 
+  const source = { target, frameId: snapshotFrameId(doc0, strings) };
+  const coordinates = snapshotCoordinates(doc0, layoutUnitsPerCssPixel, {
+    x: metrics.cssLayoutViewport?.pageX,
+    y: metrics.cssLayoutViewport?.pageY,
+  });
   const topContext: FrameContext = {
     frameId: snapshotFrameId(doc0, strings),
     ownerFrameBackendNodeId: null,
     target,
-    projection: {
-      status: "available",
-      projection: {
-        source: { target, frameId: snapshotFrameId(doc0, strings) },
-        geometry: { sourceClips: [], edges: [], topViewport: viewport },
-      },
-    },
-    scrollX,
-    scrollY,
+    projection:
+      coordinates &&
+      [viewport.width, viewport.height].every((size) => Number.isFinite(size) && size > 0)
+        ? {
+            status: "available",
+            projection: {
+              source,
+              geometry: { sourceClips: [], edges: [], topViewport: viewport },
+            },
+          }
+        : { status: "unavailable", source, reason: "snapshot-coordinates-unavailable" },
+    coordinates,
+    layoutUnitsPerCssPixel,
   };
   const mainParsed = parseDocumentNodes(doc0, strings, topContext);
   const nodes = mainParsed.nodes;
@@ -1214,7 +1246,10 @@ export async function captureViewModel(
     viewport,
     iframeNodes,
     frameNodes,
-    frameGeometryIssues: frameParsed.frameGeometryIssues,
+    frameGeometryIssues: [
+      ...(topContext.projection.status === "available" ? [] : [topContext.projection]),
+      ...frameParsed.frameGeometryIssues,
+    ],
     frameOwnerBackendNodeIds: frameParsed.frameOwnerBackendNodeIds,
     frameParentIds: frameParsed.frameParentIds,
     ...(topContext.frameId ? { rootFrameId: topContext.frameId } : {}),

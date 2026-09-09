@@ -18,8 +18,8 @@ import type { CoordinateOwner, CssViewport, SnapshotProjectionResult } from "./c
 import { readSnapshotOwnerSizes } from "./snapshot-owner-sizes";
 
 export interface LayoutMetrics {
-  cssVisualViewport?: { zoom?: number };
-  visualViewport?: { zoom?: number };
+  cssVisualViewport?: { zoom?: number; clientWidth?: number; clientHeight?: number };
+  visualViewport?: { zoom?: number; clientWidth?: number; clientHeight?: number };
   cssLayoutViewport?: {
     clientWidth?: number;
     clientHeight?: number;
@@ -27,6 +27,29 @@ export interface LayoutMetrics {
     pageY?: number;
   };
   layoutViewport?: { clientWidth?: number; clientHeight?: number; pageX?: number; pageY?: number };
+}
+
+/** Chromium emits these paired floating-point dimensions before/after dividing
+ * by LayoutZoomFactor. Integer layout viewport dimensions lose precision at
+ * fractional zoom. Neither visualViewport.scale nor .zoom is this conversion.
+ * See InspectorPageAgent::getLayoutMetrics in Chromium. */
+export function snapshotLayoutScale(metrics: LayoutMetrics): number | null {
+  for (const dimension of ["clientWidth", "clientHeight"] as const) {
+    const raw = metrics.visualViewport?.[dimension];
+    const css = metrics.cssVisualViewport?.[dimension];
+    if (
+      raw !== undefined &&
+      css !== undefined &&
+      Number.isFinite(raw) &&
+      Number.isFinite(css) &&
+      raw > 0 &&
+      css > 0
+    ) {
+      const scale = raw / css;
+      if (Number.isFinite(scale) && scale > 0) return scale;
+    }
+  }
+  return null;
 }
 
 /** The legacy field is a compatibility fallback, never a source of raster DPR. */

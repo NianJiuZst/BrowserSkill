@@ -25,6 +25,12 @@ export interface UnavailableFrameProjection {
   ownerBackendNodeId: number;
 }
 
+export interface UnavailableSnapshotCoordinates {
+  status: "unavailable";
+  source: CoordinateOwner;
+  reason: "snapshot-coordinates-unavailable";
+}
+
 export type SnapshotProjectionResult =
   | { status: "available"; projection: SnapshotProjection }
   | UnavailableFrameProjection;
@@ -32,25 +38,74 @@ export type SnapshotProjectionResult =
 /** Descendants inherit the failed boundary without attempting another owner read. */
 export type FrameProjectionIssue =
   | UnavailableFrameProjection
-  | { status: "blocked"; source: CoordinateOwner; cause: UnavailableFrameProjection };
+  | UnavailableSnapshotCoordinates
+  | {
+      status: "blocked";
+      source: CoordinateOwner;
+      cause: UnavailableFrameProjection | UnavailableSnapshotCoordinates;
+    };
 
 export type FrameProjectionState = SnapshotProjectionResult | FrameProjectionIssue;
 
-/** DOMSnapshot bounds are document-relative CSS pixels, independent of raster DPR. */
+export interface SnapshotCoordinates {
+  layoutUnitsPerCssPixel: number;
+  scrollCss: { x: number; y: number };
+}
+
+/** Snapshot scroll offsets share the raw layout units of its bounds. Only a
+ * target's root document may fall back to that target's CSS layout viewport. */
+export function snapshotCoordinates(
+  document: { scrollOffsetX?: number; scrollOffsetY?: number },
+  layoutUnitsPerCssPixel: number | null,
+  rootScrollCss?: { x?: number; y?: number },
+): SnapshotCoordinates | null {
+  if (
+    layoutUnitsPerCssPixel === null ||
+    !Number.isFinite(layoutUnitsPerCssPixel) ||
+    layoutUnitsPerCssPixel <= 0
+  )
+    return null;
+  const x =
+    document.scrollOffsetX === undefined
+      ? rootScrollCss?.x
+      : document.scrollOffsetX / layoutUnitsPerCssPixel;
+  const y =
+    document.scrollOffsetY === undefined
+      ? rootScrollCss?.y
+      : document.scrollOffsetY / layoutUnitsPerCssPixel;
+  if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { layoutUnitsPerCssPixel, scrollCss: { x, y } };
+}
+
+/** Convert raw document-relative Blink layout units exactly once, before any
+ * CSS viewport clipping or frame projection. This scale is not screenshot zoom. */
 export function snapshotViewportRect(
   bounds: number[],
   owner: CoordinateOwner,
-  scroll: { x: number; y: number },
+  coordinates: SnapshotCoordinates | null,
 ): FrameViewportRect | null {
-  if (bounds.length < 4 || !bounds.slice(0, 4).every(Number.isFinite)) return null;
+  if (!coordinates || bounds.length < 4 || !bounds.slice(0, 4).every(Number.isFinite)) return null;
+  const { layoutUnitsPerCssPixel: scale, scrollCss: scroll } = coordinates;
   const [x, y, width, height] = bounds;
-  if (width <= 0 || height <= 0 || !Number.isFinite(scroll.x) || !Number.isFinite(scroll.y)) {
+  if (
+    !Number.isFinite(scale) ||
+    scale <= 0 ||
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isFinite(scroll.x) ||
+    !Number.isFinite(scroll.y)
+  ) {
     return null;
   }
   return {
     space: "frame-viewport-css",
     owner,
-    rect: { x: x - scroll.x, y: y - scroll.y, width, height },
+    rect: {
+      x: x / scale - scroll.x,
+      y: y / scale - scroll.y,
+      width: width / scale,
+      height: height / scale,
+    },
   };
 }
 

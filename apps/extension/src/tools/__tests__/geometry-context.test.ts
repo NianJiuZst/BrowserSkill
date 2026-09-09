@@ -5,9 +5,10 @@ import { rectPolygon } from "../geometry";
 import {
   projectSnapshotRect,
   screenshotPageRect,
+  snapshotCoordinates,
   snapshotViewportRect,
 } from "../geometry/coordinate-types";
-import { GeometryContext } from "../geometry/frame-context";
+import { GeometryContext, snapshotLayoutScale } from "../geometry/frame-context";
 import type { CdpRunner } from "../shared";
 
 const target = { tabId: 4 };
@@ -22,7 +23,11 @@ const graph: CdpFrameGraph = {
 function driver() {
   const send = vi.fn(async (_tab: number, method: string): Promise<object> => {
     if (method === "Page.getLayoutMetrics")
-      return { cssLayoutViewport: { clientWidth: 1000, clientHeight: 1000 } };
+      return {
+        visualViewport: { clientWidth: 1000 },
+        cssVisualViewport: { clientWidth: 1000 },
+        cssLayoutViewport: { clientWidth: 1000, clientHeight: 1000 },
+      };
     if (method === "DOM.getBoxModel")
       return { model: { content: [52.5, 612.5, 427.5, 612.5, 427.5, 862.5, 52.5, 862.5] } };
     if (method === "DOM.resolveNode") return { object: { objectId: "owner" } };
@@ -35,6 +40,63 @@ function driver() {
 }
 
 describe("measurement geometry context", () => {
+  it.each([0.8, 1, 1.25, 2])("normalizes snapshot layout units at scale %s", (scale) => {
+    const measured = snapshotLayoutScale({
+      visualViewport: { clientWidth: 997.25, zoom: 1.1 },
+      cssVisualViewport: { clientWidth: 997.25 / scale, zoom: 1.1 },
+      // Rounded layout dimensions must not supply the scale.
+      layoutViewport: { clientWidth: 997 },
+      cssLayoutViewport: { clientWidth: Math.floor(997.25 / scale) },
+    });
+    expect(measured).toBeCloseTo(scale, 12);
+    const coordinates = snapshotCoordinates(
+      { scrollOffsetX: 80 * scale, scrollOffsetY: 200 * scale },
+      measured,
+      { x: 999, y: 999 },
+    );
+    expect(
+      snapshotViewportRect(
+        [160 * scale, 320 * scale, 120 * scale, 40 * scale],
+        { target },
+        coordinates,
+      )?.rect,
+    ).toEqual({ x: 80, y: 120, width: 120, height: 40 });
+  });
+
+  it("uses CSS root scroll only for missing snapshot offsets, without scaling it twice", () => {
+    const coordinates = snapshotCoordinates({ scrollOffsetX: 80 }, 2, { x: 999, y: 100 });
+    expect(snapshotViewportRect([200, 800, 240, 80], { target }, coordinates)?.rect).toEqual({
+      x: 60,
+      y: 300,
+      width: 120,
+      height: 40,
+    });
+    expect(snapshotCoordinates({ scrollOffsetX: 0 }, 2)).toBeNull();
+    expect(
+      snapshotCoordinates({ scrollOffsetX: NaN, scrollOffsetY: 0 }, 2, { x: 0, y: 0 }),
+    ).toBeNull();
+  });
+
+  it("does not infer snapshot units from missing, invalid, or CSS-only metrics", () => {
+    expect(snapshotLayoutScale({ cssLayoutViewport: { clientWidth: 800 } })).toBeNull();
+    for (const raw of [0, -1, NaN, Infinity]) {
+      expect(
+        snapshotLayoutScale({
+          visualViewport: { clientWidth: raw },
+          cssVisualViewport: { clientWidth: 800 },
+        }),
+      ).toBeNull();
+    }
+    expect(
+      snapshotLayoutScale({
+        visualViewport: { clientWidth: 0, clientHeight: 600 },
+        cssVisualViewport: { clientWidth: 0, clientHeight: 300 },
+      }),
+    ).toBe(2);
+    expect(snapshotCoordinates({ scrollOffsetX: 0, scrollOffsetY: 0 }, null)).toBeNull();
+    expect(snapshotViewportRect([10, 20, 120, 40], { target }, null)).toBeNull();
+  });
+
   it("shares in-flight frame measurements, but never shares them with the next context", async () => {
     const cdp = driver();
     const context = new GeometryContext(cdp, 4);
@@ -61,14 +123,20 @@ describe("measurement geometry context", () => {
       height: 1000,
     });
     if (projection.status !== "available") throw new Error("expected available projection");
-    const input = snapshotViewportRect([17, 23, 120, 40], source, { x: 0, y: 0 });
+    const input = snapshotViewportRect([17, 23, 120, 40], source, {
+      layoutUnitsPerCssPixel: 1,
+      scrollCss: { x: 0, y: 0 },
+    });
     expect(projectSnapshotRect(input!, projection.projection)).toEqual({
       x: 73.75,
       y: 641.25,
       width: 150,
       height: 50,
     });
-    const scrolled = snapshotViewportRect([17, 23, 120, 40], source, { x: 0, y: 10 });
+    const scrolled = snapshotViewportRect([17, 23, 120, 40], source, {
+      layoutUnitsPerCssPixel: 1,
+      scrollCss: { x: 0, y: 10 },
+    });
     expect(projectSnapshotRect(scrolled!, projection.projection)?.y).toBe(628.75);
     await context.snapshotProjection(source, 10, [], { width: 1000, height: 1000 });
     expect(cdp.calls.mock.calls.filter(([, method]) => method === "DOM.resolveNode")).toHaveLength(
@@ -173,7 +241,7 @@ describe("measurement geometry context", () => {
     const input = snapshotViewportRect(
       [30, 50, 120, 40],
       { target, frameId: "main" },
-      { x: 10, y: 20 },
+      { layoutUnitsPerCssPixel: 1, scrollCss: { x: 10, y: 20 } },
     )!;
     const projection = {
       source: { target, frameId: "main" },
@@ -194,8 +262,20 @@ describe("measurement geometry context", () => {
         source: { target: { tabId: 5 }, frameId: "main" },
       }),
     ).toBeNull();
-    expect(snapshotViewportRect([0, 0, NaN, 40], { target }, { x: 0, y: 0 })).toBeNull();
-    expect(snapshotViewportRect([0, 0, 10, 40], { target }, { x: Infinity, y: 0 })).toBeNull();
+    expect(
+      snapshotViewportRect(
+        [0, 0, NaN, 40],
+        { target },
+        { layoutUnitsPerCssPixel: 1, scrollCss: { x: 0, y: 0 } },
+      ),
+    ).toBeNull();
+    expect(
+      snapshotViewportRect(
+        [0, 0, 10, 40],
+        { target },
+        { layoutUnitsPerCssPixel: 1, scrollCss: { x: Infinity, y: 0 } },
+      ),
+    ).toBeNull();
   });
 
   it("does not turn a border quad or a failed owner read into a content projection", async () => {
@@ -228,7 +308,7 @@ describe("measurement geometry context", () => {
     const input = snapshotViewportRect(
       [0, 0, 300, 200],
       { target, frameId: "nested" },
-      { x: 0, y: 0 },
+      { layoutUnitsPerCssPixel: 1, scrollCss: { x: 0, y: 0 } },
     );
     expect(projectSnapshotRect(input!, projection.projection)).toEqual({
       x: 60,
@@ -278,7 +358,11 @@ describe("measurement geometry context", () => {
       peak = Math.max(peak, active);
       await new Promise<void>((resolve) => release.push(resolve));
       active--;
-      return { cssLayoutViewport: { clientWidth: 100, clientHeight: 100 } };
+      return {
+        visualViewport: { clientWidth: 1000 },
+        cssVisualViewport: { clientWidth: 1000 },
+        cssLayoutViewport: { clientWidth: 100, clientHeight: 100 },
+      };
     });
     const controller = new AbortController();
     const context = new GeometryContext(
