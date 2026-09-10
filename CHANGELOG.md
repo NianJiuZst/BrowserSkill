@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Starting from 0.2.0, CLI / Extension / DSH Plugin share the same version number.
 
+## [Unreleased]
+
+### Added
+
+- [Scroll-to element primitive](docs/scroll-to.md) across CLI, Extension and DSH Plugin,
+  with ancestor-clipped visible bounds, iframe support and cooperative cancellation
+
 ## [0.2.1] - 2026-09-09
 
 ### Changed

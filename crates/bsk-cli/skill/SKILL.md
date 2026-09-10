@@ -55,7 +55,7 @@ Use this default loop:
 ```text
 bsk navigate <url> --session <id>
 bsk observe --session <id>
-bsk click|hover|focus|blur|fill|select|press ... --session <id>
+bsk click|hover|scroll-to|focus|blur|fill|select|press ... --session <id>
 bsk observe --session <id>             # after navigation or a meaningful DOM change
 ```
 
@@ -63,7 +63,7 @@ bsk observe --session <id>             # after navigation or a meaningful DOM ch
 Use a fresh element ref for iframe/shadow-root targets; CSS selectors search the main document.
 The result is the visible border-box portion's bounds in top-level viewport CSS pixels after
 ancestor clipping. Partial visibility is enough; hidden or fully clipped targets fail with
-`element_not_visible`. The result does not guarantee that other elements do not cover the target.
+`permission_denied` and `data.reason=element_not_visible`. This does not test occlusion by other elements.
 For a specific tab or deadline: `bsk scroll-to @e3 --session <id> --tab-id 42 --timeout 5s`.
 
 `bsk focus <ref>` explicitly focuses a target; `bsk blur <ref>` removes focus and reports whether

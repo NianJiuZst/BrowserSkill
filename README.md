@@ -207,6 +207,9 @@ through the [plugin](#deepseek-harness-plugin): the agent calls injected
 
 ## For Developers
 
+The [scroll-to primitive reference](docs/scroll-to.md) covers its CLI, protocol
+and plugin entry points, visible bounds and interruption behavior.
+
 The repository is a Cargo + pnpm workspace:
 
 - `crates/bsk-cli` — `bsk` CLI and local daemon

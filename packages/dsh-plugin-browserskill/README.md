@@ -58,6 +58,9 @@ the `bsk` CLI and browser extension separately when a release requires it.
 | `browser_tabs` | `list`, `create`, `select`, `close`, `borrow`, `return` | Manage Agent Window tabs and temporarily borrow user tabs. |
 | `browser_assist` | `resize`, `emulate`, `request-help` | Resize or emulate the browser and pause for human-only steps. |
 
+For `browser_interact` with `action: "scroll-to"`, see the
+[scroll-to reference](../../docs/scroll-to.md) for parameters, visible bounds and errors.
+
 Arbitrary page-script evaluation and interaction recording are not supported.
 
 ## Multi-session model
