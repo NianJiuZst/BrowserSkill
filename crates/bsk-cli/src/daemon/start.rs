@@ -279,6 +279,10 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
                     for harness in &report.updated {
                         info!(harness = harness.cli_name(), "skill synced");
                     }
+                    for (harness, reason) in &report.paused {
+                        warn!(harness = harness.cli_name(), reason = reason.description(),
+                            "skill auto-update paused; content preserved; run `bsk doctor` for options");
+                    }
                     for (harness, msg) in &report.errors {
                         warn!(harness = harness.cli_name(), error = %msg, "skill sync failed");
                     }

@@ -113,6 +113,24 @@ bsk install-skill
 
 用 <kbd>Space</kbd> 选择需要安装的 Agent harness，然后按 <kbd>Enter</kbd> 安装 skill。运行 `bsk install-skill --list` 可查看 internal 变体及安装路径。
 
+安装自定义指令可运行 `bsk install-skill --harness cursor --source ./SKILL.md`。
+显式指定 `--source` 的安装始终视为自定义，即使内容与内置 skill 相同。
+已有安装默认跳过，添加 `--force` 才会覆盖。
+
+daemon 启动、`session start` 和 `doctor` 会检查已安装的 skill：只有文件内容仍与
+上次安装或同步时的内容一致，才继续自动更新。检测到本地编辑时会保留文件并暂停更新。
+没有内容基线的历史安装，只有与当前内置 skill 字节级一致时才自动纳入管理；此时只补齐
+来源标记，不重写 `SKILL.md`。明确的自定义安装即使内容相同，也不会被自动纳入管理。
+
+对于内容不同的历史文件、本地编辑或无法识别的来源标记，`doctor` 会显示 `WARN`，
+说明暂停原因及恢复方法。这类警告不会让健康检查失败（`--json` 中为 `status: "warn"`、
+`ok: true`）。其他安装或同步正在进行时，本次同步会推迟到后续再试。
+
+如需将当前指令保留为明确的自定义安装，运行
+`bsk install-skill --harness cursor --source <existing-SKILL.md> --force`，将
+`<existing-SKILL.md>` 替换为现有文件路径。如需恢复内置 skill 并重新启用自动更新，运行
+`bsk install-skill --harness cursor --force`，不带 `--source`。后一条命令会覆盖现有指令。
+
 其他支持 Shell 的 Agent harness 也可使用 BrowserSkill，但需手动将 [`skill/SKILL.md`](skill/SKILL.md) 复制到对应 skills 目录下的 `browser-skill/SKILL.md`。DeepSeek Harness 走独立插件，见 [DeepSeek Harness 插件](#deepseek-harness-插件)。
 
 </details>
