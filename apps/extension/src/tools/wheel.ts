@@ -1,9 +1,13 @@
 import { ChromiumCdp } from "@/browser-driver/chromium-cdp";
+import { type CdpTarget, cdpTargetKey } from "@/browser-driver/frame-graph";
 import type { SessionContext, SessionManager } from "@/session-manager/manager";
 import type { RpcError, WheelParams, WheelResult } from "@/transport/types";
 import { attachDialogs, markDialogCursor } from "./dialogs";
+import { cdpError, rpcError } from "./errors";
 import { resolveNodeGeometry } from "./frame-geometry";
+import { clipPolygon, polygonArea, polygonCentroid, rectPolygon } from "./geometry";
 import { modifiersBitfield, resolveBackendNode } from "./interaction";
+import { scrollVisibleBounds } from "./scroll-visibility";
 import {
   type CdpRunner,
   type ChromeTabsApi,
@@ -12,6 +16,7 @@ import {
   isRpcError,
   lookupSession,
   resolveTargetTab,
+  sendToCdpTarget,
 } from "./shared";
 
 export interface WheelDeps {
@@ -43,48 +48,97 @@ export async function handleWheel(
   const ctxOrErr = lookupSession(manager, params, "wheel");
   if (isRpcError(ctxOrErr)) return ctxOrErr;
   const ctx = ctxOrErr;
-  const deltaX = params.delta_x ?? 0;
-  const deltaY = params.delta_y;
+  const deltaX = params.delta_x === undefined ? 0 : params.delta_x;
+  const deltaY = params.delta_y === undefined ? 0 : params.delta_y;
   if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
     return { code: "invalid_params", message: "wheel deltas must be finite numbers" };
   }
   if (deltaX === 0 && deltaY === 0) {
     return { code: "invalid_params", message: "at least one wheel delta must be non-zero" };
   }
-  if (deps.signal?.aborted) return cancelled();
-
-  const target = await resolveTargetTab(manager, ctx, params.tab_id, deps.tabsApi);
-  if (isRpcError(target)) return target;
-  const denied = enforceAgentWindow(ctx, target, "wheel");
-  if (denied) return denied;
-  const dialogCursor = markDialogCursor(deps.cdp, target.tabId);
-  deps.cdp.trackSessionTab?.(ctx.sessionId, target.tabId);
-
-  const point = await resolveWheelPoint(deps.cdp, ctx, target, params);
-  if (isRpcError(point)) return point;
-  if (deps.signal?.aborted) return cancelled();
-
-  let bypassEnabled = false;
-  if (deps.bypassOverlay) {
-    try {
-      await deps.bypassOverlay(target.tabId, true);
-      bypassEnabled = true;
-    } catch (error) {
-      console.debug("[bsk wheel] overlay bypass enable failed", error);
-    }
+  const timeout = params.timeout_ms === undefined ? 30_000 : params.timeout_ms;
+  if (!Number.isInteger(timeout) || timeout <= 0) {
+    return { code: "invalid_params", message: "timeout_ms must be a positive integer" };
+  }
+  if (
+    [params.ref, params.selector].some(
+      (value) => value !== undefined && (typeof value !== "string" || !value.trim()),
+    ) ||
+    (params.ref !== undefined && params.selector !== undefined)
+  ) {
+    return { code: "invalid_params", message: "pass at most one nonempty ref or selector" };
+  }
+  if (
+    params.modifiers !== undefined &&
+    (!Array.isArray(params.modifiers) ||
+      params.modifiers.some((value) => !["alt", "ctrl", "meta", "shift"].includes(value)))
+  ) {
+    return { code: "invalid_params", message: "invalid wheel modifiers" };
   }
 
+  const deadline = Date.now() + timeout;
+  const checkActive = () => {
+    if (deps.signal?.aborted) throw new DOMException("wheel aborted", "AbortError");
+    if (Date.now() >= deadline) throw new DOMException("wheel timed out", "TimeoutError");
+  };
+  // Guard the shared target/geometry helpers without changing other tools.
+  // Own fallback scrolling and visibility objects, even if allocation is cancelled.
+  const objectGroup = `bsk-wheel-${crypto.randomUUID()}`;
+  const objectTargets = new Map<string, CdpTarget>();
+  const send = async <T>(target: CdpTarget, method: string, args?: object): Promise<T> => {
+    checkActive();
+    if (method === "DOM.resolveNode") objectTargets.set(cdpTargetKey(target), target);
+    const result = await sendToCdpTarget<T>(
+      deps.cdp,
+      target,
+      method,
+      method === "DOM.resolveNode" ? { ...args, objectGroup } : args,
+    );
+    checkActive();
+    return result;
+  };
+  let graph: ReturnType<NonNullable<CdpRunner["getFrameGraph"]>> | undefined;
+  const cdp: CdpRunner = {
+    send: (tabId, method, args) => send({ tabId }, method, args),
+    sendToTarget: send,
+    trackSessionTab: deps.cdp.trackSessionTab?.bind(deps.cdp),
+    getFrameGraph: deps.cdp.getFrameGraph
+      ? async (tabId) => {
+          checkActive();
+          graph ??= deps.cdp.getFrameGraph!(tabId);
+          const result = await graph;
+          checkActive();
+          return result;
+        }
+      : undefined,
+  };
+  let bypassTab: number | undefined;
+
   try {
-    if (deps.signal?.aborted) return cancelled();
+    checkActive();
+    const target = await resolveTargetTab(manager, ctx, params.tab_id, deps.tabsApi);
+    checkActive();
+    if (isRpcError(target)) return target;
+    const denied = enforceAgentWindow(ctx, target, "wheel");
+    if (denied) return denied;
+    const dialogCursor = markDialogCursor(deps.cdp, target.tabId);
+    cdp.trackSessionTab?.(ctx.sessionId, target.tabId);
+    const point = await resolveWheelPoint(cdp, ctx, target, params, deadline);
+    checkActive();
+    if (isRpcError(point)) return point;
+
+    if (deps.bypassOverlay) {
+      bypassTab = target.tabId;
+      await deps.bypassOverlay(target.tabId, true);
+    }
     const modifiers = modifiersBitfield(params.modifiers);
-    await deps.cdp.send(target.tabId, "Input.dispatchMouseEvent", {
+    await cdp.send(target.tabId, "Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x: point.x,
       y: point.y,
       modifiers,
     });
-    if (deps.signal?.aborted) return cancelled();
-    await deps.cdp.send(target.tabId, "Input.dispatchMouseEvent", {
+    await cdp.send(target.tabId, "Input.dispatchMouseEvent", {
       type: "mouseWheel",
       x: point.x,
       y: point.y,
@@ -92,30 +146,33 @@ export async function handleWheel(
       deltaY,
       modifiers,
     });
+    return attachDialogs(deps.cdp, target.tabId, dialogCursor, {
+      tab_id: target.tabId,
+      used_ref: point.usedRef,
+      used_selector: point.usedSelector,
+      x: point.x,
+      y: point.y,
+      delta_x: deltaX,
+      delta_y: deltaY,
+    });
   } catch (error) {
-    return {
-      code: "cdp_failed",
-      message: error instanceof Error ? error.message : String(error),
-    };
+    if (deps.signal?.aborted) return { code: "cancelled", message: "wheel aborted" };
+    if (Date.now() >= deadline) return { code: "timeout", message: "wheel timed out" };
+    return cdpError(error);
   } finally {
-    if (bypassEnabled && deps.bypassOverlay) {
+    if (bypassTab !== undefined && deps.bypassOverlay) {
       try {
-        await deps.bypassOverlay(target.tabId, false);
+        await deps.bypassOverlay(bypassTab, false);
       } catch (error) {
         console.debug("[bsk wheel] overlay bypass disable failed", error);
       }
     }
+    for (const target of objectTargets.values()) {
+      await sendToCdpTarget(deps.cdp, target, "Runtime.releaseObjectGroup", { objectGroup }).catch(
+        () => {},
+      );
+    }
   }
-
-  return attachDialogs(deps.cdp, target.tabId, dialogCursor, {
-    tab_id: target.tabId,
-    used_ref: point.usedRef,
-    used_selector: point.usedSelector,
-    x: point.x,
-    y: point.y,
-    delta_x: deltaX,
-    delta_y: deltaY,
-  });
 }
 
 async function resolveWheelPoint(
@@ -123,6 +180,7 @@ async function resolveWheelPoint(
   ctx: SessionContext,
   target: { tabId: number },
   params: WheelParams,
+  deadline: number,
 ): Promise<WheelPoint | RpcError> {
   const hasRef = typeof params.ref === "string" && params.ref.length > 0;
   const hasSelector = typeof params.selector === "string" && params.selector.length > 0;
@@ -140,41 +198,49 @@ async function resolveWheelPoint(
       { scrollIntoView: true },
     );
     if (isRpcError(geometry)) return geometry;
+    const bounds = await scrollVisibleBounds(
+      cdp,
+      target.tabId,
+      { target: node.cdpTarget, backendNodeId: node.backendNodeId, frameId: node.frameId },
+      deadline,
+    );
+    const clip =
+      bounds && rectPolygon({ x: bounds.x, y: bounds.y, w: bounds.width, h: bounds.height });
+    const regions = clip
+      ? geometry.topVisibleRegions.map((region) => clipPolygon(region, clip))
+      : [];
+    const visible = regions.sort((a, b) => polygonArea(b) - polygonArea(a))[0];
+    const point = visible && polygonArea(visible) > 0 ? polygonCentroid(visible) : null;
+    if (!point)
+      return rpcError(
+        "permission_denied",
+        "element_not_visible",
+        "wheel target has no visible area",
+      );
     return {
-      x: geometry.actionPoint.x,
-      y: geometry.actionPoint.y,
+      x: point.x,
+      y: point.y,
       usedRef: node.usedRef,
       usedSelector: node.usedSelector,
     };
   }
 
-  try {
-    const metrics = await cdp.send<{
-      cssLayoutViewport?: { clientWidth?: number; clientHeight?: number };
-      layoutViewport?: { clientWidth?: number; clientHeight?: number };
-    }>(target.tabId, "Page.getLayoutMetrics", {});
-    const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport ?? {};
-    const width = viewport.clientWidth;
-    const height = viewport.clientHeight;
-    if (
-      typeof width !== "number" ||
-      typeof height !== "number" ||
-      !Number.isFinite(width) ||
-      !Number.isFinite(height) ||
-      width <= 0 ||
-      height <= 0
-    ) {
-      return { code: "cdp_failed", message: "Page.getLayoutMetrics returned no viewport size" };
-    }
-    return { x: width / 2, y: height / 2 };
-  } catch (error) {
-    return {
-      code: "cdp_failed",
-      message: error instanceof Error ? error.message : String(error),
-    };
+  const metrics = await cdp.send<{
+    cssLayoutViewport?: { clientWidth?: number; clientHeight?: number };
+    layoutViewport?: { clientWidth?: number; clientHeight?: number };
+  }>(target.tabId, "Page.getLayoutMetrics", {});
+  const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport ?? {};
+  const width = viewport.clientWidth;
+  const height = viewport.clientHeight;
+  if (
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return { code: "cdp_failed", message: "Page.getLayoutMetrics returned no viewport size" };
   }
-}
-
-function cancelled(): RpcError {
-  return { code: "cancelled", message: "wheel aborted" };
+  return { x: width / 2, y: height / 2 };
 }

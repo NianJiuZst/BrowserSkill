@@ -10,7 +10,7 @@ use clap::Args;
 use crate::cli::dialogs::print_dialog_summaries;
 use crate::cli::ensure_daemon::ensure_daemon;
 use crate::cli::error::{CliError, Format};
-use crate::cli::interaction::{looks_like_ref, parse_modifiers};
+use crate::cli::interaction::{parse_modifiers, split_target};
 use crate::cli::navigate::parse_timeout_ms;
 
 #[derive(Debug, Clone, Args)]
@@ -30,12 +30,12 @@ pub struct WheelArgs {
     #[arg(long = "tab-id")]
     pub tab_id: Option<i64>,
 
-    /// Horizontal wheel distance in CSS pixels (positive moves right).
-    #[arg(long = "delta-x", default_value = "0", value_parser = parse_finite_delta)]
+    /// Horizontal wheel input in CSS pixels (positive is right).
+    #[arg(long = "delta-x", default_value = "0", allow_negative_numbers = true, value_parser = parse_finite_delta)]
     pub delta_x: f64,
 
-    /// Vertical wheel distance in CSS pixels (positive moves down).
-    #[arg(long = "delta-y", value_parser = parse_finite_delta)]
+    /// Vertical wheel input in CSS pixels (positive is down).
+    #[arg(long = "delta-y", default_value = "0", allow_negative_numbers = true, value_parser = parse_finite_delta)]
     pub delta_y: f64,
 
     /// Comma-separated modifiers (`alt,ctrl,shift,meta`).
@@ -48,10 +48,10 @@ pub struct WheelArgs {
 
 pub fn dispatch(args: WheelArgs, format: Format) -> Result<(), CliError> {
     validate_deltas(args.delta_x, args.delta_y)?;
-    let info = ensure_daemon().context("ensure daemon is running")?;
     let (ref_, selector) = split_optional_target(args.target, args.ref_, args.selector)?;
     let modifiers = parse_modifiers(&args.modifiers)
         .map_err(|e| CliError::Local(anyhow::anyhow!("--modifiers: {e}")))?;
+    let info = ensure_daemon().context("ensure daemon is running")?;
     let params = WheelParams {
         session_id: args.session,
         ref_,
@@ -103,6 +103,11 @@ fn parse_finite_delta(value: &str) -> Result<f64, String> {
 }
 
 fn validate_deltas(delta_x: f64, delta_y: f64) -> Result<(), CliError> {
+    if !delta_x.is_finite() || !delta_y.is_finite() {
+        return Err(CliError::Local(anyhow::anyhow!(
+            "wheel deltas must be finite numbers"
+        )));
+    }
     if delta_x == 0.0 && delta_y == 0.0 {
         return Err(CliError::Local(anyhow::anyhow!(
             "at least one of --delta-x or --delta-y must be non-zero"
@@ -116,15 +121,18 @@ fn split_optional_target(
     explicit_ref: Option<String>,
     explicit_selector: Option<String>,
 ) -> Result<(Option<String>, Option<String>), CliError> {
-    match (positional, explicit_ref, explicit_selector) {
-        (None, None, None) => Ok((None, None)),
-        (None, Some(r), None) => Ok((Some(r), None)),
-        (None, None, Some(s)) => Ok((None, Some(s))),
-        (Some(target), None, None) if looks_like_ref(&target) => Ok((Some(target), None)),
-        (Some(target), None, None) => Ok((None, Some(target))),
-        _ => Err(CliError::Local(anyhow::anyhow!(
-            "pass at most one of: <target>, --ref, or --selector"
-        ))),
+    if [&positional, &explicit_ref, &explicit_selector]
+        .iter()
+        .any(|target| target.as_ref().is_some_and(|value| value.trim().is_empty()))
+    {
+        return Err(CliError::Local(anyhow::anyhow!(
+            "wheel target must not be empty"
+        )));
+    }
+    if positional.is_none() && explicit_ref.is_none() && explicit_selector.is_none() {
+        Ok((None, None))
+    } else {
+        split_target(positional, explicit_ref, explicit_selector)
     }
 }
 
@@ -167,5 +175,39 @@ mod tests {
         assert!(parse_finite_delta("NaN").is_err());
         assert!(validate_deltas(0.0, 0.0).is_err());
         assert!(validate_deltas(0.0, -120.0).is_ok());
+    }
+    #[test]
+    fn rejects_empty_conflicting_targets_and_nonfinite_deltas() {
+        for target in ["", " "] {
+            assert!(split_optional_target(Some(target.into()), None, None).is_err());
+            assert!(split_optional_target(None, Some(target.into()), None).is_err());
+            assert!(split_optional_target(None, None, Some(target.into())).is_err());
+        }
+        assert!(split_optional_target(Some("e3".into()), Some("e4".into()), None).is_err());
+        assert!(split_optional_target(None, Some("e3".into()), Some("#panel".into())).is_err());
+        assert!(validate_deltas(f64::INFINITY, 120.0).is_err());
+        assert!(validate_deltas(0.0, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_commands_before_starting_the_daemon() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        for options in [
+            vec![],
+            vec!["--delta-y", "120", "--ref", ""],
+            vec!["--delta-y", "120", "--ref", "e3", "--selector", "#panel"],
+            vec!["--delta-y", "120", "--modifiers", "invalid"],
+        ] {
+            let mut argv = vec!["bsk", "wheel", "--session", "s1"];
+            argv.extend(options);
+            let Command::Wheel(args) = Cli::try_parse_from(argv).unwrap().command else {
+                panic!("wheel");
+            };
+            assert!(matches!(
+                dispatch(args, Format::Json),
+                Err(CliError::Local(_))
+            ));
+        }
     }
 }

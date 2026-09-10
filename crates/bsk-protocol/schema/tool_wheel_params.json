@@ -3,18 +3,18 @@
   "title": "WheelParams",
   "type": "object",
   "required": [
-    "delta_y",
     "session_id"
   ],
   "properties": {
     "delta_x": {
-      "description": "Horizontal wheel distance in CSS pixels. Positive values move right.",
+      "description": "Native CDP wheel input in CSS pixels. Positive X means right. Not measured displacement.",
       "default": 0.0,
       "type": "number",
       "format": "double"
     },
     "delta_y": {
-      "description": "Vertical wheel distance in CSS pixels. Positive values move down.",
+      "description": "Native CDP wheel input in CSS pixels. Positive Y means down. Defaults to zero.",
+      "default": 0.0,
       "type": "number",
       "format": "double"
     },

@@ -181,6 +181,7 @@ pub enum Command {
 
     /// Dispatch a native mouse-wheel event at the viewport centre or an element.
     Wheel(WheelArgs),
+
     /// Scroll a snapshot ref or CSS selector into the visible viewport.
     #[command(name = "scroll-to")]
     ScrollTo(ScrollToArgs),

@@ -66,6 +66,11 @@ ancestor clipping. Partial visibility is enough; hidden or fully clipped targets
 `permission_denied` and `data.reason=element_not_visible`. This does not test occlusion by other elements.
 For a specific tab or deadline: `bsk scroll-to @e3 --session <id> --tab-id 42 --timeout 5s`.
 
+`bsk wheel --delta-y -120 --session <id>` sends native wheel input at the viewport centre.
+Add an optional ref/selector to target an element (scrolled into view first). Both delta axes
+accept signed numbers and default to zero; at least one must be nonzero. The result echoes
+input, not actual scroll distance or completion. Observe afterwards to check the page's response.
+
 `bsk focus <ref>` explicitly focuses a target; `bsk blur <ref>` removes focus and reports whether
 it was focused. Use these for UI states triggered by focus changes.
 

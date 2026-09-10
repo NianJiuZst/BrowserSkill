@@ -681,3 +681,37 @@ fn parses_session_start_no_focus() {
     };
     assert!(args.no_focus);
 }
+
+#[test]
+fn parses_signed_wheel_deltas_and_optional_axes() {
+    for (options, expected) in [
+        (vec!["--delta-y", "-120"], (0.0, -120.0)),
+        (vec!["--delta-x", "-20.5"], (-20.5, 0.0)),
+        (vec!["--delta-y=-120"], (0.0, -120.0)),
+        (
+            vec!["--delta-x", "12.5", "--delta-y", "-600"],
+            (12.5, -600.0),
+        ),
+    ] {
+        let mut argv = vec!["bsk", "wheel", "--session", "s1"];
+        argv.extend(options);
+        let Command::Wheel(args) = parse(&argv).command else {
+            panic!("expected wheel");
+        };
+        assert_eq!((args.delta_x, args.delta_y), expected);
+    }
+}
+
+#[test]
+fn rejects_invalid_wheel_numbers_and_timeouts() {
+    for options in [
+        vec!["--delta-y", "NaN"],
+        vec!["--delta-x", "inf"],
+        vec!["--delta-y", "oops"],
+        vec!["--delta-y", "120", "--timeout", "0ms"],
+    ] {
+        let mut argv = vec!["bsk", "wheel", "--session", "s1"];
+        argv.extend(options);
+        assert!(Cli::try_parse_from(argv).is_err());
+    }
+}

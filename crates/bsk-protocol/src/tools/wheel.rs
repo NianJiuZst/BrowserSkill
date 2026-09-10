@@ -23,10 +23,11 @@ pub struct WheelParams {
     /// Target tab. Defaults to the Agent Window's active tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<i64>,
-    /// Horizontal wheel distance in CSS pixels. Positive values move right.
+    /// Native CDP wheel input in CSS pixels. Positive X means right. Not measured displacement.
     #[serde(default)]
     pub delta_x: f64,
-    /// Vertical wheel distance in CSS pixels. Positive values move down.
+    /// Native CDP wheel input in CSS pixels. Positive Y means down. Defaults to zero.
+    #[serde(default)]
     pub delta_y: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modifiers: Option<Vec<KeyModifier>>,
@@ -45,6 +46,7 @@ pub struct WheelResult {
     /// Top-level viewport coordinates where the real wheel event was dispatched.
     pub x: f64,
     pub y: f64,
+    /// Requested deltas, not measured scroll distance or completion.
     pub delta_x: f64,
     pub delta_y: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -69,5 +71,13 @@ mod tests {
         let round = serde_json::to_value(params).unwrap();
         assert_eq!(round.get("ref").and_then(|v| v.as_str()), Some("@e3"));
         assert!(round.get("ref_").is_none());
+    }
+    #[test]
+    fn params_accept_horizontal_only_input() {
+        let params: WheelParams = serde_json::from_value(serde_json::json!({
+            "session_id": "abcd", "delta_x": -120.5
+        }))
+        .unwrap();
+        assert_eq!((params.delta_x, params.delta_y), (-120.5, 0.0));
     }
 }

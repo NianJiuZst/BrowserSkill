@@ -476,7 +476,7 @@ export interface WheelParams {
   selector?: string;
   tab_id?: number;
   delta_x?: number;
-  delta_y: number;
+  delta_y?: number;
   modifiers?: KeyModifier[];
   timeout_ms?: number;
 }
