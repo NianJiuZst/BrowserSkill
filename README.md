@@ -133,16 +133,23 @@ To install your own instructions, use `bsk install-skill --harness cursor --sour
 An explicit `--source` stays custom even if its contents match the bundled skill.
 Existing installations are skipped unless you add `--force`.
 
-Daemon startup, `session start`, and `doctor` automatically update only installations
-marked as bundled. Custom installations and older or manual installations without
-a `.bsk-source` marker are preserved. `doctor` reports preserved installations and
-any sync deferred because another install or sync is running.
+Daemon startup, `session start`, and `doctor` automatically update managed skills
+only when their contents still match the last installed version. Local edits are
+preserved and automatic updates pause. An older installation without a content
+baseline is enrolled automatically only if it exactly matches the current bundled
+skill; this writes the source marker without rewriting `SKILL.md`. Explicit custom
+installations stay custom even when their contents match.
 
-To replace an existing installation with the bundled skill and enable automatic
-updates, run `bsk install-skill --harness cursor --force` without `--source`.
-This overwrites the existing instructions. To customize a managed installation,
-install your edited file with `--source` and `--force`; directly editing a bundled
-installation does not change its ownership and it can still be overwritten by sync.
+For differing historical files, local edits, or an unrecognized source marker,
+`doctor` shows `WARN` with the reason and recovery options. These warnings do not
+make the health check fail (`--json` reports `status: "warn"` and `ok: true`).
+A concurrent install or sync is reported as deferred and retried on a later pass.
+
+To keep your current instructions as an explicit customization, run
+`bsk install-skill --harness cursor --source <existing-SKILL.md> --force`, replacing
+`<existing-SKILL.md>` with the path to your existing file. To restore the bundled
+skill and resume automatic updates, run `bsk install-skill --harness cursor --force`
+without `--source`. This second command overwrites the existing instructions.
 
 Other shell-capable agent harnesses are supported too. Copy
 [`skill/SKILL.md`](skill/SKILL.md) into your harness's skills directory as

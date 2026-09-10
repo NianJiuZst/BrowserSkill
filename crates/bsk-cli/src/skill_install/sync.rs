@@ -6,8 +6,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::{
-    DEFAULT_SKILL_MD, SOURCE_BUNDLED, SOURCE_MARKER_FILE,
+    DEFAULT_SKILL_MD, SOURCE_MARKER_FILE,
     harness::HarnessId,
+    provenance::{self, Provenance},
     storage::{PendingWrite, SkillLock},
 };
 
@@ -19,14 +20,34 @@ pub struct SyncReport {
     /// Managed harnesses whose on-disk `SKILL.md` already matched the bundled
     /// content; no write happened, mtime preserved.
     pub up_to_date: Vec<HarnessId>,
-    /// Custom or historical untracked installations that must not be
-    /// overwritten by automatic bundled-skill synchronization.
+    /// Explicit custom installations that intentionally opt out of updates.
     pub protected: Vec<HarnessId>,
+    /// Content preserved because safe automatic updates need user attention.
+    pub paused: Vec<(HarnessId, PauseReason)>,
     /// Another install/sync holds the lock; retry on a later sync pass.
     pub busy: Vec<HarnessId>,
     /// Harnesses that have an installed `SKILL.md` but the sync attempt
     /// failed with an I/O error. The string is a human-readable detail.
     pub errors: Vec<(HarnessId, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseReason {
+    Untracked,
+    MissingBaseline,
+    LocalChanges,
+    InvalidMarker,
+}
+
+impl PauseReason {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Untracked => "untracked installation differs from the bundled skill",
+            Self::MissingBaseline => "older bundled installation has no content baseline",
+            Self::LocalChanges => "local changes detected",
+            Self::InvalidMarker => "unrecognized or damaged source marker",
+        }
+    }
 }
 
 /// Iterates `HarnessId::ALL`, syncing harnesses with an existing
@@ -45,6 +66,7 @@ pub(crate) fn sync_with_source(home: &Path, source: &str) -> SyncReport {
             Ok(SyncOne::UpToDate) => report.up_to_date.push(harness),
             Ok(SyncOne::Updated) => report.updated.push(harness),
             Ok(SyncOne::Protected) => report.protected.push(harness),
+            Ok(SyncOne::Paused(reason)) => report.paused.push((harness, reason)),
             Ok(SyncOne::Busy) => report.busy.push(harness),
             Err(err) => report.errors.push((harness, format!("{err:#}"))),
         }
@@ -57,6 +79,7 @@ enum SyncOne {
     UpToDate,
     Updated,
     Protected,
+    Paused(PauseReason),
     Busy,
 }
 
@@ -72,23 +95,38 @@ fn sync_one(dest: &Path, source: &str) -> Result<SyncOne> {
         return Ok(SyncOne::Busy);
     };
 
-    // Check ownership under the lock, even when the content is identical.
+    // Explicit custom intent wins over byte equality; unknown metadata is never
+    // silently claimed. Only missing or recognized legacy markers can migrate.
     let marker = dir.join(SOURCE_MARKER_FILE);
-    match std::fs::read_to_string(&marker) {
-        Ok(value) if value == SOURCE_BUNDLED => {}
-        Ok(_) => return Ok(SyncOne::Protected),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(SyncOne::Protected),
-        Err(err) => return Err(err).with_context(|| format!("read {}", marker.display())),
+    let ownership = provenance::read(&marker)?;
+    match ownership {
+        Provenance::Custom => return Ok(SyncOne::Protected),
+        Provenance::Invalid => return Ok(SyncOne::Paused(PauseReason::InvalidMarker)),
+        _ => {}
     }
-    let on_disk = match std::fs::read_to_string(dest) {
+    let on_disk = match std::fs::read(dest) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(SyncOne::Missing),
         Err(err) => return Err(err).with_context(|| format!("read {}", dest.display())),
     };
-    if on_disk == source {
+    let matches_baseline = matches!(&ownership, Provenance::Bundled { sha256 }
+        if *sha256 == provenance::digest(&on_disk));
+    if on_disk == source.as_bytes() {
+        if !matches_baseline {
+            // Also recovers a content update whose final marker write failed.
+            // Neither adoption nor recovery rewrites SKILL.md or its mtime.
+            let metadata = provenance::bundled_marker(&on_disk)?;
+            PendingWrite::prepare(&marker, &metadata)?.commit()?;
+        }
         return Ok(SyncOne::UpToDate);
     }
-    PendingWrite::prepare(dest, source)?.commit()?;
+    match ownership {
+        Provenance::Missing => return Ok(SyncOne::Paused(PauseReason::Untracked)),
+        Provenance::LegacyBundled => return Ok(SyncOne::Paused(PauseReason::MissingBaseline)),
+        Provenance::Bundled { .. } if matches_baseline => {}
+        _ => return Ok(SyncOne::Paused(PauseReason::LocalChanges)),
+    }
+    super::write_bundled_skill(dest, source)?;
     Ok(SyncOne::Updated)
 }
 
@@ -100,7 +138,7 @@ mod tests {
     fn mark_bundled(dest: &Path) {
         std::fs::write(
             dest.parent().unwrap().join(SOURCE_MARKER_FILE),
-            SOURCE_BUNDLED,
+            provenance::bundled_marker(&std::fs::read(dest).unwrap()).unwrap(),
         )
         .unwrap();
     }
@@ -221,7 +259,11 @@ mod tests {
 
         let report = sync_with_source(home, "new bundled content");
 
-        assert_eq!(report.protected, vec![HarnessId::Codex, HarnessId::Cursor]);
+        assert_eq!(report.protected, vec![HarnessId::Cursor]);
+        assert_eq!(
+            report.paused,
+            vec![(HarnessId::Codex, PauseReason::Untracked)]
+        );
         assert_eq!(
             std::fs::read_to_string(custom_dir.join("SKILL.md")).unwrap(),
             "custom content"
@@ -232,18 +274,26 @@ mod tests {
         );
     }
     #[test]
-    fn unknown_and_missing_markers_protect_even_identical_content() {
-        for marker in [None, Some(""), Some("unknown\n")] {
+    fn unknown_markers_are_not_claimed_even_when_content_matches() {
+        for marker in [
+            "",
+            "unknown\n",
+            r#"{"version":2,"source":"bundled","sha256":"abc"}"#,
+            r#"{"version":1,"source":"bundled","sha256":"invalid"}"#,
+            r#"{"version":1,"source":"bundled"}"#,
+            r#"{"version":1,"source":"custom","unexpected":true}"#,
+        ] {
             let home = TempDir::new().unwrap();
             let dir = HarnessId::Cursor.skill_dest_dir_for_home(home.path());
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("SKILL.md"), "same").unwrap();
-            if let Some(marker) = marker {
-                std::fs::write(dir.join(SOURCE_MARKER_FILE), marker).unwrap();
-            }
+            std::fs::write(dir.join(SOURCE_MARKER_FILE), marker).unwrap();
             for source in ["same", "new bundled"] {
                 let report = sync_with_source(home.path(), source);
-                assert_eq!(report.protected, vec![HarnessId::Cursor]);
+                assert_eq!(
+                    report.paused,
+                    vec![(HarnessId::Cursor, PauseReason::InvalidMarker)]
+                );
                 assert!(report.up_to_date.is_empty());
                 assert!(report.errors.is_empty());
                 assert_eq!(
@@ -252,9 +302,7 @@ mod tests {
                 );
             }
             assert_eq!(
-                std::fs::read_to_string(dir.join(SOURCE_MARKER_FILE))
-                    .ok()
-                    .as_deref(),
+                std::fs::read_to_string(dir.join(SOURCE_MARKER_FILE)).unwrap(),
                 marker
             );
         }
@@ -315,9 +363,11 @@ mod tests {
         let (resume_tx, resume_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             with_replace_hook(
-                move |_| {
-                    ready_tx.send(()).unwrap();
-                    resume_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                move |dest| {
+                    if dest.file_name().unwrap() == "SKILL.md" {
+                        ready_tx.send(()).unwrap();
+                        resume_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    }
                     Ok(())
                 },
                 || sync_with_source(&worker_home, "first update"),
@@ -331,5 +381,205 @@ mod tests {
         resume_tx.send(()).unwrap();
         assert_eq!(worker.join().unwrap().updated, vec![HarnessId::Cursor]);
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "first update");
+    }
+    #[test]
+    fn matching_legacy_installations_are_adopted_without_rewriting_content() {
+        use std::time::{Duration, SystemTime};
+        for legacy in [None, Some(super::super::SOURCE_BUNDLED)] {
+            let home = TempDir::new().unwrap();
+            let dir = HarnessId::Cursor.skill_dest_dir_for_home(home.path());
+            std::fs::create_dir_all(&dir).unwrap();
+            let dest = dir.join("SKILL.md");
+            let marker = dir.join(SOURCE_MARKER_FILE);
+            std::fs::write(&dest, "current bundle").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&dest)
+                .unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000))
+                .unwrap();
+            let mtime = std::fs::metadata(&dest).unwrap().modified().unwrap();
+            if let Some(legacy) = legacy {
+                std::fs::write(&marker, legacy).unwrap();
+            }
+            let report = sync_with_source(home.path(), "current bundle");
+            assert_eq!(report.up_to_date, vec![HarnessId::Cursor]);
+            assert!(report.paused.is_empty());
+            assert_eq!(std::fs::metadata(&dest).unwrap().modified().unwrap(), mtime);
+            assert_eq!(
+                provenance::read(&marker).unwrap(),
+                Provenance::Bundled {
+                    sha256: provenance::digest(b"current bundle")
+                }
+            );
+            let marker_mtime = std::fs::metadata(&marker).unwrap().modified().unwrap();
+            assert_eq!(
+                sync_with_source(home.path(), "current bundle").up_to_date,
+                vec![HarnessId::Cursor]
+            );
+            assert_eq!(
+                std::fs::metadata(&marker).unwrap().modified().unwrap(),
+                marker_mtime
+            );
+            assert_eq!(
+                sync_with_source(home.path(), "next bundle").updated,
+                vec![HarnessId::Cursor]
+            );
+            assert_eq!(std::fs::read(&dest).unwrap(), b"next bundle");
+        }
+    }
+
+    #[test]
+    fn differing_legacy_content_is_preserved_with_a_specific_pause_reason() {
+        for (legacy, reason) in [
+            (None, PauseReason::Untracked),
+            (
+                Some(super::super::SOURCE_BUNDLED),
+                PauseReason::MissingBaseline,
+            ),
+        ] {
+            let home = TempDir::new().unwrap();
+            let dir = HarnessId::Cursor.skill_dest_dir_for_home(home.path());
+            std::fs::create_dir_all(&dir).unwrap();
+            let marker = dir.join(SOURCE_MARKER_FILE);
+            // Even a trailing newline is a byte difference, not an adoption match.
+            std::fs::write(dir.join("SKILL.md"), "bundle\n").unwrap();
+            if let Some(legacy) = legacy {
+                std::fs::write(&marker, legacy).unwrap();
+            }
+            let report = sync_with_source(home.path(), "bundle");
+            assert_eq!(report.paused, vec![(HarnessId::Cursor, reason)]);
+            assert!(report.updated.is_empty());
+            assert!(report.errors.is_empty());
+            assert_eq!(
+                std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+                "bundle\n"
+            );
+            assert_eq!(std::fs::read_to_string(&marker).ok().as_deref(), legacy);
+        }
+    }
+
+    #[test]
+    fn failed_adoption_keeps_legacy_content_and_marker_intact() {
+        use super::super::storage::test_support::{assert_no_temporary_files, with_replace_hook};
+        for legacy in [None, Some(super::super::SOURCE_BUNDLED)] {
+            let home = TempDir::new().unwrap();
+            let dir = HarnessId::Cursor.skill_dest_dir_for_home(home.path());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "bundle").unwrap();
+            let marker = dir.join(SOURCE_MARKER_FILE);
+            if let Some(legacy) = legacy {
+                std::fs::write(&marker, legacy).unwrap();
+            }
+            let report = with_replace_hook(
+                |_| Err(std::io::Error::other("injected marker failure")),
+                || sync_with_source(home.path(), "bundle"),
+            );
+            assert_eq!(report.errors.len(), 1);
+            assert!(report.up_to_date.is_empty());
+            assert_eq!(std::fs::read_to_string(&marker).ok().as_deref(), legacy);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+                "bundle"
+            );
+            assert_no_temporary_files(&dir);
+            assert_eq!(
+                sync_with_source(home.path(), "bundle").up_to_date,
+                vec![HarnessId::Cursor]
+            );
+        }
+    }
+
+    #[test]
+    fn local_edits_are_preserved_until_the_recorded_content_is_restored() {
+        for edited in [b"my instructions".as_slice(), b"bundle v1\n", b"\xff"] {
+            let home = TempDir::new().unwrap();
+            let dir = HarnessId::Cursor.skill_dest_dir_for_home(home.path());
+            std::fs::create_dir_all(&dir).unwrap();
+            let dest = dir.join("SKILL.md");
+            std::fs::write(&dest, "bundle v1").unwrap();
+            mark_bundled(&dest);
+            let original_marker = std::fs::read(dir.join(SOURCE_MARKER_FILE)).unwrap();
+            std::fs::write(&dest, edited).unwrap();
+            for target in ["bundle v1", "bundle v2"] {
+                let report = sync_with_source(home.path(), target);
+                assert_eq!(
+                    report.paused,
+                    vec![(HarnessId::Cursor, PauseReason::LocalChanges)]
+                );
+                assert!(report.errors.is_empty());
+                assert_eq!(std::fs::read(&dest).unwrap(), edited);
+                assert_eq!(
+                    std::fs::read(dir.join(SOURCE_MARKER_FILE)).unwrap(),
+                    original_marker
+                );
+            }
+            std::fs::write(&dest, "bundle v1").unwrap();
+            assert_eq!(
+                sync_with_source(home.path(), "bundle v2").updated,
+                vec![HarnessId::Cursor]
+            );
+            assert_eq!(
+                provenance::read(&dir.join(SOURCE_MARKER_FILE)).unwrap(),
+                Provenance::Bundled {
+                    sha256: provenance::digest(b"bundle v2")
+                }
+            );
+            // The updated baseline must protect edits made after an upgrade, too.
+            std::fs::write(&dest, "v2 with local edits").unwrap();
+            assert_eq!(
+                sync_with_source(home.path(), "bundle v3").paused,
+                vec![(HarnessId::Cursor, PauseReason::LocalChanges)]
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_sync_preserves_content_and_repairs_only_a_matching_bundle() {
+        use super::super::storage::test_support::{assert_no_temporary_files, with_replace_hook};
+        let home = TempDir::new().unwrap();
+        let dir = HarnessId::Cursor.skill_dest_dir_for_home(home.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("SKILL.md");
+        std::fs::write(&dest, "old bundle").unwrap();
+        mark_bundled(&dest);
+        let old_marker = std::fs::read(dir.join(SOURCE_MARKER_FILE)).unwrap();
+        let report = with_replace_hook(
+            |dest| {
+                if dest.file_name().unwrap() == SOURCE_MARKER_FILE {
+                    Err(std::io::Error::other("injected marker failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            || sync_with_source(home.path(), "new bundle"),
+        );
+        assert_eq!(report.errors.len(), 1);
+        assert!(
+            report.errors[0]
+                .1
+                .contains("bundled skill content installed")
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new bundle");
+        assert_eq!(
+            std::fs::read(dir.join(SOURCE_MARKER_FILE)).unwrap(),
+            old_marker
+        );
+        assert_no_temporary_files(&dir);
+        // A different binary cannot guess the origin of this mismatch.
+        assert_eq!(
+            sync_with_source(home.path(), "another bundle").paused,
+            vec![(HarnessId::Cursor, PauseReason::LocalChanges)]
+        );
+        let mtime = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        assert_eq!(
+            sync_with_source(home.path(), "new bundle").up_to_date,
+            vec![HarnessId::Cursor]
+        );
+        assert_eq!(std::fs::metadata(&dest).unwrap().modified().unwrap(), mtime);
+        assert_eq!(
+            sync_with_source(home.path(), "another bundle").updated,
+            vec![HarnessId::Cursor]
+        );
     }
 }

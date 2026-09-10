@@ -1,6 +1,7 @@
 //! Install bundled or custom browser-skill instructions into agent skill directories.
 
 pub mod harness;
+mod provenance;
 mod storage;
 pub mod sync;
 
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use console::{Style, style};
 use dialoguer::{MultiSelect, theme::ColorfulTheme};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use harness::{HarnessId, HarnessReport, all_harness_reports, parse_harness_id};
 
@@ -21,7 +22,8 @@ pub const SOURCE_BUNDLED: &str = "bundled\n";
 pub const SOURCE_CUSTOM: &str = "custom\n";
 
 /// Installation provenance is explicit: even an identical `--source` is custom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SkillSource {
     Bundled,
     Custom,
@@ -155,10 +157,10 @@ fn install_one_at_home(
     }
 
     let existed = dest_file.exists();
-    let content = storage::PendingWrite::prepare(&dest_file, source)?;
     let marker = dest_dir.join(SOURCE_MARKER_FILE);
     match source_kind {
         SkillSource::Custom => {
+            let content = storage::PendingWrite::prepare(&dest_file, source)?;
             // Protection must be established before any custom content appears.
             storage::PendingWrite::prepare(&marker, SOURCE_CUSTOM)?.commit()?;
             content
@@ -166,12 +168,7 @@ fn install_one_at_home(
                 .context("custom protection recorded, but skill content was not replaced")?;
         }
         SkillSource::Bundled => {
-            let marker = storage::PendingWrite::prepare(&marker, SOURCE_BUNDLED)?;
-            // Do not authorize sync until the old custom content is replaced.
-            content.commit()?;
-            marker.commit().context(
-                "bundled skill content installed, but its source marker was not updated",
-            )?;
+            write_bundled_skill(&dest_file, source)?;
         }
     }
 
@@ -181,6 +178,22 @@ fn install_one_at_home(
         InstallStatus::Installed
     };
     Ok((dest_file, status))
+}
+
+/// Callers hold the skill lock. Publish the baseline only after its content;
+/// a failed marker replacement leaves a conservative, detectable mismatch.
+fn write_bundled_skill(dest: &Path, source: &str) -> Result<()> {
+    let content = storage::PendingWrite::prepare(dest, source)?;
+    let marker = dest
+        .parent()
+        .context("skill destination has no parent")?
+        .join(SOURCE_MARKER_FILE);
+    let metadata = provenance::bundled_marker(source.as_bytes())?;
+    let marker = storage::PendingWrite::prepare(&marker, &metadata)?;
+    content.commit()?;
+    marker
+        .commit()
+        .context("bundled skill content installed, but its source marker was not updated")
 }
 
 /// Harnesses visible in the interactive installer (detected on this machine only).
@@ -440,7 +453,12 @@ mod tests {
         let marker = harness
             .skill_dest_dir_for_home(&home)
             .join(SOURCE_MARKER_FILE);
-        assert_eq!(fs::read_to_string(marker).unwrap(), SOURCE_BUNDLED);
+        assert_eq!(
+            provenance::read(&marker).unwrap(),
+            provenance::Provenance::Bundled {
+                sha256: provenance::digest(DEFAULT_SKILL_MD.as_bytes()),
+            }
+        );
     }
 
     #[test]
@@ -519,6 +537,7 @@ mod tests {
                     false,
                 )
                 .unwrap();
+                let original_marker = fs::read_to_string(dir.join(SOURCE_MARKER_FILE)).unwrap();
                 let error = with_replace_hook(
                     move |dest| {
                         if dest.file_name().unwrap() == failed_file {
@@ -560,7 +579,7 @@ mod tests {
                 let still_bundled =
                     kind == SkillSource::Custom && failed_file == SOURCE_MARKER_FILE;
                 let expected_marker = if still_bundled {
-                    SOURCE_BUNDLED
+                    original_marker.as_str()
                 } else {
                     SOURCE_CUSTOM
                 };
