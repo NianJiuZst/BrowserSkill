@@ -21,10 +21,11 @@ import {
   type OverlayMode,
 } from "@/lib/overlay-bridge";
 import { POPUP_PORT_NAME, type PopupInbound, type PopupOutbound } from "@/lib/popup-bridge";
+import { recordFrameCoordinator } from "@/lib/recording/frame-coordinator";
 import { attachSessionsLiveFlag } from "@/lib/sessions-live-flag";
 import { createDisconnectCleanup } from "@/session-manager/disconnect-cleanup";
 import { attachSessionEventHandler } from "@/session-manager/event-handler";
-import { SessionManager } from "@/session-manager/manager";
+import { isAgentControlledTab, SessionManager } from "@/session-manager/manager";
 import {
   attachBorrowNotificationButtonHandler,
   attachBorrowNotificationClickHandler,
@@ -38,7 +39,10 @@ import {
   attachRecordFinishListener,
   attachRecordQueryListener,
   attachRecordStepListener,
+  type RecordRuntimeDeps,
 } from "@/tools/record";
+import { chromeTabsApi } from "@/tools/shared";
+import { chromeTabMutationApi } from "@/tools/tabs";
 import { detectBrowserMeta } from "@/transport/handshake";
 import type { Transport } from "@/transport/transport";
 import { WSTransport } from "@/transport/ws-transport";
@@ -47,7 +51,12 @@ export default defineBackground(() => {
   const controller = new ConnectionController();
   const transport = new WSTransport({ url: __BSK_DAEMON_WS_URL__ });
   const sessions = new SessionManager();
-  const cdp = new ChromiumCdp();
+  const cdp = new ChromiumCdp(undefined, {
+    shouldAutoAcceptDialog: async (tabId) => {
+      const tab = await chrome.tabs.get(tabId);
+      return sessions.findByWindowId(tab.windowId) !== null;
+    },
+  });
   const sessionsLive = attachSessionsLiveFlag({ manager: sessions });
   let overlayGeneration = 0;
   const controlModes = new Map<string, OverlayMode>();
@@ -78,6 +87,24 @@ export default defineBackground(() => {
     };
   }
 
+  /**
+   * Authoritative overlay state for a specific tab. Agent Window tabs are
+   * free by default; only tabs explicitly claimed through session startup,
+   * `tab_create`, or `tab_borrow` receive the control overlay.
+   */
+  function overlayStateForTab(tabId?: number, windowId?: number): OverlayAgentStateMessage {
+    if (typeof tabId === "number" && typeof windowId === "number") {
+      const ctx = sessions.findByWindowId(windowId);
+      if (ctx && isAgentControlledTab(ctx, tabId)) return overlayStateForWindow(windowId);
+    }
+    return {
+      type: OVERLAY_AGENT_STATE,
+      sessionId: null,
+      mode: "hidden",
+      generation: overlayGeneration,
+    };
+  }
+
   async function pushOverlayStateToTab(
     tabId: number,
     state: OverlayAgentStateMessage,
@@ -89,13 +116,18 @@ export default defineBackground(() => {
     }
   }
 
+  async function pushOverlayStateForTab(tabId: number, windowId?: number): Promise<void> {
+    const state = overlayStateForTab(tabId, windowId);
+    await pushOverlayStateToTab(tabId, state);
+  }
+
   async function pushOverlayStateForWindow(windowId: number): Promise<void> {
-    const state = overlayStateForWindow(windowId);
     const tabs = await chrome.tabs.query({ windowId });
     await Promise.all(
-      tabs.map((tab) =>
-        typeof tab.id === "number" ? pushOverlayStateToTab(tab.id, state) : Promise.resolve(),
-      ),
+      tabs.map((tab) => {
+        if (typeof tab.id !== "number") return Promise.resolve();
+        return pushOverlayStateForTab(tab.id, windowId);
+      }),
     );
   }
 
@@ -134,23 +166,66 @@ export default defineBackground(() => {
     if (typeof tab.windowId !== "number") return;
     pushOverlayStateForAgentWindow(tab.windowId);
   });
+  // Newly observed tabs are free unless the agent's own creation path has
+  // already claimed their concrete id. This listener only renders that
+  // state; it never infers or mutates ownership from event ordering.
+  chrome.tabs.onCreated.addListener((tab) => {
+    if (typeof tab.windowId !== "number" || typeof tab.id !== "number") return;
+    if (!sessions.findByWindowId(tab.windowId)) return;
+    void pushOverlayStateForTab(tab.id, tab.windowId);
+  });
+  chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+    sessions.forgetClosedTab(tabId, { isWindowClosing: removeInfo.isWindowClosing });
+  });
   // Re-sync the storage.session flag on SW startup so a previous SW's
   // stale `true` does not keep waking us on every page load until the
   // first mutation (review M4/M5 round 3 m-R3-1).
   void sessionsLive.refresh();
   const cleanupAfterDisconnect = createDisconnectCleanup({
     manager: sessions,
-    sessionStopDeps: { cdp },
+    // Same contract as the dispatcher's `tool.session_stop`: without these
+    // deps the agent-tab cleanup and the window-release path are dead code.
+    sessionStopDeps: {
+      cdp,
+      tabManagement: { tabs: chromeTabMutationApi },
+      tabsQuery: chromeTabsApi,
+    },
     onSessionsChanged: () => {
       void sessionsLive.syncFromManager();
     },
   });
+  const recordDeps = {
+    tabsApi: chrome.tabs,
+    cdp,
+    frameCoordinator: recordFrameCoordinator,
+    sendToTab: (tabId: number, msg: Parameters<typeof chrome.tabs.sendMessage>[1]) =>
+      chrome.tabs.sendMessage(tabId, msg),
+    bypassOverlay: async (tabId: number, enabled: boolean) => {
+      try {
+        await chrome.tabs.sendMessage(tabId, {
+          type: OVERLAY_AUTOMATION_BYPASS,
+          enabled,
+        });
+      } catch {
+        // Content script may be unavailable on restricted pages.
+      }
+    },
+  } satisfies RecordRuntimeDeps;
+  recordFrameCoordinator.attach();
+  attachRecordStepListener(recordDeps);
+  attachRecordFinishListener(recordDeps);
+  attachRecordQueryListener(recordDeps);
+
   const dispatcher = new ToolDispatcher({
     transport,
     sessions,
     cdp,
+    recording: recordDeps,
     onSessionsChanged: onOverlaySessionStateChanged,
     onBrowserControlResumed,
+    onAgentTabClaimed: (tabId, windowId) => {
+      void pushOverlayStateForTab(tabId, windowId);
+    },
     approveBorrow: (ctx) =>
       requestBorrowConfirmation(ctx.tabId, {
         ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
@@ -170,27 +245,6 @@ export default defineBackground(() => {
     }),
   });
   dispatcher.start();
-  const recordDeps = {
-    tabsApi: chrome.tabs,
-    sendToTab: (tabId: number, msg: Parameters<typeof chrome.tabs.sendMessage>[1]) =>
-      chrome.tabs.sendMessage(tabId, msg),
-    bypassOverlay: async (tabId: number, enabled: boolean) => {
-      try {
-        await chrome.tabs.sendMessage(tabId, {
-          type: OVERLAY_AUTOMATION_BYPASS,
-          enabled,
-        });
-      } catch {
-        // Content script may be unavailable on restricted pages.
-      }
-    },
-  };
-  // Message listeners stay up (cheap; fire only for record message types).
-  // Tab / webNavigation observation attaches lazily while a recording is
-  // active — see ensureBrowserObservationListeners in tools/record.ts.
-  attachRecordStepListener();
-  attachRecordFinishListener(recordDeps);
-  attachRecordQueryListener(recordDeps);
   if (typeof chrome.notifications?.onClicked?.addListener === "function") {
     attachBorrowNotificationClickHandler({
       onClicked: chrome.notifications.onClicked,
@@ -305,7 +359,11 @@ export default defineBackground(() => {
     }
 
     if (msg.kind === OVERLAY_MSG_READY) {
-      sendResponse(overlayStateForWindow(sender.tab?.windowId));
+      // Resolve from explicit tab ownership before sending so free tabs never
+      // flash the control mask.
+      if (typeof sender.tab?.id === "number") {
+        void pushOverlayStateForTab(sender.tab.id, sender.tab.windowId);
+      }
       return false;
     }
 

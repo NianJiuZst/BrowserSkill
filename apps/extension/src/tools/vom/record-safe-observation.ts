@@ -1,7 +1,11 @@
 import type { Rect, RenderedRef, VomResult } from "@browser-skill/vom";
 import type { CdpTarget } from "@/browser-driver/frame-graph";
+import { readRecordingDocumentIdentity } from "@/shared/recording-document-identity";
 import type { CapturedSurfaceProbe } from "./capture";
-import type { CapturedFrameDocument, FrameAxNode } from "./frame-capture";
+import type {
+  FrameDocument as CapturedFrameDocument,
+  FrameOwnedAxNode as FrameAxNode,
+} from "./frame-document";
 
 /** Frame identity needed to resolve an `@eN` that lives in an iframe. */
 export interface CaptureVomFrame {
@@ -9,6 +13,8 @@ export interface CaptureVomFrame {
   target: CdpTarget;
   parentFrameId?: string;
   ownerBackendNodeId?: number;
+  /** BrowserSkill-generated identity for the recording agent in this Document. */
+  recordingDocumentId?: string;
 }
 
 /** Allowlisted geometry used to match a recorded action to a rendered ref. */
@@ -34,17 +40,36 @@ export interface CaptureVomObservationResult {
   frames: CaptureVomFrame[];
   matchNodes: CaptureVomMatchNode[];
   surfaceProbes?: CapturedSurfaceProbe[];
+  /**
+   * Whether this observation actively hovered the page, and whether that
+   * revealed content the static tree does not contain. Lets callers judge how
+   * far the page may have drifted from the returned snapshot.
+   */
+  hoverProbe?: HoverProbeReport;
+}
+
+export interface HoverProbeReport {
+  performed: boolean;
+  revealedContent: boolean;
 }
 
 function projectFrames(documents: CapturedFrameDocument<FrameAxNode>[]): CaptureVomFrame[] {
-  return documents.map((document) => ({
-    frameId: document.frameId,
-    target: document.target,
-    ...(document.parentFrameId ? { parentFrameId: document.parentFrameId } : {}),
-    ...(document.ownerBackendNodeId !== undefined
-      ? { ownerBackendNodeId: document.ownerBackendNodeId }
-      : {}),
-  }));
+  return documents.map((document) => {
+    let recordingDocumentId: string | undefined;
+    for (const node of document.domNodes) {
+      recordingDocumentId = readRecordingDocumentIdentity(node.attrs);
+      if (recordingDocumentId) break;
+    }
+    return {
+      frameId: document.frameId,
+      target: document.target,
+      ...(document.parentFrameId ? { parentFrameId: document.parentFrameId } : {}),
+      ...(document.ownerBackendNodeId !== undefined
+        ? { ownerBackendNodeId: document.ownerBackendNodeId }
+        : {}),
+      ...(recordingDocumentId ? { recordingDocumentId } : {}),
+    };
+  });
 }
 
 function projectMatchNodes(documents: CapturedFrameDocument<FrameAxNode>[]): CaptureVomMatchNode[] {
@@ -64,6 +89,7 @@ export function projectRecordSafeObservation(input: {
   frameDocuments: CapturedFrameDocument<FrameAxNode>[];
   rendered: VomResult;
   surfaceProbes?: CapturedSurfaceProbe[];
+  hoverProbe?: HoverProbeReport;
 }): CaptureVomObservationResult {
   return {
     text: input.rendered.text,
@@ -73,5 +99,6 @@ export function projectRecordSafeObservation(input: {
     frames: projectFrames(input.frameDocuments),
     matchNodes: projectMatchNodes(input.frameDocuments),
     surfaceProbes: input.surfaceProbes,
+    ...(input.hoverProbe ? { hoverProbe: input.hoverProbe } : {}),
   };
 }
