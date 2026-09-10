@@ -129,6 +129,21 @@ Use <kbd>Space</kbd> to select the Agent harness you want to install into, then
 press <kbd>Enter</kbd> to install the skill. Run `bsk install-skill --list` to see
 internal variants and install paths.
 
+To install your own instructions, use `bsk install-skill --harness cursor --source ./SKILL.md`.
+An explicit `--source` stays custom even if its contents match the bundled skill.
+Existing installations are skipped unless you add `--force`.
+
+Daemon startup, `session start`, and `doctor` automatically update only installations
+marked as bundled. Custom installations and older or manual installations without
+a `.bsk-source` marker are preserved. `doctor` reports preserved installations and
+any sync deferred because another install or sync is running.
+
+To replace an existing installation with the bundled skill and enable automatic
+updates, run `bsk install-skill --harness cursor --force` without `--source`.
+This overwrites the existing instructions. To customize a managed installation,
+install your edited file with `--source` and `--force`; directly editing a bundled
+installation does not change its ownership and it can still be overwritten by sync.
+
 Other shell-capable agent harnesses are supported too. Copy
 [`skill/SKILL.md`](skill/SKILL.md) into your harness's skills directory as
 `browser-skill/SKILL.md` to install the skill manually. DeepSeek Harness uses a

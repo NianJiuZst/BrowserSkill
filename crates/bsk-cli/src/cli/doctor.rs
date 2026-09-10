@@ -247,54 +247,45 @@ fn check_skill_up_to_date() -> CheckResult {
     };
     let report = crate::skill_install::sync::sync_installed_skills(&home);
 
+    skill_check_from_report(&report)
+}
+
+fn skill_check_from_report(report: &crate::skill_install::sync::SyncReport) -> CheckResult {
+    let name = "agent skill up to date";
+    let mut details = Vec::new();
+    for (label, harnesses) in [
+        ("synced", &report.updated),
+        ("up to date", &report.up_to_date),
+        ("custom or unmanaged skill preserved in", &report.protected),
+        ("busy, sync deferred in", &report.busy),
+    ] {
+        if !harnesses.is_empty() {
+            let names = harnesses
+                .iter()
+                .map(|h| h.cli_name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            details.push(format!("{label}: {names}"));
+        }
+    }
+    for (harness, message) in &report.errors {
+        details.push(format!("sync failed for {}: {message}", harness.cli_name()));
+    }
+    let detail = details.join("; ");
+
     if !report.errors.is_empty() {
-        let detail = report
-            .errors
-            .iter()
-            .map(|(h, msg)| format!("{}: {msg}", h.cli_name()))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return CheckResult::fail(
+        CheckResult::fail(
             name,
             detail,
-            "re-run `bsk install-skill --force --harness <id>` for the failing harness",
-        );
+            "check filesystem access for the failing harness, then re-run `bsk doctor`",
+        )
+    } else if !report.updated.is_empty() || !report.up_to_date.is_empty() {
+        CheckResult::ok(name, detail)
+    } else if !details.is_empty() {
+        CheckResult::na(name, detail)
+    } else {
+        CheckResult::na(name, "no agent skill installed")
     }
-
-    if !report.updated.is_empty() {
-        let names = report
-            .updated
-            .iter()
-            .map(|h| h.cli_name())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return CheckResult::ok(
-            name,
-            format!("synced {} harness(es): {names}", report.updated.len()),
-        );
-    }
-
-    if !report.up_to_date.is_empty() {
-        return CheckResult::ok(
-            name,
-            format!("up to date in {} harness(es)", report.up_to_date.len()),
-        );
-    }
-
-    if !report.protected.is_empty() {
-        let names = report
-            .protected
-            .iter()
-            .map(|h| h.cli_name())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return CheckResult::na(
-            name,
-            format!("custom or unmanaged skill preserved in: {names}"),
-        );
-    }
-
-    CheckResult::na(name, "no agent skill installed")
 }
 
 fn check_daemon_running(state: &DaemonState) -> CheckResult {
@@ -507,6 +498,81 @@ mod m2_tests {
             sessions: Vec::new(),
             version_skew_browsers: skew,
         }
+    }
+
+    #[test]
+    fn skill_check_reports_protected_harnesses_with_managed_results() {
+        use crate::skill_install::{HarnessId, sync::SyncReport};
+        for updated in [true, false] {
+            let mut report = SyncReport {
+                protected: vec![HarnessId::Cursor],
+                ..Default::default()
+            };
+            if updated {
+                report.updated.push(HarnessId::ClaudeCode);
+            } else {
+                report.up_to_date.push(HarnessId::ClaudeCode);
+            }
+            let check = skill_check_from_report(&report);
+            assert_eq!(check.status, CheckStatus::Ok);
+            assert!(check.detail.contains("claude-code"));
+            assert!(check.detail.contains("preserved in: cursor"));
+            let json = serde_json::to_value(&check).unwrap();
+            assert_eq!(json["status"], "ok");
+            assert!(
+                json["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("preserved in: cursor")
+            );
+        }
+    }
+
+    #[test]
+    fn skill_check_keeps_all_outcomes_when_another_harness_fails() {
+        use crate::skill_install::{HarnessId, sync::SyncReport};
+        let check = skill_check_from_report(&SyncReport {
+            updated: vec![HarnessId::ClaudeCode],
+            up_to_date: vec![HarnessId::PiAgent],
+            protected: vec![HarnessId::Cursor],
+            busy: vec![HarnessId::Hermes],
+            errors: vec![(HarnessId::Workbuddy, "permission denied".into())],
+        });
+        assert_eq!(check.status, CheckStatus::Fail);
+        for text in [
+            "synced: claude-code",
+            "up to date: pi",
+            "preserved in: cursor",
+            "sync deferred in: hermes",
+            "workbuddy: permission denied",
+        ] {
+            assert!(check.detail.contains(text), "{}", check.detail);
+        }
+        assert!(!check.hint.unwrap().contains("--force"));
+    }
+
+    #[test]
+    fn protected_or_busy_skills_are_informational() {
+        use crate::skill_install::{HarnessId, sync::SyncReport};
+        for report in [
+            SyncReport {
+                protected: vec![HarnessId::Cursor],
+                ..Default::default()
+            },
+            SyncReport {
+                busy: vec![HarnessId::Cursor],
+                ..Default::default()
+            },
+        ] {
+            let check = skill_check_from_report(&report);
+            assert_eq!(check.status, CheckStatus::NotApplicable);
+            assert!(check.detail.contains("cursor"));
+            assert!(!has_failures(std::slice::from_ref(&check)));
+            assert_eq!(serde_json::to_value(&check).unwrap()["status"], "na");
+        }
+        let empty = skill_check_from_report(&SyncReport::default());
+        assert_eq!(empty.status, CheckStatus::NotApplicable);
+        assert_eq!(empty.detail, "no agent skill installed");
     }
 
     #[test]
