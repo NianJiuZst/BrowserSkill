@@ -256,6 +256,47 @@ fn parses_hover_with_settle() {
 }
 
 #[test]
+fn parses_scroll_to_target() {
+    let cli = parse(&["bsk", "scroll-to", "@e2", "--session", "s1"]);
+    let Command::ScrollTo(args) = cli.command else {
+        panic!("expected scroll-to command");
+    };
+    assert_eq!(args.target.as_deref(), Some("@e2"));
+}
+
+#[test]
+fn parses_scroll_to_explicit_target_tab_and_timeout() {
+    for flag in ["--ref", "--selector"] {
+        let cli = parse(&[
+            "bsk",
+            "scroll-to",
+            flag,
+            "e3",
+            "--session",
+            "s1",
+            "--tab-id",
+            "42",
+            "--timeout",
+            "5s",
+        ]);
+        let Command::ScrollTo(args) = cli.command else {
+            panic!("expected scroll-to command");
+        };
+        assert_eq!(args.tab_id, Some(42));
+        assert_eq!(args.timeout, 5_000);
+        assert_eq!(
+            if flag == "--ref" {
+                args.ref_
+            } else {
+                args.selector
+            }
+            .as_deref(),
+            Some("e3")
+        );
+    }
+}
+
+#[test]
 fn parses_focus_target() {
     let cli = parse(&["bsk", "focus", "@e2", "--session", "s1"]);
     let Command::Focus(args) = cli.command else {

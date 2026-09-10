@@ -13,7 +13,7 @@ import type { ToolDeps } from "./tools";
 
 const MODIFIERS = ["alt", "ctrl", "meta", "shift"] as const;
 
-/** Add hover, focus, blur and select without bypassing session ownership or observation. */
+/** Add interaction primitives without bypassing session ownership or observation. */
 export function registerPhaseOneInteractionTools(
   deps: ToolDeps,
   register: ToolRegistrar,
@@ -95,6 +95,89 @@ export function registerPhaseOneInteractionTools(
           args.session ?? "(current)",
         ]),
         description: "Hover an element",
+      }),
+      presentResult: runtime.presentTerminalResult,
+    }),
+  );
+
+  register(
+    defineTool({
+      name: "interact.scroll-to",
+      description:
+        "Scroll an element and its frame owners into view. Returns the visible portion's " +
+        "bounds in top-level viewport CSS pixels; fails if no visible area remains. " +
+        "Use a fresh ref for iframe targets; selectors search the main document.",
+      parameters: {
+        target: {
+          type: "string",
+          required: true,
+          description: "Element ref (@e3 / e3) or main-document CSS selector to scroll into view.",
+        },
+        session: SESSION_PARAM,
+        tabId: TAB_ID_PARAM,
+        timeoutMs: TIMEOUT_MS_PARAM,
+      },
+      output: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            session: { type: "string", required: true },
+            tabId: { type: "integer", required: true },
+            x: { type: "number", required: true },
+            y: { type: "number", required: true },
+            width: { type: "number", required: true },
+            height: { type: "number", required: true },
+          },
+        },
+        render: (_args, value) => [
+          {
+            type: "text",
+            text:
+              `[session ${value.session}] scrolled into view on tab ${value.tabId}: ` +
+              `(${value.x}, ${value.y}, ${value.width}, ${value.height})`,
+          },
+        ],
+      },
+      async execute(args, exec) {
+        requireNonEmpty(args.target, "target");
+        requirePositive(args.timeoutMs, "timeoutMs");
+        const sessionId = registry.resolve(args.session, "browser_interact(action=scroll-to)");
+        const cmdArgs = ["scroll-to", "--session", sessionId];
+        appendTabId(cmdArgs, args.tabId);
+        if (args.timeoutMs !== undefined) cmdArgs.push("--timeout", `${args.timeoutMs}ms`);
+        appendTarget(cmdArgs, args.target);
+        const reply = (await runtime.run(
+          exec,
+          cmdArgs,
+          "scroll-to",
+          sessionId,
+          runnerTimeout(deps, args.timeoutMs),
+        )) as {
+          tab_id: number;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        };
+        return {
+          session: sessionId,
+          tabId: reply.tab_id,
+          x: reply.x,
+          y: reply.y,
+          width: reply.width,
+          height: reply.height,
+        };
+      },
+      presentCall: (args) => ({
+        card: "terminal",
+        title: runtime.commandLine([
+          "scroll-to",
+          args.target,
+          "--session",
+          args.session ?? "(current)",
+        ]),
+        description: "Scroll an element into view",
       }),
       presentResult: runtime.presentTerminalResult,
     }),

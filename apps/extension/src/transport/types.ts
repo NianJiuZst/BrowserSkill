@@ -470,6 +470,26 @@ export interface HoverResult {
   dialogs?: JavaScriptDialogInfo[];
 }
 
+export interface ScrollToParams {
+  session_id: string;
+  ref?: string;
+  selector?: string;
+  tab_id?: number;
+  timeout_ms?: number;
+}
+
+export interface ScrollToResult {
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  /** Clipped border-box bounds in top-level viewport CSS pixels; not an occlusion test. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dialogs?: JavaScriptDialogInfo[];
+}
+
 export interface FocusParams {
   session_id: string;
   ref?: string;

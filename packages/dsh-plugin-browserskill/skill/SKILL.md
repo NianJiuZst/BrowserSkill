@@ -51,7 +51,12 @@ Use `browser_inspect` action `observe` as the primary semantic page view. It ret
 text, and `@eN` refs. Prefer fresh refs over raw selectors. Refs invalidate after navigation and may
 also become stale after large DOM changes, so observe again before the next interaction.
 
-Use `browser_interact` for click, hover, focus, blur, fill, select, and key actions. Focus and blur
+Use `browser_interact` with `action=scroll-to` to bring an element into view. Its bounds are the
+visible border-box portion in top-level viewport CSS pixels after ancestor clipping; partial
+visibility is enough. Hidden or fully clipped targets fail. This does not test occlusion by other
+elements. Use fresh element refs for iframe/shadow-root targets; selectors search the main document.
+
+Use `browser_interact` for click, hover, scroll-to, focus, blur, fill, select, and key actions. Focus and blur
 explicitly enter or leave UI states triggered by focus changes. An observation marks a hover-only surface as `@e1 button "Products" [hover first: Shoes | Bags]`. The listed items are
 labels, not usable refs: hover the trigger, observe again, then act on the revealed item's own ref.
 Do not click the trigger itself unless the user wants the trigger's action.

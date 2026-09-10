@@ -55,9 +55,16 @@ Use this default loop:
 ```text
 bsk navigate <url> --session <id>
 bsk observe --session <id>
-bsk click|hover|focus|blur|fill|select|press ... --session <id>
+bsk click|hover|scroll-to|focus|blur|fill|select|press ... --session <id>
 bsk observe --session <id>             # after navigation or a meaningful DOM change
 ```
+
+`bsk scroll-to <ref-or-selector> --session <id>` scrolls an element and its frame owners into view.
+Use a fresh element ref for iframe/shadow-root targets; CSS selectors search the main document.
+The result is the visible border-box portion's bounds in top-level viewport CSS pixels after
+ancestor clipping. Partial visibility is enough; hidden or fully clipped targets fail with
+`permission_denied` and `data.reason=element_not_visible`. This does not test occlusion by other elements.
+For a specific tab or deadline: `bsk scroll-to @e3 --session <id> --tab-id 42 --timeout 5s`.
 
 `bsk focus <ref>` explicitly focuses a target; `bsk blur <ref>` removes focus and reports whether
 it was focused. Use these for UI states triggered by focus changes.
@@ -117,7 +124,7 @@ This list of names is complete. Never invent a command outside it; read
 session start|stop|list   browsers   status   doctor   update   logs
 navigate   navigate-back   navigate-forward   reload   wait-for-navigation   wait-ms
 observe   snapshot   get-html   screenshot   console   network
-click   hover   focus   blur   fill   select   press   evaluate
+click   hover   scroll-to   focus   blur   fill   select   press   evaluate
 tab list|create|close|select|borrow|return   window resize   emulate
 upload   download   request-help   record start|stop
 ```

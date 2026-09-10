@@ -28,6 +28,7 @@ pub mod record_recovery;
 pub mod record_state;
 pub mod render_error;
 pub mod screenshot;
+pub mod scroll;
 pub mod session;
 pub mod snapshot;
 pub mod status;
@@ -55,6 +56,7 @@ use crate::cli::network::NetworkArgs;
 use crate::cli::observe::ObserveArgs;
 use crate::cli::record::RecordCmd;
 use crate::cli::screenshot::ScreenshotArgs;
+use crate::cli::scroll::ScrollToArgs;
 use crate::cli::session::SessionCmd;
 use crate::cli::snapshot::SnapshotArgs;
 use crate::cli::tab::TabCmd;
@@ -174,6 +176,10 @@ pub enum Command {
 
     /// Hover a snapshot ref or CSS selector.
     Hover(HoverArgs),
+
+    /// Scroll a snapshot ref or CSS selector into the visible viewport.
+    #[command(name = "scroll-to")]
+    ScrollTo(ScrollToArgs),
 
     /// Focus a snapshot ref or CSS selector.
     Focus(FocusArgs),

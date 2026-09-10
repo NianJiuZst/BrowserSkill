@@ -167,12 +167,13 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
   {
     name: "browser_interact",
     description:
-      "Interact with an element in the active Agent Window tab. Actions: click, hover, focus, blur, fill, select, " +
-      "press. click/hover/focus/blur/fill/select require target; fill also requires value; select requires " +
+      "Interact with an element in the active Agent Window tab. Actions: click, hover, scroll-to, focus, blur, fill, select, " +
+      "press. click/hover/scroll-to/focus/blur/fill/select require target; fill also requires value; select requires " +
       "values; press requires key and may optionally focus target first.",
     actions: {
       click: "interact.click",
       hover: "interact.hover",
+      "scroll-to": "interact.scroll-to",
       focus: "interact.focus",
       blur: "interact.blur",
       fill: "interact.fill",

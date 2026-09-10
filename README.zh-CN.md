@@ -177,6 +177,8 @@ Agent 不直接与浏览器通信。它通过 `bsk` CLI 下发浏览器任务；
 
 ## 面向开发者
 
+[scroll-to 原语说明](docs/scroll-to.md)介绍 CLI、协议和插件入口，以及可见区域、错误和中断语义。
+
 本仓库是 Cargo + pnpm workspace：
 
 - `crates/bsk-cli` — `bsk` CLI 与本地 daemon

@@ -84,6 +84,11 @@ Shared Rust types + JSON Schema generation. TypeScript mirrors frame shapes in
 4. Extension dispatcher validates sandbox rules, invokes CDP via `BrowserDriver`.
 5. Response travels CLI ← daemon ← extension; CLI prints result and exits.
 
+The [scroll-to primitive reference](scroll-to.md) documents `tool.scroll_to`,
+including its CLI/plugin mappings, visible-bounds contract and cancellation
+behavior. It follows the same routing path and is classified as a browser
+mutation for session queueing and user-interruption gating.
+
 ## Session and sandbox model
 
 - **Session** = opaque ID (4 lowercase letters in v0.1) + dedicated **Agent Window**
