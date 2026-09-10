@@ -1,229 +1,194 @@
 ---
 name: browser-skill
 description: |
-  Use when the user asks to perform browser automation tasks against their
-  logged-in browser: visit and read pages, fill forms, scrape data, click
-  through a flow, regression-test a PR's UI, validate a deployed page.
-  Requires the bsk CLI installed and the browser-skill extension loaded.
+  Use when the user asks to automate their logged-in Chromium browser: visit
+  and read pages, fill forms, scrape data, click through flows, regression-test
+  a PR's UI, validate a deployed page, or operate a tab they identify. Requires
+  the bsk CLI and browser extension.
 ---
 
 # browser-skill
 
-Drive the user's **real Chromium browser** (with their logins and cookies) through the `bsk` CLI. The extension opens an isolated **Agent Window** for automation; the user's normal windows stay protected unless you explicitly borrow a tab.
+Drive the user's real Chromium browser through `bsk`. Automation runs in an isolated **Agent
+Window** with the user's existing logins and cookies. User-window tabs remain protected unless they
+are explicitly borrowed.
 
-## When to use
+Do not use this skill for tasks with no browser, for extension installation, or when the user only
+wants instructions. Never extract credentials, cookies, tokens, or other secrets from pages.
 
-- Open pages, read titles/text, scrape structured data from sites the user can already access
-- Fill forms, click through multi-step flows, smoke-test a UI change
-- Understand pages with `bsk snapshot` first; use `bsk get-html` or `bsk screenshot` only when the snapshot is insufficient
-- Operate on a specific user tab they point you at (after `bsk tab borrow`)
+## Required lifecycle
 
-## When NOT to use
+Every browser task owns a bounded session:
 
-- Tasks with **no browser** involved (files, APIs, databases only)
-- Installing or configuring the extension (point the user to setup docs instead)
-- **Credential harvesting** — never run `bsk evaluate` on banking, SSO, or password-manager pages to extract tokens, cookies, or secrets
-- Long-lived control of a user's personal login window — borrow only for the immediate step, then `bsk tab return` or end the session
-- Replacing the user's manual browsing when they only wanted an explanation
-
-## Prerequisites
-
-1. `bsk` on `PATH` (Rust CLI from browser-skill)
-2. browser-skill **extension** loaded in Chromium and connected (popup shows green)
-3. Any `bsk` command auto-starts background services as needed; use `bsk doctor` if anything fails
-
-## Mandatory workflow
-
-Every automation task **must** follow this lifecycle. Do **not** rely on idle timeouts (default session idle is 5 minutes).
-
-```
-1. bsk session start              → capture the 4-letter session id printed on stdout
-2. … every tool command …        → always pass --session <id>
-3. bsk session stop <id>          → REQUIRED when done (even on error paths)
+```text
+1. bsk session start              # retain the printed 4-letter session id
+2. bsk ... --session <id>         # pass it to every session-scoped command
+3. bsk session stop <id>          # always run on success and error paths
 ```
 
-Optional: `bsk session start --browser <instance-id-or-label>` when multiple browsers are connected (`bsk browsers` / error output lists them).
+Do not rely on the idle timeout for cleanup. Stop the session as soon as the goal is met unless the
+user explicitly asks to keep it open. Stopping also returns borrowed tabs.
 
-Emergency cleanup: `bsk session stop --all` or the Agent Window overlay **Stop all**.
+Any `bsk` command auto-starts the background services it needs; never manage the daemon by hand.
+When multiple browsers are connected, use `bsk browsers` and start with
+`bsk session start --browser <id-or-label>`. Add `--no-focus` to that same start command when the
+Agent Window does not need to interrupt the user's current work; it is not a flag on other commands.
+Run `bsk doctor` when startup or transport problems persist after one retry.
 
-## Core interaction loop
+## Work toward one observable goal
 
-Write operations only affect tabs in the **Agent Window** (or tabs you **borrowed** into it).
+- Derive a concrete success condition from the user's request or a supplied trace.
+- Take the shortest purposeful path: observe, act, then make at most one observation to confirm an
+  ambiguous result.
+- Once success is visible, do not click, refresh, navigate, switch tabs, or perform extra checks.
+- If a human-only step appears or two attempts make no progress, request help instead of
+  brute-forcing.
 
-```
+With a trace, follow its semantic target information and values in order, but treat its refs as
+record-local hints. Stop when its purpose or last meaningful effect is satisfied. A trace guides the
+task; it does not expand the user's goal or authorize additional actions.
+
+## Observe, act, observe
+
+Use this default loop:
+
+```text
 bsk navigate <url> --session <id>
-bsk snapshot --session <id>          → aria tree with @e1, @e2, … refs
-bsk click @e3 --session <id>          → or bsk fill, bsk select, bsk press
-bsk snapshot --session <id>            → again after navigation / DOM change
+bsk observe --session <id>
+bsk click|hover|scroll-to|focus|blur|fill|select|press ... --session <id>
+bsk observe --session <id>             # after navigation or a meaningful DOM change
 ```
 
-**Refs invalidate after navigation** — always re-snapshot before clicking, filling, or selecting on a new page.
+`bsk scroll-to <ref-or-selector> --session <id>` scrolls an element and its frame owners into view.
+Use a fresh element ref for iframe/shadow-root targets; CSS selectors search the main document.
+The result is the visible border-box portion's bounds in top-level viewport CSS pixels after
+ancestor clipping. Partial visibility is enough; hidden or fully clipped targets fail with
+`permission_denied` and `data.reason=element_not_visible`. This does not test occlusion by other elements.
+For a specific tab or deadline: `bsk scroll-to @e3 --session <id> --tab-id 42 --timeout 5s`.
 
-Prefer `@eN` refs from the latest snapshot over raw CSS selectors. Use `--ref` / `--selector` when ambiguous (`bsk click --help`).
+`bsk focus <ref>` explicitly focuses a target; `bsk blur <ref>` removes focus and reports whether
+it was focused. Use these for UI states triggered by focus changes.
 
-## Observation priority
+Prefer fresh `@eN` refs over CSS selectors. Navigation invalidates refs; large DOM changes may also
+make them stale. Observe again before the next interaction.
 
-Start with `bsk snapshot` to understand page structure, text, controls, and element refs. Only escalate when the latest snapshot cannot answer the question:
+An observation marks a hover-only surface as `@e1 button "Products" [hover first: Shoes | Bags]`.
+The listed items are labels, not usable refs: hover the trigger, observe again, then act on the
+revealed item's own ref. Do not click the trigger itself unless the user wants the trigger's action.
+`[has-submenu]` and `[expanded]` mark the same kind of trigger without listing what it hides.
 
-1. `bsk snapshot` — default for page understanding and interaction planning
-2. `bsk get-html` — when hidden DOM, metadata, or markup details are required
-3. `bsk screenshot` — when visual layout, canvas/image content, or styling cannot be inferred from the snapshot. Use `--ref @eN` (from the latest snapshot) to crop to one element; omit `--ref` for the full visible tab.
+`bsk observe` does not hover the page on its own. Reach for `--probe-hover` when a control you have
+good reason to expect is absent **and** no marker points at a trigger — that combination is what a
+CSS-only hover menu looks like from here. It hovers a bounded set of likely triggers, so it costs a
+few seconds and touches the live page; once you know which element hides the menu, `bsk hover <ref>`
+is cheaper and more precise.
 
-Do **not** call `bsk get-html` or `bsk screenshot` first just to inspect a page.
+Escalate page reading only as needed:
 
-## Sandbox rules
+1. `bsk observe` for normal semantic understanding, text, controls, and refs.
+2. `bsk observe --probe-hover` once when an expected control is missing and no marker points at a
+   trigger.
+3. `bsk snapshot` when a stricter static accessibility tree is more useful.
+4. `bsk get-html` for exact markup or hidden metadata that semantic views cannot provide.
+5. `bsk screenshot` for layout, styling, canvas, images, or requested visual evidence.
 
-| Rule | Detail |
-|------|--------|
-| Agent Window | `bsk tab create`, `bsk navigate`, `bsk click`, etc. work on agent tabs by default |
-| User tabs | Read-only until borrowed: `bsk tab list --session <id> --scope user` then `bsk tab borrow <tab-id> --session <id>` |
-| Return borrowed tabs | Call `bsk tab return <tab-id> --session <id>` when finished; unreturned tabs are **auto-returned** on `bsk session stop` |
-| Writes off-agent | Commands that mutate the page fail if the tab is not in the Agent Window — borrow or create a tab first |
+Do not start with raw HTML or screenshots merely to discover ordinary controls. When interaction is
+needed, obtain a fresh observation before acting on screenshot or HTML findings.
 
-## Global flags
+## Respect the Agent Window boundary
 
-| Flag | Purpose |
-|------|---------|
-| `--json` | Machine-readable JSON on stdout (errors too) |
-| `--quiet` | Suppress informational stderr |
-| `-v` / `-vv` | More verbose logging |
+Normal page writes affect only Agent Window tabs. To operate a user tab, first list it with
+`bsk tab list --scope user --session <id>`, then `bsk tab borrow <tab-id>`. Return it immediately
+after the relevant step with `bsk tab return <tab-id>`; never invent a tab id or keep a personal tab
+borrowed across unrelated work.
 
-Command-specific flags (timeouts, `--tab-id`, `--wait-until`, …): **`bsk <cmd> --help`**
+## Ask the human when needed
 
-## CLI command reference (one line each)
+Use `bsk request-help` for login, captcha, OTP, payment confirmation, consent, or another step the
+user must complete. Give a precise prompt and pass fresh `--target` refs/selectors when concrete
+controls can be highlighted. Use completion criteria only when the page has a clear stable success
+signal.
 
-Details and flags: **`bsk <cmd> --help`**
+The result `outcome` is one of `continued`, `completed`, `cancelled`, `timed_out`, or `disabled`
+(`navigated` is deprecated — never treat navigation as a completion signal). Resume only after
+`continued` or `completed`. Treat `cancelled` as rejection, and `timed_out` or `disabled` as a
+blocker rather than a reason to retry. After control returns, run a fresh `bsk observe` before
+reasoning about the page or using refs.
 
-### Diagnostics
+## Command inventory
 
-| Command | Summary |
-|---------|---------|
-| `bsk status` | Connection health, connected browsers, active sessions |
-| `bsk doctor` | Deep diagnostics and repair hints |
-| `bsk browsers` | List connected browser instances (ids, labels, versions) |
+This list of names is complete. Never invent a command outside it; read
+`bsk <command...> --help` for flags instead of guessing them.
 
-### Session
+```text
+session start|stop|list   browsers   status   doctor   update   logs
+navigate   navigate-back   navigate-forward   reload   wait-for-navigation   wait-ms
+observe   snapshot   get-html   screenshot   console   network
+click   hover   scroll-to   focus   blur   fill   select   press   evaluate
+tab list|create|close|select|borrow|return   window resize   emulate
+upload   download   request-help   record start|stop
+```
 
-| Command | Summary |
-|---------|---------|
-| `bsk session start` | Open Agent Window; prints **4-letter session id** |
-| `bsk session stop <id>` | End session, close Agent Window, auto-return borrowed tabs |
-| `bsk session stop --all` | Stop every active session |
-| `bsk session list` | List active sessions |
+Required flags that are easy to get wrong:
 
-### Tabs (require `--session <id>`)
+```text
+bsk fill <ref> --value <text>      bsk select <ref> --value <option-value>
+bsk screenshot --out <path>        bsk emulate --device <preset-id>
+bsk upload <ref> --file <path>     bsk download <ref> --out <path>
+```
 
-| Command | Summary |
-|---------|---------|
-| `bsk tab list` | List tabs (`--scope user\|agent\|all`, default `all`) |
-| `bsk tab create` | New tab in Agent Window (`--url`, `--no-active`, `--index`) |
-| `bsk tab close <tab-id>` | Close an agent tab |
-| `bsk tab select <tab-id>` | Focus an agent tab |
-| `bsk tab borrow <tab-id>` | Move a user tab into the Agent Window |
-| `bsk tab return <tab-id>` | Return a borrowed tab to its original window |
+`select` matches an option's `value` attribute, not its visible label. Device preset ids are
+lowercase and hyphenated, such as `iphone-14`.
 
-### Observation (require `--session` unless noted)
+- `console` and `network` provide bounded, read-only debugging evidence.
+- `emulate` applies viewport, user-agent, and touch overrides to one tab; new tabs do not inherit
+  them. Use `--off` to restore the real environment.
+- `evaluate` is a last resort when observe plus normal interactions cannot complete the task. With
+  `--json`, inspect `.ok`: a JavaScript exception may still have CLI exit code 0 because the RPC
+  succeeded. Never evaluate credential surfaces to read storage, cookies, or auth data.
+- `record` captures a user's actions for later replay. Read `bsk record start --help` before use,
+  and never record banking, SSO, password-manager, or other sensitive pages.
 
-| Command | Summary |
-|---------|---------|
-| `bsk snapshot` | First-choice page understanding: accessibility tree with `@eN` element refs |
-| `bsk get-html` | Raw HTML dump after snapshot is insufficient (high token cost) |
-| `bsk screenshot` | PNG capture after snapshot is insufficient: full visible tab, or `--ref @eN` to crop to one element (`--out` path optional) |
+## File transfer
 
-### Navigation
+`upload` and `download` stage files through the daemon; the agent never touches browser-internal
+paths. Treat upload as disclosure to the website, download as accepting website-controlled bytes.
 
-| Command | Summary |
-|---------|---------|
-| `bsk navigate <url>` | Go to URL in agent tab (`--wait-until`, `--timeout`) |
-| `bsk navigate-back` | History back one step |
-| `bsk navigate-forward` | History forward one step |
-| `bsk reload` | Reload current tab (`--hard` bypass cache) |
+Upload has two independent mechanisms — choose explicitly, never rely on automatic fallback:
 
-(`bsk navigate back` / `bsk navigate forward` are equivalent subcommands.)
+- **Default (input mode):** for upload buttons, file-input labels, or "upload from computer"
+  actions. The command clicks the target and intercepts the native file chooser.
+- **`--mode drop`:** for reliably identified attachment-receiving areas — an explicit drop zone,
+  chat composer, email editor, or form attachment area. Do not target page whitespace, generic
+  containers, or areas whose attachment ownership is ambiguous.
 
-### Interaction
+Decision sequence when uploading:
 
-| Command | Summary |
-|---------|---------|
-| `bsk click <ref-or-selector>` | Click element (`--button`, `--click-count`, `--modifiers`) |
-| `bsk fill <ref-or-selector> --value <text>` | Clear and type into input |
-| `bsk select <ref-or-selector> --value <v>` | Set `<select>` option(s) by `value` (repeat `--value` for multi-select) |
-| `bsk press <key>` | Key/combo (`Enter`, `Ctrl+A`, …; optional `--ref` to focus first) |
+1. Try input mode (the default).
+2. If it returns `reason=file_input_not_activated` with `effect_state=none`, re-observe. When a
+   reliable attachment target exists, try `--mode drop` once against that target.
+3. Otherwise fall back to `request-help`.
+4. **Never** switch mechanisms or repeat when `effect_state` is `unknown` or `committed` — the
+   browser may already have applied the file.
 
-### Scripting & timing
+A successful drop means Chrome dispatched the native file-drop event; it does not prove the site
+accepted the attachment. Observe the page once after the command.
 
-| Command | Summary |
-|---------|---------|
-| `bsk evaluate <expression>` | Run JS in agent tab (see red lines); JS throw → stderr, **exit 0** |
-| `bsk wait-for-navigation` | Block until load/DOM idle/etc. (`--wait-until`, `--timeout`) |
-| `bsk wait-ms <duration>` | Sleep (`500ms`, `2s`, `1m`; **no** `--session`) |
+Download default-refuses to overwrite; pass `--overwrite` when replacing an existing file is
+intended. Read `bsk upload --help` and `bsk download --help` for all flags and error details.
 
-### Ask the human for help — `bsk request-help`
+## Recover without wandering
 
-When a step needs a human (captcha, login, OTP) or you want the user to
-confirm an important action, pause and ask:
+- Stale ref: observe again and retry the intended action once.
+- Unknown tab or session: list current tabs/sessions; never guess identifiers.
+- Timeout: inspect current page state before deciding whether one longer purposeful wait is useful.
+- Fill result unconfirmed (`fill_value_mismatch`): observe the field first; the page may have
+  formatted the value. Continue if the visible result satisfies the user's intent. Otherwise correct
+  the remaining difference; do not blindly repeat fill or immediately request human help. For other
+  fill errors, follow the returned hint and inspect current state before retrying.
+- Unsupported command: continue with available capabilities; suggest updating only when the missing
+  command is necessary.
+- Unrecoverable failure: report the blocker and stop the session in a finally-style path.
 
-    bsk request-help --session <id> --prompt "Solve the captcha, then click Continue" \
-      --title "Captcha required" --target @e7 --target "#submit" --timeout 5m
-
-- `--prompt` (required): what the user should do.
-- `--title` (optional): custom title for the overlay panel. When omitted,
-  the extension shows its default localized title.
-- `--target` (repeatable): a snapshot ref (`@e7`) or CSS selector
-  (`#submit`) to scroll to and flash-highlight. **Strongly recommended** —
-  whenever the prompt refers to a concrete element (a button to click, a
-  field to fill, a checkbox to toggle), pass its `@eN` ref / selector so the
-  user is guided straight to the right spot instead of hunting for it. For
-  interaction scenarios, always include the relevant target(s); reserve a
-  prompt with no `--target` for cases where there is genuinely no specific
-  element to point at (e.g. "wait for the page to finish loading").
-- `--timeout` (default `5m`): how long to wait.
-
-The target tab is brought to the foreground; the page stays interactive
-while the agent control mask is hidden. The call blocks until the user
-acts. The result `outcome` is one of:
-
-- `continued` — the user finished and clicked Continue (treat as confirm).
-- `cancelled` — the user clicked Cancel (treat as reject/abort).
-- `timed_out` — nobody acted within the timeout.
-- `navigated` — the page navigated while waiting (full reload or SPA URL change). Snapshot refs are stale; run `bsk snapshot` on the new page, then decide whether to call `bsk request-help` again.
-
-`note` carries any text the user typed back. `resolved_targets` reports
-which refs/selectors matched a live element.
-
-## Error handling
-
-### Exit codes (`echo $?` after `bsk …`)
-
-| Code | Meaning | What to do |
-|------|---------|------------|
-| `0` | Success (including `evaluate` where JS threw but RPC succeeded) | Continue |
-| `1` | User error — bad args, unknown session, tab not in Agent Window, stale ref | Fix args; `bsk session list`; re-snapshot |
-| `2` | Protocol / transport — service unreachable, IPC failure | `bsk doctor`; check extension connected; retry the command |
-| `3` | Browser / CDP execution failed | Retry; simplify selector; check tab still open |
-| `4` | Timeout | Increase `--timeout`; try `--wait-until domcontentloaded` |
-| `5` | Version skew (CLI vs extension) | Upgrade/reinstall matching versions |
-
-Human errors print `error:` + `hint:` on stderr; `--json` includes `code`, `message`, `hint`, `exit_code`.
-
-### When to run diagnostics
-
-| Situation | Command |
-|-----------|---------|
-| Before first task in a session | `bsk status` — extension connected? |
-| Any failure you cannot fix in one retry | `bsk doctor` |
-| Multiple browsers / wrong target | `bsk browsers` then `bsk session start --browser <id>` |
-
-Always **`bsk session stop <id>`** in a `finally`-style path so the Agent Window closes and borrowed tabs return.
-
-## Red lines
-
-1. **No token theft** — do not `bsk evaluate` on sensitive sites to read `localStorage`, cookies, or auth headers for exfiltration.
-2. **No long borrow** — do not leave a user's personal tab in the Agent Window across unrelated tasks.
-3. **No skip stop** — always `bsk session stop <id>`; never assume idle timeout will clean up.
-4. **No observe escalation before snapshot** — use `bsk snapshot` first; only use `bsk get-html` or `bsk screenshot` when the snapshot is insufficient. Element screenshots (`--ref @eN`) still require a fresh snapshot ref — never skip snapshot just to grab a visual.
-5. **`evaluate` is powerful and risky** — use only when snapshot + click/fill/select cannot suffice; never on credential surfaces.
-
----
-
-**More detail for any command:** `bsk <cmd> --help`
+The CLI's current help and error hints are authoritative for flags, parameters, and recovery
+details.

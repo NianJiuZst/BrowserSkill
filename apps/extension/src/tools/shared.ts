@@ -6,11 +6,17 @@
 // exactly the same sandbox + visibility rules as the M6 observation
 // handlers (review parity).
 
-import type { DialogCursor } from "@/browser-driver/chromium-cdp";
+import type { CdpDebuggee, DialogCursor } from "@/browser-driver/chromium-cdp";
+import type { CdpFrameGraph, CdpTarget } from "@/browser-driver/frame-graph";
 import type { SessionContext, SessionManager } from "@/session-manager/manager";
 import { normaliseRef } from "@/session-manager/ref-store";
 import type { ConsoleResult, JavaScriptDialogInfo, RpcError } from "@/transport/types";
 import { rpcError } from "./errors";
+
+const DEFAULT_BUFFERED_READ_LIMIT = 50;
+const MAX_BUFFERED_READ_LIMIT = 200;
+const DEFAULT_MAX_TEXT_CHARS = 1000;
+const MAX_TEXT_CHARS = 4096;
 
 /**
  * Subset of `chrome.tabs` we depend on across tool handlers. Kept on
@@ -27,6 +33,13 @@ export const chromeTabsApi: ChromeTabsApi = {
   query: (q) => chrome.tabs.query(q),
 };
 
+export interface ResolvedTargetTab {
+  tabId: number;
+  windowId: number;
+  active: boolean;
+  url?: string;
+}
+
 export type { DialogCursor };
 
 /**
@@ -39,8 +52,14 @@ export type { DialogCursor };
  */
 export interface CdpRunner {
   send<T = unknown>(tabId: number, method: string, params?: object): Promise<T>;
+  sendToTarget?<T = unknown>(target: CdpTarget, method: string, params?: object): Promise<T>;
+  detach?(tabId: number): Promise<void>;
+  getFrameGraph?(tabId: number): Promise<CdpFrameGraph>;
+  getAttachmentId?(tabId: number): string | undefined;
+  ensureAttachedToUrl?(tabId: number, expectedUrl: string | undefined): Promise<void>;
   trackSessionTab?(sessionId: string, tabId: number): void;
-  onEvent?(handler: (source: chrome.debugger.Debuggee, method: string, params: unknown) => void): {
+  releaseSessionTab?(sessionId: string, tabId: number): Promise<void>;
+  onEvent?(handler: (source: CdpDebuggee, method: string, params: unknown) => void): {
     dispose(): void;
   };
   dialogCursor?(tabId: number): DialogCursor;
@@ -53,6 +72,71 @@ export interface CdpRunner {
     maxTextChars: number,
     includeStack: boolean,
   ): ConsoleResult;
+}
+
+export function sendToCdpTarget<T = unknown>(
+  cdp: CdpRunner,
+  target: CdpTarget,
+  method: string,
+  params?: object,
+): Promise<T> {
+  if (target.sessionId && cdp.sendToTarget) {
+    return cdp.sendToTarget<T>(target, method, params);
+  }
+  return cdp.send<T>(target.tabId, method, params);
+}
+
+export function cdpRunnerForTarget(cdp: CdpRunner, target: CdpTarget): CdpRunner {
+  return {
+    send: <T = unknown>(_tabId: number, method: string, params?: object) =>
+      sendToCdpTarget<T>(cdp, target, method, params),
+  };
+}
+
+export interface BufferedReadBounds {
+  since: number | undefined;
+  limit: number;
+  maxTextChars: number;
+}
+
+/** Parse the common cursor and output bounds used by buffered read tools. */
+export function parseBufferedReadBounds(params: {
+  since?: number;
+  limit?: number;
+  max_text_chars?: number;
+}): BufferedReadBounds | RpcError {
+  const since = params.since;
+  if (since !== undefined && (!Number.isSafeInteger(since) || since < 0)) {
+    return { code: "invalid_params", message: "since must be a non-negative integer" };
+  }
+  const limit = boundedOptionalInteger(
+    params.limit,
+    DEFAULT_BUFFERED_READ_LIMIT,
+    MAX_BUFFERED_READ_LIMIT,
+    "limit",
+  );
+  if (isRpcError(limit)) return limit;
+  const maxTextChars = boundedOptionalInteger(
+    params.max_text_chars,
+    DEFAULT_MAX_TEXT_CHARS,
+    MAX_TEXT_CHARS,
+    "max_text_chars",
+  );
+  if (isRpcError(maxTextChars)) return maxTextChars;
+  return { since, limit, maxTextChars };
+}
+
+function boundedOptionalInteger(
+  value: number | undefined,
+  defaultValue: number,
+  maxValue: number,
+  field: string,
+): number | RpcError {
+  if (value === undefined) return defaultValue;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    return { code: "invalid_params", message: `${field} must be a positive integer` };
+  }
+  return Math.min(value, maxValue);
 }
 
 /**
@@ -95,7 +179,7 @@ export async function resolveTargetTab(
   ctx: SessionContext,
   tabId: number | undefined,
   api: ChromeTabsApi,
-): Promise<{ tabId: number; windowId: number; active: boolean } | RpcError> {
+): Promise<ResolvedTargetTab | RpcError> {
   if (tabId !== undefined) {
     if (!Number.isSafeInteger(tabId) || tabId <= 0) {
       return {
@@ -125,7 +209,7 @@ export async function resolveTargetTab(
         message: `tab ${tabId} not found in session scope`,
       };
     }
-    return { tabId: tab.id, windowId: tab.windowId, active: tab.active === true };
+    return { tabId: tab.id, windowId: tab.windowId, active: tab.active === true, url: tab.url };
   }
   const tabs = await api.query({ active: true, windowId: ctx.agentWindowId });
   const first = tabs.find((t) => typeof t.id === "number");
@@ -135,7 +219,12 @@ export async function resolveTargetTab(
       message: `no active tab in Agent Window ${ctx.agentWindowId}`,
     };
   }
-  return { tabId: first.id, windowId: ctx.agentWindowId, active: first.active === true };
+  return {
+    tabId: first.id,
+    windowId: ctx.agentWindowId,
+    active: first.active === true,
+    url: first.url,
+  };
 }
 
 export function isRpcError(v: unknown): v is RpcError {
@@ -150,6 +239,91 @@ export function isRpcError(v: unknown): v is RpcError {
 
 /** Re-export so M6/M7 tools keep a stable import path. */
 export { normaliseRef };
+
+export type ToolEffect = "passive_read" | "transient_input" | "browser_mutation";
+
+const CDP_BLOCKED_PROTOCOLS = new Set([
+  "chrome:",
+  "chrome-extension:",
+  "devtools:",
+  "edge:",
+  "brave:",
+  "vivaldi:",
+  "opera:",
+]);
+
+export function cdpBlockedUrlReason(url: string | undefined): string | null {
+  if (!url) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (CDP_BLOCKED_PROTOCOLS.has(parsed.protocol)) return parsed.protocol;
+  if (parsed.protocol === "about:" && parsed.pathname !== "blank") return "about:";
+  return null;
+}
+
+/**
+ * Page CDP tools cannot inspect browser/extension internal pages. Check this
+ * at the tool boundary so Chrome's low-level "Cannot access..." errors do not
+ * leak as ambiguous page-read failures.
+ */
+export function enforceCdpAccessibleTarget(
+  target: ResolvedTargetTab,
+  toolName: string,
+): RpcError | null {
+  const reason = cdpBlockedUrlReason(target.url);
+  if (!reason) return null;
+  return rpcError(
+    "permission_denied",
+    "restricted_tab_url",
+    `${toolName} cannot access tab ${target.tabId} because its URL is ${target.url}; navigate the Agent Window to a web page first`,
+  );
+}
+
+function resolvedTargetFromChromeTab(
+  tab: chrome.tabs.Tab,
+  fallbackWindowId: number,
+): ResolvedTargetTab | null {
+  if (typeof tab.id !== "number") return null;
+  return {
+    tabId: tab.id,
+    windowId: typeof tab.windowId === "number" ? tab.windowId : fallbackWindowId,
+    active: tab.active === true,
+    url: tab.url,
+  };
+}
+
+/**
+ * Resolve a target for page CDP reads. Explicit tab_ids stay exact and are
+ * rejected when browser security blocks the URL. For default targeting, skip a
+ * restricted Agent Window active tab if another CDP-accessible tab exists in
+ * the same Agent Window.
+ */
+export async function resolveCdpAccessibleTargetTab(
+  manager: SessionManager,
+  ctx: SessionContext,
+  tabId: number | undefined,
+  api: ChromeTabsApi,
+  toolName: string,
+): Promise<ResolvedTargetTab | RpcError> {
+  const target = await resolveTargetTab(manager, ctx, tabId, api);
+  if (isRpcError(target)) return target;
+
+  const restricted = enforceCdpAccessibleTarget(target, toolName);
+  if (!restricted) return target;
+  if (tabId !== undefined) return restricted;
+
+  const tabs = await api.query({ windowId: ctx.agentWindowId });
+  for (const tab of tabs) {
+    const candidate = resolvedTargetFromChromeTab(tab, ctx.agentWindowId);
+    if (!candidate) continue;
+    if (!enforceCdpAccessibleTarget(candidate, toolName)) return candidate;
+  }
+  return restricted;
+}
 
 /**
  * Sandbox guard: M7 write tools (click / fill / press / navigate*)
@@ -172,4 +346,18 @@ export function enforceAgentWindow(
     );
   }
   return null;
+}
+
+/**
+ * Unified target-scope policy by tool effect. Passive reads may inspect user
+ * tabs; any tool that dispatches page input must stay inside the Agent Window.
+ */
+export function enforceToolTargetScope(
+  ctx: SessionContext,
+  target: { tabId: number; windowId: number },
+  effect: ToolEffect,
+  toolName: string,
+): RpcError | null {
+  if (effect === "passive_read") return null;
+  return enforceAgentWindow(ctx, target, toolName);
 }

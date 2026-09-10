@@ -6,6 +6,8 @@
 //! structured JSON instead.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -17,8 +19,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::ensure_daemon::ensure_daemon;
 use crate::cli::error::{self, CliError, Format, RenderExtras};
+use crate::daemon::browsers::EXTENSION_CONNECT_WAIT;
 
 const SESSION_STOP_IPC_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// IPC read budget for `session.start`. The daemon holds this RPC open
+/// while it polls for the extension to (re)connect for up to
+/// [`EXTENSION_CONNECT_WAIT`], so the CLI-side timeout must exceed that
+/// window plus scheduling slack — otherwise the CLI would give up and
+/// surface a spurious timeout before the daemon ever answers.
+const SESSION_START_IPC_TIMEOUT: Duration =
+    EXTENSION_CONNECT_WAIT.saturating_add(Duration::from_secs(10));
 
 /// `bsk session …` subcommand tree.
 #[derive(Debug, Clone, Args)]
@@ -43,6 +54,34 @@ pub struct SessionStartArgs {
     /// are connected).
     #[arg(long)]
     pub browser: Option<String>,
+
+    /// Agent Window outer width in CSS pixels (100..=7680). Both
+    /// `--width` and `--height` must be given to take effect.
+    #[arg(long, value_parser = window_size)]
+    pub width: Option<u32>,
+
+    /// Agent Window outer height in CSS pixels (100..=7680). Both
+    /// `--width` and `--height` must be given to take effect.
+    #[arg(long, value_parser = window_size)]
+    pub height: Option<u32>,
+
+    /// Open the Agent Window in the background without stealing focus.
+    #[arg(long)]
+    pub no_focus: bool,
+}
+
+/// Parse a `--width` / `--height` Agent Window dimension (CSS pixels).
+fn window_size(s: &str) -> Result<u32, String> {
+    let value: u32 = s
+        .parse()
+        .map_err(|_| format!("invalid window dimension {s:?}: expected a positive integer"))?;
+    if (100..=7680).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "window dimension {value} out of range (100..=7680)"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -60,14 +99,20 @@ pub struct SessionStopArgs {
 struct StartParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     browser_instance_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    focused: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
-struct StartReply {
-    session_id: String,
-    browser_instance_id: String,
+pub struct StartReply {
+    pub session_id: String,
+    pub browser_instance_id: String,
     #[serde(default)]
-    agent_window_id: Option<i64>,
+    pub agent_window_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,21 +123,21 @@ struct StopParams {
 }
 
 #[derive(Debug, Deserialize)]
-struct StopReply {
-    stopped: Vec<String>,
+pub struct StopReply {
+    pub stopped: Vec<String>,
     #[serde(default)]
-    failed: Vec<StopFailure>,
+    pub failed: Vec<StopFailure>,
     #[serde(default)]
-    returned_tab_ids: Vec<i64>,
+    pub returned_tab_ids: Vec<i64>,
     #[serde(default)]
-    return_failures: Vec<ReturnFailure>,
+    pub return_failures: Vec<ReturnFailure>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct StopFailure {
-    session_id: String,
-    code: ErrorCode,
-    message: String,
+pub struct StopFailure {
+    pub session_id: String,
+    pub code: ErrorCode,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,14 +158,37 @@ pub fn dispatch(cmd: SessionCmd, format: Format) -> Result<(), CliError> {
 }
 
 fn run_start(sock: PathBuf, args: SessionStartArgs, format: Format) -> Result<(), CliError> {
-    let result: Result<StartReply, CliError> = call(
+    if args.width.is_some() != args.height.is_some() {
+        return Err(CliError::Local(anyhow::anyhow!(
+            "--width and --height must be given together"
+        )));
+    }
+    // The daemon may hold `session.start` open for up to
+    // `EXTENSION_CONNECT_WAIT` while a just-woken service worker
+    // reconnects. Let the user know we are waiting rather than hung —
+    // but only if it actually takes a moment, so the common (already
+    // connected) fast path stays silent. Human output only; the hint
+    // goes to stderr so it never contaminates the session id on stdout.
+    let waited = Arc::new(AtomicBool::new(false));
+    if matches!(format, Format::Human) {
+        let waited = Arc::clone(&waited);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(750));
+            if !waited.swap(true, Ordering::SeqCst) {
+                eprintln!("waiting for browser extension to connect…");
+            }
+        });
+    }
+    let result = start_session(
         sock,
-        Method::SessionStart,
-        Some(StartParams {
-            browser_instance_id: args.browser,
-        }),
-        Duration::from_secs(30),
+        SessionStartOptions {
+            browser: args.browser,
+            width: args.width,
+            height: args.height,
+            focused: args.no_focus.then_some(false),
+        },
     );
+    waited.store(true, Ordering::SeqCst);
     match result {
         Ok(reply) => match format {
             Format::Json => {
@@ -141,6 +209,45 @@ fn run_start(sock: PathBuf, args: SessionStartArgs, format: Format) -> Result<()
         Err(err) => return Err(handle_start_error(err, format)),
     }
     Ok(())
+}
+
+/// Options for [`start_session`]: browser selection plus Agent Window
+/// creation hints. `None` fields keep the extension-side defaults
+/// (focused window, browser-chosen size).
+#[derive(Debug, Default, Clone)]
+pub struct SessionStartOptions {
+    pub browser: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub focused: Option<bool>,
+}
+
+/// Start a session and open the Agent Window. Used by `session start` and `record start`.
+pub fn start_session(sock: PathBuf, opts: SessionStartOptions) -> Result<StartReply, CliError> {
+    call(
+        sock,
+        Method::SessionStart,
+        Some(StartParams {
+            browser_instance_id: opts.browser,
+            width: opts.width,
+            height: opts.height,
+            focused: opts.focused,
+        }),
+        SESSION_START_IPC_TIMEOUT,
+    )
+}
+
+/// Stop a single session by id.
+pub fn stop_session(sock: PathBuf, session_id: &str) -> Result<StopReply, CliError> {
+    call(
+        sock,
+        Method::SessionStop,
+        Some(StopParams {
+            session_id: Some(session_id.to_string()),
+            all: false,
+        }),
+        SESSION_STOP_IPC_TIMEOUT,
+    )
 }
 
 /// Render a `session.start` failure (review I3).

@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+mod atomic_output;
 pub mod browser_wait;
 pub mod browsers;
 pub mod business_rpc;
@@ -9,6 +10,8 @@ pub mod console;
 pub mod daemon;
 pub mod dialogs;
 pub mod doctor;
+pub mod download;
+pub mod emulate;
 pub mod ensure_daemon;
 pub mod error;
 pub mod evaluate;
@@ -18,31 +21,49 @@ pub mod install_skill;
 pub mod interaction;
 pub mod logs;
 pub mod navigate;
+pub mod network;
+pub mod observe;
+pub mod record;
+pub mod record_recovery;
+pub mod record_state;
 pub mod render_error;
 pub mod screenshot;
+pub mod scroll;
 pub mod session;
 pub mod snapshot;
 pub mod status;
 pub mod tab;
 pub mod update;
+pub mod upload;
 pub mod waits;
+pub mod window;
 
 use clap::{Args, Parser, Subcommand};
 
 use crate::cli::console::ConsoleArgs;
 use crate::cli::daemon::DaemonCmd;
+use crate::cli::download::DownloadArgs;
+use crate::cli::emulate::EmulateArgs;
 use crate::cli::evaluate::EvaluateArgs;
 use crate::cli::get_html::GetHtmlArgs;
 use crate::cli::human_loop::RequestHelpArgs;
 use crate::cli::install_skill::InstallSkillArgs;
-use crate::cli::interaction::{ClickArgs, FillArgs, PressArgs, SelectArgs};
+use crate::cli::interaction::{
+    BlurArgs, ClickArgs, FillArgs, FocusArgs, HoverArgs, PressArgs, SelectArgs,
+};
 use crate::cli::navigate::{NavigateCommand, NavigateHistoryArgs, ReloadArgs};
+use crate::cli::network::NetworkArgs;
+use crate::cli::observe::ObserveArgs;
+use crate::cli::record::RecordCmd;
 use crate::cli::screenshot::ScreenshotArgs;
+use crate::cli::scroll::ScrollToArgs;
 use crate::cli::session::SessionCmd;
 use crate::cli::snapshot::SnapshotArgs;
 use crate::cli::tab::TabCmd;
 use crate::cli::update::UpdateArgs;
+use crate::cli::upload::UploadArgs;
 use crate::cli::waits::{WaitForNavigationArgs, WaitMsArgs};
+use crate::cli::window::WindowCmd;
 
 /// Tool calls wait slightly longer than the daemon's 30s tool timeout so
 /// callers receive the structured daemon timeout instead of dropping the
@@ -111,14 +132,26 @@ pub enum Command {
     /// Tab management commands.
     Tab(TabCmd),
 
+    /// Agent Window management commands.
+    Window(WindowCmd),
+
+    /// Emulate a mobile device environment (viewport, UA, touch) on a tab.
+    Emulate(EmulateArgs),
+
     /// Capture a PNG of the active tab or a snapshot ref element.
     Screenshot(ScreenshotArgs),
 
     /// Produce an indented aria-snapshot with @eN refs.
     Snapshot(SnapshotArgs),
 
+    /// Produce a semantic VOM observation with perception probes.
+    Observe(ObserveArgs),
+
     /// Read buffered console/log/exception messages.
     Console(ConsoleArgs),
+
+    /// Read buffered network responses / failures.
+    Network(NetworkArgs),
 
     /// Dump raw HTML for a tab or a snapshot ref.
     #[command(name = "get-html")]
@@ -141,6 +174,19 @@ pub enum Command {
     /// Click a snapshot ref or CSS selector.
     Click(ClickArgs),
 
+    /// Hover a snapshot ref or CSS selector.
+    Hover(HoverArgs),
+
+    /// Scroll a snapshot ref or CSS selector into the visible viewport.
+    #[command(name = "scroll-to")]
+    ScrollTo(ScrollToArgs),
+
+    /// Focus a snapshot ref or CSS selector.
+    Focus(FocusArgs),
+
+    /// Remove focus from a snapshot ref or CSS selector.
+    Blur(BlurArgs),
+
     /// Fill an input / textarea / contenteditable.
     Fill(FillArgs),
 
@@ -149,6 +195,12 @@ pub enum Command {
 
     /// Set `<select>` option values by `value` attribute.
     Select(SelectArgs),
+
+    /// Upload files through a page file input or explicit drop target.
+    Upload(UploadArgs),
+
+    /// Capture one browser download and write it to a local path.
+    Download(DownloadArgs),
 
     /// Evaluate a JavaScript expression inside the Agent Window.
     Evaluate(EvaluateArgs),
@@ -164,6 +216,9 @@ pub enum Command {
     /// Ask the human to complete an in-page step (captcha / login / confirm).
     #[command(name = "request-help")]
     RequestHelp(RequestHelpArgs),
+
+    /// Record user actions into a semantic `trace.json` textbook for LLMs.
+    Record(RecordCmd),
 }
 
 #[derive(Debug, Clone, Args, Default)]

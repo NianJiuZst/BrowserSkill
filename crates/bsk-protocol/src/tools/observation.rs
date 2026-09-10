@@ -1,4 +1,4 @@
-//! Read-only observation tools (`tool.snapshot`, `tool.get_html`, `tool.screenshot`).
+//! Observation tools (`tool.snapshot`, `tool.observe`, `tool.get_html`, `tool.screenshot`).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,103 @@ pub struct SnapshotResult {
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<JavaScriptDialogInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// observe
+// ---------------------------------------------------------------------------
+
+/// Parameters for `tool.observe` — produce a semantic VOM observation
+/// for one tab plus a fresh `@e<N>` ref-store on the extension side.
+///
+/// Unlike `tool.snapshot`, this path may run bounded perception probes
+/// such as hover-surface discovery, but only when `probe_hover` asks for
+/// them. It must not submit input, click, navigate, or otherwise commit
+/// page state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ObserveParams {
+    pub session_id: String,
+    /// Optional target tab. Defaults to the Agent Window's currently
+    /// active tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<i64>,
+    /// Cap the depth of the rendered VOM tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u32>,
+    /// Soft cap on rendered tokens (approximate; extension uses a
+    /// best-effort heuristic based on character count).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Include implementation diagnostics for conditional surface probes.
+    #[serde(default)]
+    pub debug_surfaces: bool,
+    /// Opt in to active hover probing: the extension moves the real cursor
+    /// over a bounded set of controls to discover hover-only menus and
+    /// tooltips.
+    ///
+    /// Off by default. Probing costs seconds of wall clock, mutates the live
+    /// page, and pays off only on pages whose content is genuinely hidden
+    /// behind hover. Request it when a static observation looks like it is
+    /// missing hover-revealed structure.
+    #[serde(default)]
+    pub probe_hover: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SurfaceProbePoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SurfaceProbeDebug {
+    pub trigger_backend_node_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_point: Option<SurfaceProbePoint>,
+    pub trigger_action: String,
+    pub sub_items: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ObserveDebug {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surface_probes: Vec<SurfaceProbeDebug>,
+}
+
+/// Reports what active hover probing did during an observation, so the agent
+/// can judge how far the live page may have drifted from the returned text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HoverProbeReport {
+    /// The real cursor was moved over page content during this observation.
+    pub performed: bool,
+    /// Hovering surfaced content the static tree does not contain, so the page
+    /// reacts to the cursor and may not have fully reverted.
+    pub revealed_content: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ObserveResult {
+    /// Semantic VOM observation text. Refs are rendered as `@e<N>` so
+    /// the agent can copy them into subsequent interaction tools.
+    pub text: String,
+    /// Number of `@e<N>` refs registered for this session by this
+    /// observation. Equivalent to the size of the new ref-store map.
+    pub ref_count: u32,
+    /// Tab the observation was computed for.
+    pub tab_id: i64,
+    /// Whether the rendered tree was truncated because of `max_depth` /
+    /// `max_tokens`. Agents may re-run with looser caps.
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogs: Vec<JavaScriptDialogInfo>,
+    /// Present only when `probe_hover` was requested and probing actually ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hover_probe: Option<HoverProbeReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug: Option<ObserveDebug>,
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +322,49 @@ mod tests {
         };
         let v = serde_json::to_value(&r).unwrap();
         let round: ScreenshotResult = serde_json::from_value(v).unwrap();
+        assert_eq!(round, r);
+    }
+
+    #[test]
+    fn observe_result_round_trips_with_ref_count() {
+        let r = ObserveResult {
+            text: "@vom 1\n  @e1 button \"submit\"\n".into(),
+            ref_count: 1,
+            tab_id: 42,
+            truncated: false,
+            dialogs: Vec::new(),
+            hover_probe: None,
+            debug: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v.get("ref_count").and_then(|v| v.as_u64()), Some(1));
+        let round: ObserveResult = serde_json::from_value(v).unwrap();
+        assert_eq!(round, r);
+    }
+
+    #[test]
+    fn observe_params_default_to_no_hover_probing() {
+        let params: ObserveParams =
+            serde_json::from_value(serde_json::json!({ "session_id": "s1" })).unwrap();
+        assert!(!params.probe_hover);
+    }
+
+    #[test]
+    fn observe_result_round_trips_with_hover_probe_report() {
+        let r = ObserveResult {
+            text: "@vom 1\n".into(),
+            ref_count: 0,
+            tab_id: 42,
+            truncated: false,
+            dialogs: Vec::new(),
+            hover_probe: Some(HoverProbeReport {
+                performed: true,
+                revealed_content: true,
+            }),
+            debug: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        let round: ObserveResult = serde_json::from_value(v).unwrap();
         assert_eq!(round, r);
     }
 }

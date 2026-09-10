@@ -26,14 +26,38 @@ export type RpcErrorReason =
   | "ref_not_found"
   | "selector_not_found"
   | "target_not_fillable"
+  | "fill_value_invalid"
+  | "fill_target_changed"
+  | "fill_focus_lost"
+  | "fill_value_mismatch"
+  | "fill_failed"
   | "target_not_select"
   | "option_not_found"
   | "single_select_value_count"
   | "tab_not_active"
-  | "borrow_conflict";
+  | "restricted_tab_url"
+  | "cdp_extension_access_denied"
+  | "borrow_conflict"
+  | "screenshot_capture_failed"
+  | "file_input_probe_failed"
+  | "file_input_not_activated"
+  | "set_file_input_failed"
+  | "upload_mechanism_unsupported"
+  | "file_drop_target_unavailable"
+  | "file_drop_failed"
+  | "download_capture_failed"
+  | "transfer_outcome_unknown"
+  | "transfer_timeout"
+  | "cleanup_failed";
+
+export type TransferEffectState = "none" | "committed" | "unknown";
+export type TransferCleanupState = "complete" | "failed";
 
 export interface RpcErrorData {
   reason?: RpcErrorReason;
+  effect_state?: TransferEffectState;
+  phase?: string;
+  cleanup_state?: TransferCleanupState;
   [key: string]: unknown;
 }
 
@@ -172,6 +196,37 @@ export interface ConsoleResult {
   truncated: boolean;
 }
 
+export type NetworkEntryKind = "response" | "failure";
+
+export interface NetworkEntry {
+  sequence: number;
+  kind: NetworkEntryKind;
+  method?: string;
+  url?: string;
+  status?: number;
+  status_text?: string;
+  mime_type?: string;
+  resource_type?: string;
+  error_text?: string;
+  timestamp?: number;
+  truncated: boolean;
+}
+
+export interface NetworkParams {
+  session_id: string;
+  tab_id?: number;
+  since?: number;
+  limit?: number;
+  max_text_chars?: number;
+}
+
+export interface NetworkResult {
+  tab_id: number;
+  entries: NetworkEntry[];
+  next_since: number;
+  truncated: boolean;
+}
+
 export type TabScopeFilter = "user" | "agent" | "all";
 
 export interface TabInfo {
@@ -282,6 +337,27 @@ export interface SnapshotResult {
   dialogs?: JavaScriptDialogInfo[];
 }
 
+export interface ObserveParams extends SnapshotParams {
+  debug_surfaces?: boolean;
+  probe_hover?: boolean;
+}
+
+export interface ObserveResult extends SnapshotResult {
+  hover_probe?: {
+    performed: boolean;
+    revealed_content: boolean;
+  };
+  debug?: {
+    surface_probes?: Array<{
+      trigger_backend_node_id: number;
+      trigger_point?: { x: number; y: number };
+      trigger_action: string;
+      sub_items: string[];
+      confidence?: string;
+    }>;
+  };
+}
+
 export interface GetHtmlParams {
   session_id: string;
   tab_id?: number;
@@ -375,6 +451,78 @@ export interface ClickResult {
   dialogs?: JavaScriptDialogInfo[];
 }
 
+export interface HoverParams {
+  session_id: string;
+  ref?: string;
+  selector?: string;
+  tab_id?: number;
+  modifiers?: KeyModifier[];
+  settle_ms?: number;
+  timeout_ms?: number;
+}
+
+export interface HoverResult {
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  x: number;
+  y: number;
+  dialogs?: JavaScriptDialogInfo[];
+}
+
+export interface ScrollToParams {
+  session_id: string;
+  ref?: string;
+  selector?: string;
+  tab_id?: number;
+  timeout_ms?: number;
+}
+
+export interface ScrollToResult {
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  /** Clipped border-box bounds in top-level viewport CSS pixels; not an occlusion test. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dialogs?: JavaScriptDialogInfo[];
+}
+
+export interface FocusParams {
+  session_id: string;
+  ref?: string;
+  selector?: string;
+  tab_id?: number;
+  timeout_ms?: number;
+}
+
+export interface FocusResult {
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  focused: boolean;
+  dialogs?: JavaScriptDialogInfo[];
+}
+
+export interface BlurParams {
+  session_id: string;
+  ref?: string;
+  selector?: string;
+  tab_id?: number;
+  timeout_ms?: number;
+}
+
+export interface BlurResult {
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  was_focused: boolean;
+  focused: boolean;
+  dialogs?: JavaScriptDialogInfo[];
+}
+
 export interface FillParams {
   session_id: string;
   value: string;
@@ -431,6 +579,53 @@ export interface SelectResult {
   dialogs?: JavaScriptDialogInfo[];
 }
 
+export interface UploadFile {
+  transfer_id: string;
+  name: string;
+  staged_path?: string;
+}
+
+export type UploadMode = "input" | "drop";
+
+export interface UploadParams {
+  session_id: string;
+  ref?: string;
+  selector?: string;
+  tab_id?: number;
+  files: UploadFile[];
+  mode?: UploadMode;
+  timeout_ms?: number;
+}
+
+export interface UploadResult {
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  file_names: string[];
+}
+
+export interface DownloadParams {
+  session_id: string;
+  ref?: string;
+  selector?: string;
+  tab_id?: number;
+  timeout_ms?: number;
+  browser_relative_dir?: string;
+  max_byte_size?: number;
+}
+
+export interface DownloadResult {
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  suggested_filename: string;
+  byte_size: number;
+  mime?: string;
+  danger?: string;
+  browser_path?: string;
+  transfer_id?: string;
+}
+
 // --------------------------------------------------------------------------
 // M9 tool payloads — evaluate / wait_for_navigation / wait_ms
 // --------------------------------------------------------------------------
@@ -483,7 +678,28 @@ export interface HelpTarget {
   selector?: string;
 }
 
-export type HelpOutcome = "continued" | "cancelled" | "timed_out" | "navigated";
+export type HelpOutcome =
+  | "continued"
+  | "cancelled"
+  | "timed_out"
+  | "completed"
+  | "navigated"
+  | "disabled";
+
+export interface HelpCompletionCondition {
+  url_contains?: string;
+  url_matches?: string;
+  selector_exists?: string;
+  selector_missing?: string;
+  text_exists?: string;
+  text_missing?: string;
+}
+
+export interface HelpCompletionCriteria {
+  any?: HelpCompletionCondition[];
+  all?: HelpCompletionCondition[];
+  stable_for_ms?: number;
+}
 
 export interface ResolvedTarget {
   matched: boolean;
@@ -497,12 +713,265 @@ export interface RequestHelpParams {
   prompt: string;
   title?: string;
   targets?: HelpTarget[];
+  completion_criteria?: HelpCompletionCriteria;
   timeout_ms?: number;
 }
 
 export interface RequestHelpResult {
   outcome: HelpOutcome;
+  completed_by?: "system";
   note?: string;
   tab_id: number;
   resolved_targets?: ResolvedTarget[];
+}
+
+// --------------------------------------------------------------------------
+// Device-emulation payloads — tool.emulate (mirror bsk-protocol emulate.rs)
+// --------------------------------------------------------------------------
+
+export interface UserAgentBrandVersion {
+  brand: string;
+  version: string;
+}
+
+/** Mirror of CDP `Emulation.UserAgentMetadata`; all fields optional. */
+export interface UserAgentMetadata {
+  brands?: UserAgentBrandVersion[];
+  full_version?: string;
+  platform?: string;
+  platform_version?: string;
+  architecture?: string;
+  model?: string;
+  mobile?: boolean;
+}
+
+/**
+ * Concrete emulation overrides for one tab. The extension merges each
+ * request field by field onto the tab's remembered emulation state:
+ * fields present here overwrite the stored value, absent fields keep
+ * it, and the merged state is applied as a whole.
+ */
+export interface EmulateOverrides {
+  width?: number;
+  height?: number;
+  device_scale_factor?: number;
+  mobile?: boolean;
+  user_agent?: string;
+  accept_language?: string;
+  user_agent_metadata?: UserAgentMetadata;
+  touch?: boolean;
+  max_touch_points?: number;
+}
+
+export interface EmulateParams {
+  session_id: string;
+  tab_id?: number;
+  /** Clear every emulation override on the tab. Exclusive with `overrides`. */
+  off?: boolean;
+  /** Overrides to apply. Required unless `off` is set. */
+  overrides?: EmulateOverrides;
+}
+
+export interface EmulateResult {
+  tab_id: number;
+  /** True when overrides were cleared (`off`); false when applied. */
+  cleared: boolean;
+  /** Echo of the overrides that were applied. Absent when cleared. */
+  applied?: EmulateOverrides;
+  /** Scope note: overrides are per-tab (CDP target), not inherited by new tabs. */
+  note?: string;
+}
+
+// --------------------------------------------------------------------------
+// Semantic record payloads mirror the versioned Rust protocol models.
+// --------------------------------------------------------------------------
+
+export const TRACE_VERSION_V3 = 3;
+/** Logical v2 identifier. Not a wire field — v2 envelopes omit `version`. */
+export const TRACE_VERSION_V2 = 2;
+export const VOM_FORMAT_VERSION = 1;
+
+export interface TargetDescriptorV3 {
+  ref?: string;
+  role?: string;
+  name?: string;
+  ctx?: string;
+  unmatched?: boolean;
+}
+
+export interface RecorderInfo {
+  bsk: string;
+  vom: number;
+}
+
+export type StopReason = "user_finish" | "cli_stop";
+
+export interface TraceStateV3 {
+  id: string;
+  url: string;
+  title?: string;
+  body: string;
+  truncated?: boolean;
+}
+
+export interface StepResultV3 {
+  state: string;
+}
+
+export interface StepCommonV3 {
+  id: number;
+  state: string;
+  result: StepResultV3;
+}
+
+export type NavigationCause =
+  | "user_typed"
+  | "link"
+  | "form_submit"
+  | "reload"
+  | "history"
+  | "script"
+  | "browser";
+
+export type FillCommit = "enter" | "suggestion" | "blur";
+
+/** Legacy v2 target shape retained for existing record producers. */
+export interface TargetDescriptorV2 {
+  role?: string;
+  name?: string;
+  tag: string;
+  name_attr?: string;
+  placeholder?: string;
+  nearby_label?: string;
+}
+
+export interface TraceEntry {
+  start_url: string;
+}
+
+export interface PageRefV2 {
+  id: string;
+  url: string;
+  title?: string;
+}
+
+export interface SelectedOptionV2 {
+  value: string;
+  label?: string;
+}
+
+export interface StepEffectV2 {
+  navigated_to: string;
+}
+
+export interface StepCommonV2 {
+  id: number;
+  page: string;
+  effect?: StepEffectV2;
+}
+
+/** Exported record-only step (trace v2). */
+export type StepV2 =
+  | ({ op: "navigate" } & StepCommonV2 & { to: string })
+  | ({ op: "click" } & StepCommonV2 & { target: TargetDescriptorV2 })
+  | ({ op: "hover" } & StepCommonV2 & { target: TargetDescriptorV2 })
+  | ({ op: "fill" } & StepCommonV2 & {
+        target: TargetDescriptorV2;
+        value: string;
+        redacted?: boolean;
+      })
+  | ({ op: "select" } & StepCommonV2 & {
+        target: TargetDescriptorV2;
+        selection: SelectedOptionV2[];
+      })
+  | ({ op: "press" } & StepCommonV2 & {
+        key: string;
+        modifiers?: KeyModifier[];
+        target?: TargetDescriptorV2;
+      });
+
+export interface TraceV2 {
+  recorded_at: string;
+  started_at?: string;
+  purpose?: string;
+  entry: TraceEntry;
+  pages: PageRefV2[];
+  steps: StepV2[];
+}
+
+export interface SelectedOptionV3 {
+  value: string;
+  label?: string;
+}
+
+export type StepV3 =
+  | ({ op: "navigate" } & StepCommonV3 & { to: string; cause: NavigationCause })
+  | ({ op: "switch_tab" } & StepCommonV3)
+  | ({ op: "click" } & StepCommonV3 & { target: TargetDescriptorV3 })
+  | ({ op: "hover" } & StepCommonV3 & { target: TargetDescriptorV3 })
+  | ({ op: "fill" } & StepCommonV3 & {
+        target: TargetDescriptorV3;
+        value: string;
+        commit: FillCommit;
+        redacted?: boolean;
+      })
+  | ({ op: "select" } & StepCommonV3 & {
+        target: TargetDescriptorV3;
+        selection?: SelectedOptionV3[];
+      })
+  | ({ op: "press" } & StepCommonV3 & {
+        key: string;
+        modifiers?: KeyModifier[];
+        target?: TargetDescriptorV3;
+      })
+  | ({ op: "scroll" } & StepCommonV3);
+
+export interface TraceV3 {
+  version: typeof TRACE_VERSION_V3;
+  recorded_at: string;
+  started_at?: string;
+  purpose?: string;
+  stopped_by: StopReason;
+  entry: TraceEntry;
+  recorder: RecorderInfo;
+  states: TraceStateV3[];
+  steps: StepV3[];
+}
+
+export type RecordedTrace = TraceV2 | TraceV3;
+export type RecordedStep = StepV2 | StepV3;
+
+export interface RecordStartParams {
+  session_id: string;
+  tab_id?: number;
+  url?: string;
+  purpose?: string;
+  max_page_tokens?: number;
+  redact_values?: boolean;
+  /** Omitted means v2; `3` requests a state-linked v3 trace. */
+  trace_version?: number;
+  /** Client can decode the v3 `switch_tab` step variant. */
+  supports_tab_switch_steps?: boolean;
+}
+
+export interface RecordStartResult {
+  tab_id: number;
+  recording: boolean;
+}
+
+export interface RecordStopParams {
+  session_id: string;
+}
+
+export interface RecordStopResult {
+  trace: RecordedTrace;
+}
+
+export interface RecordAwaitParams {
+  session_id: string;
+  timeout_ms?: number;
+}
+
+export interface RecordAwaitResult {
+  trace: RecordedTrace;
 }

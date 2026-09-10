@@ -1,11 +1,11 @@
 import { i18n } from "@browser-skill/i18n";
 import { I18nextProvider } from "@browser-skill/i18n/react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HelpRequestData, HelpRequestOverlay } from "../HelpRequestOverlay";
 
-function renderOverlay(req: HelpRequestData) {
+function renderOverlay(req: HelpRequestData | null) {
   return render(
     createElement(I18nextProvider, { i18n }, createElement(HelpRequestOverlay, { request: req })),
   );
@@ -36,6 +36,75 @@ describe("HelpRequestOverlay", () => {
   it("renders the prompt", () => {
     renderOverlay(baseRequest());
     expect(screen.getByText("Please complete the captcha")).toBeTruthy();
+  });
+
+  it("renders explicit viewport rectangles for cross-frame targets", () => {
+    const { container } = renderOverlay(
+      baseRequest({ rects: [{ top: 30, left: 40, width: 120, height: 50 }] }),
+    );
+    const highlight = container.querySelector<HTMLElement>("[data-slot='help-highlight']");
+    expect(highlight?.style.top).toBe("30px");
+    expect(highlight?.style.left).toBe("40px");
+    expect(highlight?.style.width).toBe("120px");
+    expect(highlight?.style.height).toBe("50px");
+  });
+
+  it("re-resolves cross-frame rectangles after the viewport changes", async () => {
+    const refreshRects = vi.fn(async () => [{ top: 80, left: 90, width: 140, height: 60 }]);
+    const { container } = renderOverlay(
+      baseRequest({
+        rects: [{ top: 30, left: 40, width: 120, height: 50 }],
+        refreshRects,
+      }),
+    );
+
+    window.dispatchEvent(new Event("scroll"));
+
+    await waitFor(() => {
+      const highlight = container.querySelector<HTMLElement>("[data-slot='help-highlight']");
+      expect(highlight?.style.top).toBe("80px");
+      expect(highlight?.style.left).toBe("90px");
+    });
+    expect(refreshRects).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the inactive render stable", () => {
+    const { container, rerender } = renderOverlay(null);
+
+    rerender(
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(HelpRequestOverlay, { request: null }),
+      ),
+    );
+
+    expect(container.querySelector("[data-slot='help-request-banner']")).toBeNull();
+  });
+
+  it("renders a compact status without full request controls", () => {
+    const el = document.createElement("div");
+    el.id = "login";
+    el.getBoundingClientRect = () =>
+      ({ top: 10, left: 10, width: 100, height: 40, right: 110, bottom: 50 }) as DOMRect;
+    document.body.append(el);
+
+    const { container } = renderOverlay(
+      baseRequest({
+        displayMode: "compact",
+        selectors: ["#login"],
+      }),
+    );
+
+    expect(screen.getByText(i18n.t("helpRequest.compactStatus", { ns: "extension" }))).toBeTruthy();
+    expect(screen.queryByText("Please complete the captcha")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByLabelText(i18n.t("helpRequest.collapse", { ns: "extension" }))).toBeNull();
+    expect(container.querySelector("[data-slot='help-continue-button']")).toBeNull();
+    expect(container.querySelector("[data-slot='help-cancel-button']")).toBeNull();
+    expect(document.querySelectorAll("[data-slot='help-highlight']").length).toBe(0);
+
+    el.remove();
   });
 
   it("renders a custom title when provided", () => {
@@ -202,6 +271,15 @@ describe("HelpRequestOverlay", () => {
     expect(styles).toContain('.bsk-help-banner[data-collapsed="true"] .bsk-help-body');
     expect(styles).toContain("position: absolute");
     expect(styles).toContain("width: 0");
+  });
+
+  it("uses natural body height in the expanded layout", () => {
+    const { container } = renderOverlay(baseRequest());
+    const styles = overlayStyles(container);
+
+    expect(styles).toMatch(/\.bsk-help-body\s*\{[^}]*display:\s*block;/s);
+    expect(styles).not.toMatch(/\.bsk-help-body\s*\{[^}]*grid-template-rows/s);
+    expect(styles).toMatch(/\.bsk-help-banner\s*\{[^}]*justify-content:\s*flex-start;/s);
   });
 
   it("keeps the same banner width when collapsed", () => {

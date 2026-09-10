@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MIN_COMPATIBLE_PROTOCOL } from "../../transport/handshake";
-import type { ConnectionStateHandler, Transport } from "../../transport/transport";
-import type { ConnectionState, HandshakeResult } from "../../transport/types";
+import type { ConnectionStateHandler, FrameHandler, Transport } from "../../transport/transport";
+import type { ConnectionState, HandshakeResult, ProtocolFrame } from "../../transport/types";
 import { __testing__, ConnectionController } from "../connection-controller";
 
 vi.mock("../instance-id", () => ({
@@ -26,20 +26,20 @@ function handshake(
 }
 
 describe("computeConnectedState (protocol-based compat)", () => {
-  it("returns connected when protocol strings match", () => {
-    expect(computeConnectedState(handshake("1.0", "1.0"), MIN_COMPATIBLE_PROTOCOL)).toEqual({
+  it("returns connected when daemon protocol equals extension protocol", () => {
+    expect(computeConnectedState(handshake("1.1", "1.0"), MIN_COMPATIBLE_PROTOCOL)).toEqual({
       kind: "connected",
     });
   });
 
   it("returns version_skew when daemon protocol minor is newer", () => {
-    expect(computeConnectedState(handshake("1.1", "1.0"))).toEqual({
+    expect(computeConnectedState(handshake("1.2", "1.0"))).toEqual({
       kind: "version_skew",
     });
   });
 
   it("returns version_skew when daemon protocol string differs but floor is satisfied", () => {
-    expect(computeConnectedState(handshake("1", "1.0"))).toEqual({
+    expect(computeConnectedState(handshake("1.1.0", "1.0"))).toEqual({
       kind: "version_skew",
     });
   });
@@ -53,7 +53,7 @@ describe("computeConnectedState (protocol-based compat)", () => {
   });
 
   it("rejects when extension is below daemon min_compatible_protocol", () => {
-    const result = computeConnectedState(handshake("1.0", "1.5"));
+    const result = computeConnectedState(handshake("1.1", "1.5"));
     expect(result.kind).toBe("rejected");
     if (result.kind === "rejected") {
       expect(result.reason).toContain("min_compatible_protocol");
@@ -65,7 +65,7 @@ describe("computeConnectedState (protocol-based compat)", () => {
     const result = computeConnectedState({
       server: "browser-skill-daemon",
       version: "0.1.0",
-      protocol_version: "1.0",
+      protocol_version: "1.1",
       min_compatible_peer: "0.1.0",
     });
     expect(result).toEqual({ kind: "connected" });
@@ -80,7 +80,7 @@ describe("computeConnectedState (protocol-based compat)", () => {
   });
 
   it("rejects malformed daemon min_compatible_protocol with a daemon-floor reason", () => {
-    const result = computeConnectedState(handshake("1.0", "not-a-protocol"));
+    const result = computeConnectedState(handshake("1.1", "not-a-protocol"));
     expect(result.kind).toBe("rejected");
     if (result.kind === "rejected") {
       expect(result.reason).toContain("daemon min_compatible_protocol");
@@ -97,6 +97,7 @@ describe("computeConnectedState (protocol-based compat)", () => {
 function makeMockTransport(initialState: ConnectionState = "disconnected") {
   let state = initialState;
   const stateHandlers = new Set<ConnectionStateHandler>();
+  const messageHandlers = new Set<FrameHandler>();
   const transport = {
     get state() {
       return state;
@@ -110,7 +111,10 @@ function makeMockTransport(initialState: ConnectionState = "disconnected") {
       for (const h of stateHandlers) h("disconnected");
     }),
     send: vi.fn(),
-    onMessage: vi.fn(() => ({ dispose: () => {} })),
+    onMessage: vi.fn((handler: FrameHandler) => {
+      messageHandlers.add(handler);
+      return { dispose: () => messageHandlers.delete(handler) };
+    }),
     onConnectionStateChange: vi.fn((handler: ConnectionStateHandler) => {
       stateHandlers.add(handler);
       return { dispose: () => stateHandlers.delete(handler) };
@@ -119,6 +123,9 @@ function makeMockTransport(initialState: ConnectionState = "disconnected") {
       state = next;
       for (const h of stateHandlers) h(next);
     },
+    emitMessage(frame: ProtocolFrame) {
+      for (const handler of messageHandlers) handler(frame);
+    },
   };
   return transport as typeof transport & Transport;
 }
@@ -126,6 +133,10 @@ function makeMockTransport(initialState: ConnectionState = "disconnected") {
 describe("ConnectionController connectionEnabled", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("does not connect on attach when connection is disabled", async () => {
@@ -152,6 +163,36 @@ describe("ConnectionController connectionEnabled", () => {
     expect(controller.snapshot().lastError).toBeNull();
   });
 
+  it("runs safe session cleanup before an intentional disconnect", async () => {
+    const controller = new ConnectionController();
+    const transport = makeMockTransport();
+    const order: string[] = [];
+    transport.disconnect.mockImplementation(async () => {
+      order.push("disconnect");
+    });
+    await controller.attach(transport, { name: "Chrome", version: "120" }, true, {
+      beforeDisconnect: async () => {
+        order.push("cleanup");
+      },
+    });
+
+    await controller.setConnectionEnabled(false);
+
+    expect(order).toEqual(["cleanup", "disconnect"]);
+  });
+
+  it("runs session cleanup when the transport disconnects unexpectedly", async () => {
+    const controller = new ConnectionController();
+    const transport = makeMockTransport();
+    const onDisconnected = vi.fn(async () => {});
+    await controller.attach(transport, { name: "Chrome", version: "120" }, true, {
+      onDisconnected,
+    });
+
+    transport.emitState("disconnected");
+    await vi.waitFor(() => expect(onDisconnected).toHaveBeenCalledTimes(1));
+  });
+
   it("reconnects when connection is re-enabled", async () => {
     const controller = new ConnectionController();
     const transport = makeMockTransport();
@@ -170,5 +211,42 @@ describe("ConnectionController connectionEnabled", () => {
     transport.emitState("connected");
 
     expect(controller.snapshot().state).toBe("disconnected");
+  });
+
+  it("disconnects and retries when handshake fails while the socket is still open", async () => {
+    vi.useFakeTimers();
+    const controller = new ConnectionController();
+    const transport = makeMockTransport();
+    await controller.attach(transport, { name: "Chrome", version: "120" }, true);
+    const request = transport.send.mock.calls[0]?.[0] as { id: string };
+
+    transport.emitMessage({
+      id: request.id,
+      error: { code: "protocol_error", message: "bad handshake" },
+    });
+    await vi.waitFor(() => expect(transport.disconnect).toHaveBeenCalledTimes(1));
+    expect(controller.snapshot().state).toBe("disconnected");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(transport.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("binds each handshake to the connection that initiated it", async () => {
+    const controller = new ConnectionController();
+    const transport = makeMockTransport();
+    await controller.attach(transport, { name: "Chrome", version: "120" }, true);
+    const first = transport.send.mock.calls[0]?.[0] as { id: string };
+
+    transport.emitState("disconnected");
+    transport.emitState("connected");
+    const second = transport.send.mock.calls[1]?.[0] as { id: string };
+    expect(second.id).not.toBe(first.id);
+
+    transport.emitMessage({ id: first.id, result: handshake("1.1", "1.0") });
+    await Promise.resolve();
+    expect(controller.snapshot().state).not.toBe("connected");
+
+    transport.emitMessage({ id: second.id, result: handshake("1.1", "1.0") });
+    await vi.waitFor(() => expect(controller.snapshot().state).toBe("connected"));
   });
 });

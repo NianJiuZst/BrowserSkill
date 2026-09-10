@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     if !matches!(cli.command, Command::Daemon(_)) {
         init_cli_tracing(&cli.flags);
     }
-    cli::update::maybe_spawn_background_check(&cli.flags, &cli.command);
+    cli::update::print_update_hint_from_cache(&cli.flags, &cli.command);
 
     let format = if cli.flags.json {
         Format::Json
@@ -56,9 +56,12 @@ fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
             } else {
                 Output::Human
             };
-            cli::doctor::run(output)
-                .map(|_| ())
-                .map_err(CliError::Local)
+            let checks = cli::doctor::run(output).map_err(CliError::Local)?;
+            if cli::doctor::has_failures(&checks) {
+                Err(CliError::RenderedExit { exit_code: 1 })
+            } else {
+                Ok(())
+            }
         }
         Command::InstallSkill(args) => {
             let output = if cli.flags.json {
@@ -77,22 +80,33 @@ fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
         Command::Session(cmd) => cli::session::dispatch(cmd, format),
         Command::Browsers => cli::browsers::dispatch(format),
         Command::Tab(cmd) => cli::tab::dispatch(cmd, format),
+        Command::Window(cmd) => cli::window::dispatch(cmd, format),
+        Command::Emulate(args) => cli::emulate::dispatch(args, format),
         Command::Screenshot(args) => cli::screenshot::dispatch(args, format),
         Command::Snapshot(args) => cli::snapshot::dispatch(args, format),
+        Command::Observe(args) => cli::observe::dispatch(args, format),
         Command::Console(args) => cli::console::dispatch(args, format),
+        Command::Network(args) => cli::network::dispatch(args, format),
         Command::GetHtml(args) => cli::get_html::dispatch(args, format),
         Command::Navigate(args) => cli::navigate::dispatch_navigate_command(args, format),
         Command::NavigateBack(args) => cli::navigate::dispatch_navigate_back(args, format),
         Command::NavigateForward(args) => cli::navigate::dispatch_navigate_forward(args, format),
         Command::Reload(args) => cli::navigate::dispatch_reload(args, format),
         Command::Click(args) => cli::interaction::dispatch_click(args, format),
+        Command::Hover(args) => cli::interaction::dispatch_hover(args, format),
+        Command::ScrollTo(args) => cli::scroll::dispatch(args, format),
+        Command::Focus(args) => cli::interaction::dispatch_focus(args, format),
+        Command::Blur(args) => cli::interaction::dispatch_blur(args, format),
         Command::Fill(args) => cli::interaction::dispatch_fill(args, format),
         Command::Press(args) => cli::interaction::dispatch_press(args, format),
         Command::Select(args) => cli::interaction::dispatch_select(args, format),
+        Command::Upload(args) => cli::upload::dispatch(args, format),
+        Command::Download(args) => cli::download::dispatch(args, format),
         Command::Evaluate(args) => cli::evaluate::dispatch(args, format),
         Command::WaitForNavigation(args) => cli::waits::dispatch_wait_for_navigation(args, format),
         Command::WaitMs(args) => cli::waits::dispatch_wait_ms(args, format),
         Command::RequestHelp(args) => cli::human_loop::dispatch(args, format),
+        Command::Record(cmd) => cli::record::dispatch(cmd, format),
     }
 }
 

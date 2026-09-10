@@ -12,9 +12,9 @@
 //! falls through to `run_foreground`.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -23,13 +23,22 @@ use tracing::{debug, info, warn};
 
 use crate::cli::daemon::StartArgs;
 use crate::daemon::{
-    browsers::EXTENSION_CONNECT_WAIT, info as daemon_info, ipc, lockfile, paths,
-    state::DaemonState, ws,
+    browsers::{BROWSER_LIVENESS_TICK, BROWSER_LIVENESS_TIMEOUT, EXTENSION_CONNECT_WAIT},
+    info as daemon_info, ipc, lockfile, paths,
+    sessions::{StopSessionError, forget_session, stop_session},
+    state::{DaemonState, PROTOCOL_VERSION},
+    ws,
 };
 
 /// Internal env-var contract: the parent sets this on the spawned child
 /// to indicate "you are the daemon, detach yourself and run".
 pub(crate) const DAEMONIZED_ENV: &str = "BSK_DAEMONIZED";
+
+/// Internal env-var contract for daemon self-restart after an
+/// auto-update: the outgoing daemon spawns its replacement with this set
+/// to its own pid; the child waits for that pid to exit — releasing the
+/// daemon lock, IPC socket, and WS port — before taking over.
+pub(crate) const DAEMON_REPLACEMENT_WAIT_ENV: &str = "BSK_DAEMON_REPLACES_PID";
 
 /// Concrete daemon configuration resolved from CLI flags / defaults.
 #[derive(Debug, Clone)]
@@ -42,6 +51,12 @@ pub struct DaemonConfig {
     /// How long `session.start` polls for an extension handshake before
     /// returning `no_browser_connected`.
     pub extension_connect_wait: Duration,
+    /// A heartbeat-capable browser silent for at least this long is
+    /// reaped by the liveness task. Defaults to [`BROWSER_LIVENESS_TIMEOUT`].
+    pub browser_liveness_timeout: Duration,
+    /// How often the liveness task scans the registry. Defaults to
+    /// [`BROWSER_LIVENESS_TICK`].
+    pub browser_liveness_tick: Duration,
 }
 
 impl DaemonConfig {
@@ -55,11 +70,22 @@ impl DaemonConfig {
             daemon_idle: Duration::from_secs(60 * 30),
             allow_any_origin: false,
             extension_connect_wait: EXTENSION_CONNECT_WAIT,
+            browser_liveness_timeout: BROWSER_LIVENESS_TIMEOUT,
+            browser_liveness_tick: BROWSER_LIVENESS_TICK,
         }
     }
 
     pub fn with_extension_connect_wait(mut self, wait: Duration) -> Self {
         self.extension_connect_wait = wait;
+        self
+    }
+
+    /// Override the liveness reaper's silence threshold and scan cadence.
+    /// Primarily for tests that need the reaper to act within
+    /// sub-second windows instead of the production 60s/15s defaults.
+    pub fn with_browser_liveness(mut self, timeout: Duration, tick: Duration) -> Self {
+        self.browser_liveness_timeout = timeout;
+        self.browser_liveness_tick = tick;
         self
     }
 }
@@ -72,6 +98,8 @@ impl From<&StartArgs> for DaemonConfig {
             daemon_idle: args.resolved_daemon_idle(),
             allow_any_origin: false,
             extension_connect_wait: EXTENSION_CONNECT_WAIT,
+            browser_liveness_timeout: BROWSER_LIVENESS_TIMEOUT,
+            browser_liveness_tick: BROWSER_LIVENESS_TICK,
         }
     }
 }
@@ -86,6 +114,7 @@ pub fn run_start(args: StartArgs) -> Result<()> {
 
     // Detached child mode (set by parent before spawn).
     if is_daemonized_child() {
+        wait_for_replaced_daemon();
         detach_stdio()?;
         return run_foreground(cfg);
     }
@@ -196,6 +225,18 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
             .with_context(|| format!("bind IPC endpoint {}", sock_path.display()))?;
 
         let state = Arc::new(DaemonState::new(cfg.clone()));
+        state
+            .transfers
+            .initialize()
+            .context("initialize transfer staging")?;
+        let session_idle_task = spawn_session_idle_reaper(Arc::clone(&state));
+        let browser_liveness_task = spawn_browser_liveness_reaper(Arc::clone(&state));
+        // Fired by the update check task after a successful auto-update:
+        // the replacement daemon (or Windows update helper) is ready, so
+        // this process should shut down and let it take over.
+        let restart_notify = Arc::new(tokio::sync::Notify::new());
+        let update_check_task =
+            spawn_update_check_task(Arc::clone(&state), Arc::clone(&restart_notify));
         let ws_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), cfg.ws_port);
         let ws_handle = ws::WsServer::new(Arc::clone(&state))
             .bind(ws_addr)
@@ -253,15 +294,14 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
         });
 
         let started_at = Instant::now();
-        let activity: Arc<Mutex<Instant>> = Arc::new(Mutex::new(started_at));
-        let active_ipc_connections = Arc::new(AtomicUsize::new(0));
+        let activity = Arc::new(Mutex::new(IpcActivityState::new(started_at)));
         let (ipc_shutdown_tx, ipc_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let status = ipc::DaemonStatus {
             started_at,
             ws_port,
             sock_path: sock_path.clone(),
             daemon_version: env!("CARGO_PKG_VERSION"),
-            protocol_version: "1.0",
+            protocol_version: PROTOCOL_VERSION,
         };
         let handler = ipc::full_handler(status, Arc::clone(&state));
 
@@ -276,18 +316,14 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
             let handler = handler.clone();
             let ipc_open = {
                 let activity = activity.clone();
-                let active = active_ipc_connections.clone();
                 move || {
-                    active.fetch_add(1, Ordering::SeqCst);
-                    record_activity(&activity);
+                    record_ipc_open(&activity);
                 }
             };
             let ipc_close = {
                 let activity = activity.clone();
-                let active = active_ipc_connections.clone();
                 move || {
-                    active.fetch_sub(1, Ordering::SeqCst);
-                    record_activity(&activity);
+                    record_ipc_close(&activity);
                 }
             };
             tokio::spawn(ipc::serve(
@@ -306,7 +342,6 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
         let idle_task = {
             let activity = activity.clone();
             let state = Arc::clone(&state);
-            let active_ipc_connections = active_ipc_connections.clone();
             let daemon_idle = cfg.daemon_idle;
             tokio::spawn(async move {
                 let tick = (daemon_idle / 4).max(Duration::from_millis(250));
@@ -314,22 +349,19 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     ticker.tick().await;
-                    let last = match activity.lock() {
-                        Ok(a) => *a,
-                        Err(p) => *p.into_inner(),
-                    };
-                    if last.elapsed() < daemon_idle {
+                    let ipc_is_idle =
+                        lock_activity(&activity).should_exit_for_idle(Instant::now(), daemon_idle);
+                    if !ipc_is_idle {
                         continue;
                     }
-                    // Bridge from M2/M3 (which only knew about connection
-                    // counts) to M4/M5 (browser + session registries):
-                    // hold the daemon alive while any IPC client is
-                    // connected, any browser is paired, or any session
-                    // is live (design §3.2).
-                    if active_ipc_connections.load(Ordering::SeqCst) > 0
-                        || !state.browsers.is_empty()
-                        || !state.sessions.is_empty()
-                    {
+                    // IPC liveness (open-connection count + idle window) is already
+                    // enforced above by `should_exit_for_idle`, which reads
+                    // `IpcActivityState` under one lock and returns true only when
+                    // there are zero connections AND the idle interval has elapsed.
+                    // Here we additionally hold the daemon alive while any browser
+                    // is paired or any session is live (design §3.2, M4/M5
+                    // registries).
+                    if !state.browsers.is_empty() || !state.sessions.is_empty() {
                         continue;
                     }
                     info!(
@@ -342,6 +374,11 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
         };
         drop(idle_rx);
 
+        // Created before `select!` so a `notify_one` from the update
+        // check task is never missed (Notify stores one permit).
+        let restart_notified = restart_notify.notified();
+        tokio::pin!(restart_notified);
+
         tokio::select! {
             _ = wait_for_shutdown() => {
                 info!("bsk daemon shutting down (signal)");
@@ -351,10 +388,19 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
                     info!("bsk daemon shutting down (idle)");
                 }
             }
+            _ = &mut restart_notified => {
+                info!("bsk daemon shutting down (auto-update restart)");
+            }
         }
 
         let _ = ipc_shutdown_tx.send(());
         let _ = ipc_task.await;
+        session_idle_task.abort();
+        let _ = session_idle_task.await;
+        browser_liveness_task.abort();
+        let _ = browser_liveness_task.await;
+        update_check_task.abort();
+        let _ = update_check_task.await;
         ws_handle.shutdown.notify_waiters();
         let _ = ws_handle.task.await;
 
@@ -367,10 +413,328 @@ pub fn run_foreground(cfg: DaemonConfig) -> Result<()> {
     Ok(())
 }
 
-fn record_activity(activity: &Arc<Mutex<Instant>>) {
-    if let Ok(mut a) = activity.lock() {
-        *a = Instant::now();
+/// Spawn the browser-liveness reaper shared by the production foreground
+/// daemon and the test/embed entry point.
+///
+/// A normal disconnect closes the WebSocket, which the per-connection
+/// read loop observes and cleans up. But if the OS resumed from sleep
+/// and killed the MV3 service worker, the socket can be left half-open
+/// with no close frame ever delivered. Without the ~20s `system.heartbeat`
+/// arriving, such a connection would otherwise sit in the registry
+/// forever — pinning a phantom "connected" browser and preventing the
+/// daemon from ever idle-exiting. This reaper drops any browser that has
+/// gone silent past [`BROWSER_LIVENESS_TIMEOUT`] and purges its sessions,
+/// mirroring the WS disconnect cleanup.
+pub(crate) fn spawn_browser_liveness_reaper(
+    state: Arc<DaemonState>,
+) -> tokio::task::JoinHandle<()> {
+    let timeout = state.config.browser_liveness_timeout;
+    let tick = state.config.browser_liveness_tick;
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(tick);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The first tick is immediate; skip it so a freshly connected
+        // browser always gets at least one full window before a scan.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            for client in state.browsers.stale_browsers(timeout) {
+                if state
+                    .browsers
+                    .remove_if_generation_matches(&client.id, client.generation)
+                    .is_some()
+                {
+                    warn!(
+                        id = %client.id,
+                        idle_secs = client.idle_for().as_secs(),
+                        "reaping unresponsive browser (no heartbeat within liveness window)"
+                    );
+                    for s in state.sessions.purge_browser(&client.id) {
+                        state.tool_queues.remove(&s.id);
+                        state.session_interrupts.drop_session(&s.id);
+                        state.transfers.release_session(&s.id.0);
+                        debug!(session = %s.id, "purged session on browser liveness timeout");
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Spawn the cooperative session-idle reaper shared by the production
+/// foreground daemon and the test/embed daemon entry point.
+pub(crate) fn spawn_session_idle_reaper(state: Arc<DaemonState>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let session_idle = state.config.session_idle;
+        let tick = (session_idle / 4)
+            .max(Duration::from_millis(100))
+            .min(Duration::from_secs(30));
+        let mut ticker = tokio::time::interval(tick);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // `interval`'s first tick is immediate. Consume it so a zero/very
+        // short test setting still gets one real inactivity window.
+        ticker.tick().await;
+
+        loop {
+            ticker.tick().await;
+            let idle_ids = state.sessions.idle_ids_at(session_idle, Instant::now());
+            for session_id in idle_ids {
+                match stop_session(
+                    &state.browsers,
+                    &state.sessions,
+                    &state.tool_queues,
+                    &state.session_interrupts,
+                    &session_id,
+                    Duration::from_secs(10),
+                    None,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        state.transfers.release_session(&session_id.0);
+                        info!(session = %session_id, "idle session stopped");
+                    }
+                    Err(StopSessionError::SessionBusy | StopSessionError::Stopping) => {
+                        debug!(session = %session_id, "idle session still active; retrying later");
+                    }
+                    Err(StopSessionError::NotFound | StopSessionError::BrowserGone) => {
+                        forget_session(
+                            &state.sessions,
+                            &state.tool_queues,
+                            &state.session_interrupts,
+                            &session_id,
+                        );
+                        state.transfers.release_session(&session_id.0);
+                    }
+                    Err(err) => {
+                        warn!(session = %session_id, error = %err, "failed to stop idle session");
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Spawn the periodic update check owned by the production daemon.
+///
+/// The daemon is the only writer of `~/.bsk/update-check.json`; CLI
+/// commands only read it to print the "new version available" hint
+/// (see [`crate::cli::update::print_update_hint_from_cache`]). The first
+/// tick of `tokio::time::interval` is immediate, so the check runs right
+/// after startup and then every
+/// [`crate::cli::update::UPDATE_CHECK_INTERVAL`]. Each tick re-reads the
+/// cache and skips the network fetch while it is still fresh within
+/// [`crate::cli::update::DAEMON_REFRESH_WINDOW`] (25min — shorter than
+/// the 30min tick, so steady state really refreshes on every tick
+/// instead of every other one). The task
+/// loops forever; shutdown aborts it like the other background tasks, so
+/// it never delays daemon exit (an in-flight fetch is bounded by the
+/// update client's own timeout and detached on abort).
+///
+/// When a tick finds a newer version the daemon also *installs* it
+/// (auto-update, on by default; [`crate::cli::update::AUTO_UPDATE_ENV`]
+/// `=off` disables it and keeps the check cache/hint-only). Safety
+/// gate: while any agent session is live the tick postpones the
+/// install and retries next time. Once the new binary is in place the
+/// task spawns the replacement daemon (see
+/// [`DAEMON_REPLACEMENT_WAIT_ENV`]) and fires `restart` so this process
+/// shuts down and the new version takes over; on Windows the
+/// helper waits for this process to exit, replaces the binary, and starts
+/// the new daemon with the same configuration.
+pub(crate) fn spawn_update_check_task(
+    state: Arc<DaemonState>,
+    restart: Arc<tokio::sync::Notify>,
+) -> tokio::task::JoinHandle<()> {
+    use crate::cli::update;
+
+    tokio::spawn(async move {
+        let cache_path = match paths::update_check_path() {
+            Ok(path) => path,
+            Err(err) => {
+                warn!(error = %err, "periodic update check disabled: cannot resolve cache path");
+                return;
+            }
+        };
+        // Capture our own executable path once, up front: after an
+        // auto-update replaces the binary, `current_exe` on Linux starts
+        // returning a " (deleted)"-suffixed path that can neither be
+        // replaced again nor spawned.
+        let exe_path = match std::env::current_exe() {
+            Ok(exe) => Some(exe),
+            Err(err) => {
+                warn!(error = %err, "auto-update install disabled: cannot locate current executable");
+                None
+            }
+        };
+
+        let mut ticker = tokio::time::interval(update::UPDATE_CHECK_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+
+            let needs_refresh = match update::read_update_cache(&cache_path) {
+                Ok(cache) => update::cache_needs_refresh(
+                    cache.as_ref(),
+                    update::now_epoch_secs(),
+                    update::DAEMON_REFRESH_WINDOW,
+                ),
+                Err(err) => {
+                    warn!(error = %err, "update cache unreadable; will refresh it");
+                    true
+                }
+            };
+            if !needs_refresh {
+                debug!("update cache still fresh; skipping update check");
+                continue;
+            }
+
+            let result = {
+                let cache_path = cache_path.clone();
+                let state = Arc::clone(&state);
+                let exe_path = exe_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    let candidate = update::refresh_update_cache(&cache_path)?;
+                    // The session gate is read after the fetch, as late
+                    // as possible before the binary gets replaced.
+                    let active_sessions = state.sessions.len();
+                    let auto_update = update::auto_update_enabled() && exe_path.is_some();
+                    update::auto_update_step(
+                        candidate.as_ref(),
+                        auto_update,
+                        active_sessions,
+                        |candidate| {
+                            let target =
+                                exe_path.as_deref().context("current executable unknown")?;
+                            update::self_install_candidate(
+                                candidate,
+                                target,
+                                &restart_start_args(&state.config),
+                            )
+                        },
+                    )
+                })
+                .await
+            };
+            let outcome = match result {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(err)) => {
+                    warn!(error = %err, "periodic update check failed");
+                    continue;
+                }
+                Err(err) => {
+                    warn!(error = %err, "periodic update check task panicked");
+                    continue;
+                }
+            };
+            match outcome {
+                update::AutoUpdateOutcome::UpToDate => {
+                    info!("periodic update check refreshed cache (already up to date)")
+                }
+                update::AutoUpdateOutcome::Disabled { latest } => info!(
+                    %latest,
+                    "periodic update check found a new version; auto-update off, CLI hint only"
+                ),
+                update::AutoUpdateOutcome::PostponedSessions { latest, sessions } => info!(
+                    %latest,
+                    sessions,
+                    "auto-update postponed: agent session(s) active; will retry on the next tick"
+                ),
+                update::AutoUpdateOutcome::Staged { latest } => {
+                    info!(%latest, "update helper ready; exiting so it can replace and restart the daemon");
+                    restart.notify_one();
+                    return;
+                }
+                update::AutoUpdateOutcome::Replaced { latest } => {
+                    info!(
+                        current = env!("CARGO_PKG_VERSION"),
+                        %latest,
+                        "auto-update installed the new bsk binary; restarting daemon"
+                    );
+                    // `exe_path` is always Some here: the install only
+                    // runs when it was captured.
+                    if let Some(exe) = &exe_path {
+                        let args = restart_start_args(&state.config);
+                        match spawn_detached_at(exe, &args, Some(std::process::id())) {
+                            Ok(()) => {
+                                info!(
+                                    pid = std::process::id(),
+                                    "replacement daemon spawned; exiting so it can take over"
+                                );
+                                restart.notify_one();
+                                return;
+                            }
+                            Err(err) => warn!(
+                                error = %err,
+                                "auto-update replaced the binary but failed to spawn the replacement daemon; the next daemon start picks up the new version"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Rebuild the `StartArgs` for the replacement daemon from the running
+/// config so the respawn keeps the same port and idle timeouts.
+fn restart_start_args(cfg: &DaemonConfig) -> StartArgs {
+    StartArgs {
+        port: Some(cfg.ws_port),
+        foreground: false,
+        session_idle: Some(cfg.session_idle),
+        daemon_idle: Some(cfg.daemon_idle),
     }
+}
+
+#[derive(Debug)]
+struct IpcActivityState {
+    last_activity: Instant,
+    active_connections: usize,
+}
+
+impl IpcActivityState {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_activity: now,
+            active_connections: 0,
+        }
+    }
+
+    fn touch(&mut self, now: Instant) {
+        self.last_activity = now;
+    }
+
+    fn opened(&mut self, now: Instant) {
+        self.active_connections = self.active_connections.saturating_add(1);
+        self.last_activity = now;
+    }
+
+    fn closed(&mut self, now: Instant) {
+        self.active_connections = self.active_connections.saturating_sub(1);
+        self.last_activity = now;
+    }
+
+    fn should_exit_for_idle(&self, now: Instant, idle: Duration) -> bool {
+        self.active_connections == 0 && now.saturating_duration_since(self.last_activity) >= idle
+    }
+}
+
+fn lock_activity(
+    activity: &Arc<Mutex<IpcActivityState>>,
+) -> std::sync::MutexGuard<'_, IpcActivityState> {
+    activity.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+fn record_activity(activity: &Arc<Mutex<IpcActivityState>>) {
+    lock_activity(activity).touch(Instant::now());
+}
+
+fn record_ipc_open(activity: &Arc<Mutex<IpcActivityState>>) {
+    lock_activity(activity).opened(Instant::now());
+}
+
+fn record_ipc_close(activity: &Arc<Mutex<IpcActivityState>>) {
+    lock_activity(activity).closed(Instant::now());
 }
 
 /// Initialise tracing for the daemon: write a daily-rotated file in
@@ -438,6 +802,24 @@ fn is_daemonized_child() -> bool {
     std::env::var(DAEMONIZED_ENV).as_deref() == Ok("1")
 }
 
+/// Self-update handoff: when the outgoing daemon spawned us as its
+/// replacement ([`DAEMON_REPLACEMENT_WAIT_ENV`]), wait for its pid to
+/// exit so the daemon lock, IPC socket, and WS port are free before we
+/// try to take them over. Bounded on purpose — the lockfile is the real
+/// backstop if the predecessor somehow lingers.
+fn wait_for_replaced_daemon() {
+    let pid = std::env::var(DAEMON_REPLACEMENT_WAIT_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok());
+    let Some(pid) = pid else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while lockfile::pid_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[cfg(unix)]
 fn detach_stdio() -> Result<()> {
     use std::fs::OpenOptions;
@@ -481,14 +863,27 @@ fn detach_stdio() -> Result<()> {
 
 #[cfg(unix)]
 fn spawn_detached(args: &StartArgs) -> Result<()> {
-    use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().context("current_exe")?;
+    spawn_detached_at(&exe, args, None)
+}
+
+/// Spawn a detached daemon child running the binary at `exe`. When
+/// `predecessor_pid` is set, the child first waits for that process to
+/// exit ([`DAEMON_REPLACEMENT_WAIT_ENV`]) — used by the auto-update
+/// self-restart, where the on-disk binary has already been replaced, so
+/// the child runs the new version.
+#[cfg(unix)]
+fn spawn_detached_at(exe: &Path, args: &StartArgs, predecessor_pid: Option<u32>) -> Result<()> {
+    use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(exe);
     apply_start_args(&mut cmd, args);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .env(DAEMONIZED_ENV, "1");
+    if let Some(pid) = predecessor_pid {
+        cmd.env(DAEMON_REPLACEMENT_WAIT_ENV, pid.to_string());
+    }
     // Place the child into its own session before exec to fully detach.
     unsafe {
         cmd.pre_exec(|| {
@@ -503,23 +898,39 @@ fn spawn_detached(args: &StartArgs) -> Result<()> {
 
 #[cfg(windows)]
 fn spawn_detached(args: &StartArgs) -> Result<()> {
+    let exe = std::env::current_exe().context("current_exe")?;
+    spawn_detached_at(&exe, args, None)
+}
+
+/// Windows counterpart of the unix [`spawn_detached_at`]; see its docs.
+#[cfg(windows)]
+fn spawn_detached_at(exe: &Path, args: &StartArgs, predecessor_pid: Option<u32>) -> Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    let exe = std::env::current_exe().context("current_exe")?;
     let mut cmd = std::process::Command::new(exe);
     apply_start_args(&mut cmd, args);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .env(DAEMONIZED_ENV, "1")
-        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        .env(DAEMONIZED_ENV, "1");
+    if let Some(pid) = predecessor_pid {
+        cmd.env(DAEMON_REPLACEMENT_WAIT_ENV, pid.to_string());
+    }
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     let _child = cmd.spawn().context("spawn detached daemon child")?;
     Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
 fn spawn_detached(_args: &StartArgs) -> Result<()> {
+    Err(anyhow::anyhow!(
+        "detached daemon spawn is not supported on this platform"
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn spawn_detached_at(_exe: &Path, _args: &StartArgs, _predecessor_pid: Option<u32>) -> Result<()> {
     Err(anyhow::anyhow!(
         "detached daemon spawn is not supported on this platform"
     ))
@@ -690,5 +1101,53 @@ mod tests {
     fn format_duration_round_trips_seconds_and_millis() {
         assert_eq!(format_duration(Duration::from_secs(5)), "5s");
         assert_eq!(format_duration(Duration::from_millis(750)), "750ms");
+    }
+
+    #[test]
+    fn restart_start_args_preserve_the_running_config() {
+        let cfg = DaemonConfig {
+            ws_port: 1234,
+            session_idle: Duration::from_secs(11),
+            daemon_idle: Duration::from_secs(22),
+            ..DaemonConfig::new(0)
+        };
+        let args = restart_start_args(&cfg);
+        assert_eq!(args.port, Some(1234));
+        assert!(!args.foreground);
+        assert_eq!(args.session_idle, Some(Duration::from_secs(11)));
+        assert_eq!(args.daemon_idle, Some(Duration::from_secs(22)));
+    }
+
+    #[test]
+    fn ipc_close_restarts_the_idle_window_atomically() {
+        let started = Instant::now();
+        let idle = Duration::from_secs(10);
+        let mut activity = IpcActivityState::new(started);
+
+        activity.opened(started);
+        let closed_at = started + Duration::from_secs(30);
+        assert!(
+            !activity.should_exit_for_idle(closed_at, idle),
+            "an open IPC connection must hold the daemon alive"
+        );
+
+        activity.closed(closed_at);
+        assert_eq!(activity.active_connections, 0);
+        assert_eq!(activity.last_activity, closed_at);
+        assert!(!activity.should_exit_for_idle(closed_at, idle));
+        assert!(!activity.should_exit_for_idle(closed_at + idle - Duration::from_millis(1), idle));
+        assert!(activity.should_exit_for_idle(closed_at + idle, idle));
+    }
+
+    #[test]
+    fn ipc_activity_keeps_the_daemon_alive_until_a_full_idle_interval_passes() {
+        let started = Instant::now();
+        let idle = Duration::from_secs(10);
+        let mut activity = IpcActivityState::new(started);
+        let request_at = started + Duration::from_secs(20);
+
+        activity.touch(request_at);
+        assert!(!activity.should_exit_for_idle(request_at + Duration::from_secs(9), idle));
+        assert!(activity.should_exit_for_idle(request_at + idle, idle));
     }
 }

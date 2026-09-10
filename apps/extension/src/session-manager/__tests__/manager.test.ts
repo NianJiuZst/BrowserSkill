@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentWindowApi } from "../agent-window";
-import { SessionManager } from "../manager";
+import type { AgentWindowApi, AgentWindowCreateOptions } from "../agent-window";
+import { isAgentControlledTab, SessionManager } from "../manager";
 
 function fakeAgentWindow(): AgentWindowApi & {
   createMock: ReturnType<typeof vi.fn>;
@@ -8,12 +8,12 @@ function fakeAgentWindow(): AgentWindowApi & {
   ensureActiveTabMock: ReturnType<typeof vi.fn>;
 } {
   let nextId = 100;
-  const createMock = vi.fn(async (_url: string) => {
+  const createMock = vi.fn(async (_url: string, _opts?: AgentWindowCreateOptions) => {
     const id = nextId++;
     return id;
   });
   const removeMock = vi.fn(async (_id: number) => {});
-  const ensureActiveTabMock = vi.fn(async (_windowId: number, _url: string) => {});
+  const ensureActiveTabMock = vi.fn(async (_windowId: number, _url: string) => 0);
   return {
     create: createMock,
     remove: removeMock,
@@ -30,7 +30,7 @@ describe("SessionManager", () => {
     const sm = new SessionManager({ agentWindow: aw, now: () => 1700000000000 });
     const ctx = await sm.start("aa11");
     expect(aw.createMock).toHaveBeenCalledOnce();
-    expect(aw.createMock).toHaveBeenCalledWith("about:blank");
+    expect(aw.createMock).toHaveBeenCalledWith("about:blank", {});
     expect(aw.ensureActiveTabMock).toHaveBeenCalledOnce();
     expect(aw.ensureActiveTabMock).toHaveBeenCalledWith(100, "about:blank");
     expect(ctx.sessionId).toBe("aa11");
@@ -38,6 +38,24 @@ describe("SessionManager", () => {
     expect(ctx.createdAtMs).toBe(1700000000000);
     expect(ctx.refStore.isEmpty()).toBe(true);
     expect(ctx.borrowedTabs.size).toBe(0);
+  });
+  it("forwards an optional window size when starting a session", async () => {
+    const aw = fakeAgentWindow();
+    const sm = new SessionManager({ agentWindow: aw });
+    const ctx = await sm.start("aa11", { size: { width: 1280, height: 800 } });
+    expect(aw.createMock).toHaveBeenCalledWith("about:blank", {
+      size: { width: 1280, height: 800 },
+    });
+    expect(ctx.agentWindowId).toBe(100);
+  });
+
+  it("forwards an explicit unfocused start to the Agent Window", async () => {
+    const aw = fakeAgentWindow();
+    const sm = new SessionManager({ agentWindow: aw });
+
+    await sm.start("aa11", { focused: false });
+
+    expect(aw.createMock).toHaveBeenCalledWith("about:blank", { focused: false });
   });
 
   it("indexes the session by sessionId and agent window id", async () => {
@@ -55,6 +73,52 @@ describe("SessionManager", () => {
     const sm = new SessionManager({ agentWindow: fakeAgentWindow() });
     await sm.start("aa11");
     await expect(sm.start("aa11")).rejects.toThrow(/already exists/);
+  });
+
+  it("removes a newly created Agent Window when startup is aborted", async () => {
+    const aw = fakeAgentWindow();
+    let resolveCreate: (windowId: number) => void = () => {};
+    aw.createMock.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const sm = new SessionManager({ agentWindow: aw });
+    const controller = new AbortController();
+    const pending = sm.start("aa11", { signal: controller.signal });
+
+    controller.abort();
+    resolveCreate(777);
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(aw.removeMock).toHaveBeenCalledWith(777);
+    expect(sm.has("aa11")).toBe(false);
+  });
+
+  it("removes an incomplete Agent Window when active-tab setup fails", async () => {
+    const aw = fakeAgentWindow();
+    aw.ensureActiveTabMock.mockRejectedValueOnce(new Error("tab setup failed"));
+    const sm = new SessionManager({ agentWindow: aw });
+
+    await expect(sm.start("aa11")).rejects.toThrow("tab setup failed");
+
+    expect(aw.removeMock).toHaveBeenCalledWith(100);
+    expect(sm.has("aa11")).toBe(false);
+  });
+
+  it("surfaces the orphan Agent Window id when startup cleanup fails", async () => {
+    const aw = fakeAgentWindow();
+    aw.ensureActiveTabMock.mockRejectedValueOnce(new Error("tab setup failed"));
+    aw.removeMock.mockRejectedValueOnce(new Error("window removal denied"));
+    const sm = new SessionManager({ agentWindow: aw });
+
+    await expect(sm.start("aa11")).rejects.toMatchObject({
+      name: "SessionStartCleanupError",
+      windowId: 100,
+      message: expect.stringMatching(/cleanup of Agent Window 100 failed.*window removal denied/),
+    });
+    expect(sm.has("aa11")).toBe(false);
   });
 
   it("stop() closes the Agent Window and forgets the session", async () => {
@@ -85,6 +149,76 @@ describe("SessionManager", () => {
     const dropped = await sm.stopAll();
     expect(dropped.sort()).toEqual(["aa11", "bb22"]);
     expect(sm.list()).toEqual([]);
+  });
+
+  describe("explicit tab claims", () => {
+    it("claims the exact home tab returned by AgentWindowApi", async () => {
+      const sm = new SessionManager({ agentWindow: fakeAgentWindow() });
+      const ctx = await sm.start("aa11");
+      expect(ctx.agentCreatedTabs).toEqual(new Set([0]));
+      expect(isAgentControlledTab(ctx, 0)).toBe(true);
+    });
+
+    it("keeps every other tab free without classification state", async () => {
+      const sm = new SessionManager({ agentWindow: fakeAgentWindow() });
+      const ctx = await sm.start("aa11");
+      expect(isAgentControlledTab(ctx, 99)).toBe(false);
+      expect(ctx).not.toHaveProperty("userTabs");
+      expect(ctx).not.toHaveProperty("pendingAgentTabCount");
+    });
+
+    it("treats a committed borrow as an explicit claim", async () => {
+      const sm = new SessionManager({ agentWindow: fakeAgentWindow() });
+      const ctx = await sm.start("aa11");
+      const reservation = sm.tryReserveBorrow(42, ctx.sessionId);
+      if ("borrowedBy" in reservation) throw new Error("unexpected borrow conflict");
+      reservation.commit({ tabId: 42, originalWindowId: 7, originalIndex: 3 });
+      expect(isAgentControlledTab(ctx, 42)).toBe(true);
+    });
+
+    it("forgets an agent-created tab after Chrome removes it", async () => {
+      const sm = new SessionManager({ agentWindow: fakeAgentWindow() });
+      const ctx = await sm.start("aa11");
+      ctx.agentCreatedTabs.add(42);
+      sm.forgetClosedTab(42);
+      expect(ctx.agentCreatedTabs.has(42)).toBe(false);
+      expect(isAgentControlledTab(ctx, 0)).toBe(true);
+    });
+
+    it("forgets closed borrows idempotently without affecting other tabs or sessions", async () => {
+      const sm = new SessionManager({ agentWindow: fakeAgentWindow() });
+      const a = await sm.start("aa11");
+      const b = await sm.start("bb22");
+      a.borrowedTabs.set(42, { tabId: 42, originalWindowId: 7, originalIndex: 0 });
+      a.borrowedTabs.set(43, { tabId: 43, originalWindowId: 7, originalIndex: 1 });
+      b.borrowedTabs.set(44, { tabId: 44, originalWindowId: 8, originalIndex: 0 });
+
+      sm.forgetClosedTab(42);
+      sm.forgetClosedTab(42);
+      sm.forgetClosedTab(999);
+
+      expect(isAgentControlledTab(a, 42)).toBe(false);
+      expect(sm.findBorrowingSession(42, null)).toBeNull();
+      expect([...a.borrowedTabs.keys()]).toEqual([43]);
+      expect([...b.borrowedTabs.keys()]).toEqual([44]);
+      expect(sm.list()).toHaveLength(2);
+    });
+
+    it("prevents an in-flight borrow from reclaiming a closed tab", async () => {
+      const sm = new SessionManager({ agentWindow: fakeAgentWindow() });
+      const ctx = await sm.start("aa11");
+      const reservation = sm.tryReserveBorrow(42, ctx.sessionId);
+      if ("borrowedBy" in reservation) throw new Error("unexpected borrow conflict");
+
+      sm.forgetClosedTab(42);
+
+      expect(() =>
+        reservation.commit({ tabId: 42, originalWindowId: 7, originalIndex: 0 }),
+      ).toThrow(/reservation disappeared/);
+      reservation.release();
+      expect(sm.findBorrowingSession(42, null)).toBeNull();
+      expect(ctx.borrowedTabs.has(42)).toBe(false);
+    });
   });
 
   describe("findBorrowingSession", () => {

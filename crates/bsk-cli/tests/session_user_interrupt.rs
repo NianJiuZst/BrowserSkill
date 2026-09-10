@@ -283,16 +283,25 @@ async fn session_user_interrupt_event_cancels_inflight_with_user_aborted() {
     handle.shutdown().await;
 }
 
-/// The pending-interrupt marker must reject a *new* mutating tool
+/// The pending-interrupt marker must reject a *new* browser-input tool
 /// call that arrives AFTER the user clicked stop, even when no
 /// tool was inflight at click time. Under v2 single-use marker
 /// semantics, the marker survives indefinitely until consumed by
-/// a mutating tool call — there is no time window. This is the
+/// an input-dispatching tool call — there is no time window. This is the
 /// core motivating scenario: agents spend most of their time
 /// between tool calls (LLM thinking), and the stop button must
 /// catch a tool dispatched arbitrarily later.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn user_interrupt_rejects_next_mutating_tool_call_when_session_was_idle() {
+    assert_idle_interrupt_rejects(Method::ToolClick).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn user_interrupt_rejects_scroll_to_before_forwarding() {
+    assert_idle_interrupt_rejects(Method::ToolScrollTo).await;
+}
+
+async fn assert_idle_interrupt_rejects(method: Method) {
     let (handle, sock) = spawn_daemon().await;
     let mut ws = connect_ext(handle.ws_addr()).await;
     let _ = handshake_as_ext(&mut ws).await;
@@ -301,10 +310,11 @@ async fn user_interrupt_rejects_next_mutating_tool_call_when_session_was_idle() 
 
     // Fake extension: answer tool.session_start, observe other
     // requests but never reply. We expect the daemon to reject the
-    // tool call BEFORE it ever forwards a tool.click frame.
+    // tool call BEFORE it ever forwards a browser-input frame.
     let ws_sink_for_responder = Arc::clone(&ws_sink);
-    let observed_click_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let observed_click_count_clone = Arc::clone(&observed_click_count);
+    let observed_call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_call_count_clone = Arc::clone(&observed_call_count);
+    let forwarded_method = method.clone();
     let responder = tokio::spawn(async move {
         let mut ws_stream = ws_stream;
         while let Some(Ok(msg)) = ws_stream.next().await {
@@ -329,8 +339,8 @@ async fn user_interrupt_rejects_next_mutating_tool_call_when_session_was_idle() 
                     g.send(Message::Text(serde_json::to_string(&reply).unwrap()))
                         .await
                         .unwrap();
-                } else if req.method == Method::ToolClick {
-                    observed_click_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                } else if req.method == forwarded_method {
+                    observed_call_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     // Deliberately do NOT reply — daemon should reject before
                     // ever forwarding to us.
                     let _ = req;
@@ -377,12 +387,12 @@ async fn user_interrupt_rejects_next_mutating_tool_call_when_session_was_idle() 
     let state = handle.state();
     wait_for_session_interrupt_pending(&state, &start.session_id).await;
 
-    // The CLI now issues a tool.click (mutating). The daemon must
+    // The CLI now issues a browser-input (mutating). The daemon must
     // reject it WITHOUT forwarding to the extension.
-    let click_outcome = ipc
+    let outcome = ipc
         .call::<_, serde_json::Value>(
-            "click-after-interrupt",
-            Method::ToolClick,
+            "input-after-interrupt",
+            method,
             Some(json!({
                 "session_id": start.session_id,
                 "ref": "fake-ref-1",
@@ -391,7 +401,7 @@ async fn user_interrupt_rejects_next_mutating_tool_call_when_session_was_idle() 
         )
         .await
         .unwrap();
-    let err = click_outcome.expect_err("tool.click must be rejected");
+    let err = outcome.expect_err("browser-input must be rejected");
     assert_eq!(
         err.code,
         ErrorCode::UserAborted,
@@ -399,11 +409,11 @@ async fn user_interrupt_rejects_next_mutating_tool_call_when_session_was_idle() 
         err
     );
 
-    // Crucially: the extension never saw a tool.click frame.
+    // Crucially: the extension never saw a browser-input frame.
     assert_eq!(
-        observed_click_count.load(std::sync::atomic::Ordering::SeqCst),
+        observed_call_count.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "tool.click must NOT have been forwarded to the extension"
+        "browser-input must NOT have been forwarded to the extension"
     );
 
     responder.abort();
@@ -426,12 +436,12 @@ async fn read_only_tool_passes_through_without_consuming_interrupt_marker() {
     let ws_sink = Arc::new(tokio::sync::Mutex::new(ws_sink));
 
     // Fake extension: replies to session_start, console, and snapshot
-    // (read-only tools must succeed transparently). Records click count
-    // — must remain 0 because the daemon should reject the click
+    // (passive reads must succeed transparently). Records observe count
+    // — must remain 0 because the daemon should reject transient input
     // without forwarding.
     let ws_sink_for_responder = Arc::clone(&ws_sink);
-    let observed_click_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let observed_click_count_clone = Arc::clone(&observed_click_count);
+    let observed_observe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_observe_count_clone = Arc::clone(&observed_observe_count);
     let responder = tokio::spawn(async move {
         let mut ws_stream = ws_stream;
         while let Some(Ok(msg)) = ws_stream.next().await {
@@ -458,8 +468,8 @@ async fn read_only_tool_passes_through_without_consuming_interrupt_marker() {
                         "truncated": false
                     })),
                     Method::ToolSnapshot => ResponseBody::Ok(json!({"ok": true})),
-                    Method::ToolClick => {
-                        observed_click_count_clone
+                    Method::ToolObserve => {
+                        observed_observe_count_clone
                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         continue;
                     }
@@ -547,26 +557,25 @@ async fn read_only_tool_passes_through_without_consuming_interrupt_marker() {
         snapshot_outcome
     );
 
-    // The mutating click that follows MUST still be rejected — the
-    // marker survived the snapshot.
-    let click_outcome = ipc
+    // The transient-input observe that follows MUST still be rejected — the
+    // marker survived the passive reads.
+    let observe_outcome = ipc
         .call::<_, serde_json::Value>(
-            "click-after-snapshot",
-            Method::ToolClick,
+            "observe-after-snapshot",
+            Method::ToolObserve,
             Some(json!({
                 "session_id": start.session_id,
-                "ref": "fake-ref-2",
             })),
             Duration::from_secs(3),
         )
         .await
         .unwrap();
-    let err = click_outcome.expect_err("tool.click must be rejected");
+    let err = observe_outcome.expect_err("tool.observe must be rejected");
     assert_eq!(err.code, ErrorCode::UserAborted, "got {:?}", err);
     assert_eq!(
-        observed_click_count.load(std::sync::atomic::Ordering::SeqCst),
+        observed_observe_count.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "tool.click must NOT have been forwarded after snapshot transparency"
+        "tool.observe must NOT have been forwarded after passive-read transparency"
     );
 
     responder.abort();
@@ -574,7 +583,7 @@ async fn read_only_tool_passes_through_without_consuming_interrupt_marker() {
 }
 
 /// The pending-interrupt marker must survive an arbitrary delay
-/// between user click and next mutating tool call. This is the
+/// between user click and next browser-input tool call. This is the
 /// regression test for v2's core motivating bug: v1's 500ms time
 /// window dropped interrupts whenever the LLM's thinking phase
 /// took longer to respond than the window allowed.

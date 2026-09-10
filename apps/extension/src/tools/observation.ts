@@ -1,13 +1,31 @@
-// Read-only observation handlers — `tool.screenshot`, `tool.snapshot`,
-// and `tool.get_html` (design §7). Each handler resolves the target
+import type { CapturedSceneInput } from "./vom/facts";
+// Observation handlers — `tool.snapshot`, `tool.get_html`, `tool.screenshot`,
+// and semantic `tool.observe` (design §7). Each handler resolves the target
 // tab (defaulting to the Agent Window's active tab when omitted) and
 // returns a payload that mirrors the bsk-protocol Rust structs.
 
+import {
+  type ActiveScopeBlock,
+  applyVomInteractionRecovery,
+  type CondSurface,
+  isVomReferenceNode,
+  renderVom,
+  type VomNode,
+  type VomOptions,
+  type VomScene,
+} from "@browser-skill/vom";
 import { ChromiumCdp } from "@/browser-driver/chromium-cdp";
-import type { SessionManager } from "@/session-manager/manager";
+import type { CdpTarget } from "@/browser-driver/frame-graph";
+import {
+  type CaptureSuppressSendToTab,
+  withExtensionOverlayHidden,
+} from "@/lib/capture-suppress-bridge";
+import type { SessionContext, SessionManager } from "@/session-manager/manager";
 import type {
   GetHtmlParams,
   GetHtmlResult,
+  ObserveParams,
+  ObserveResult,
   RpcError,
   ScreenshotParams,
   ScreenshotResult,
@@ -15,17 +33,39 @@ import type {
   SnapshotResult,
 } from "@/transport/types";
 import { attachDialogs, markDialogCursor } from "./dialogs";
-import { nodeBoundingRect, scrollNodeIntoView } from "./element-geometry";
 import { rpcError } from "./errors";
+import { resolveNodeGeometry } from "./frame-geometry";
+import { screenshotPageRect } from "./geometry/coordinate-types";
 import {
   type ChromeTabsApi,
+  enforceToolTargetScope,
   isRpcError,
   lookupSession,
-  resolveTargetTab,
+  type ResolvedTargetTab,
+  resolveCdpAccessibleTargetTab,
   type CdpRunner as SharedCdpRunner,
+  sendToCdpTarget,
   normaliseRef as sharedNormaliseRef,
+  type ToolEffect,
 } from "./shared";
 import { resolveSnapshotRef } from "./snapshot-ref";
+import { type CapturedNode, type CapturedSurfaceProbe, probeHoverSurfaces } from "./vom/capture";
+import { captureObservationFacts, semanticCapture } from "./vom/capture-coordinator";
+import type { FrameDocument as CapturedFrameDocument } from "./vom/frame-document";
+import { withOverlayBypass } from "./vom/hover-perception";
+import { probeTooltipNames } from "./vom/name-enrichment";
+import {
+  type CaptureVomObservationResult,
+  projectRecordSafeObservation,
+} from "./vom/record-safe-observation";
+import {
+  buildSemanticGraph,
+  buildSemanticVomScene,
+  normalizeSemanticStructure,
+  projectSemanticGraph,
+  resolveSemanticGraph,
+  type SemanticAxNode,
+} from "./vom/semantic-graph";
 
 // ---------------------------------------------------------------------------
 // Shared helpers (legacy aliases — observation.ts kept exporting these
@@ -97,6 +137,12 @@ export interface ScreenshotDeps {
   cdp?: SharedCdpRunner;
   tabsApi: ChromeTabsApi;
   captureApi: ChromeTabsCaptureApi;
+  /**
+   * Bridge used to hide the in-page overlay while a screenshot is taken,
+   * so captured frames only contain page content. Defaults to
+   * `chrome.tabs.sendMessage`; tests inject a fake.
+   */
+  sendToTab?: CaptureSuppressSendToTab;
 }
 
 function defaultScreenshotDeps(): ScreenshotDeps {
@@ -107,35 +153,65 @@ function defaultScreenshotDeps(): ScreenshotDeps {
   };
 }
 
+function cancelled(tool: string): RpcError {
+  return { code: "cancelled", message: `${tool} aborted` };
+}
+
+function abortError(tool: string): Error {
+  const error = new Error(`${tool} aborted`);
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: string }).name === "AbortError"
+  );
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, tool: string): void {
+  if (signal?.aborted) throw abortError(tool);
+}
+
 async function captureElementScreenshot(
   cdp: SharedCdpRunner,
   tabId: number,
+  target: CdpTarget,
   backendNodeId: number,
+  frameId?: string,
+  signal?: AbortSignal,
 ): Promise<{ image_base64: string; width: number; height: number } | RpcError> {
-  const scrollErr = await scrollNodeIntoView(cdp, tabId, backendNodeId);
-  if (scrollErr) return scrollErr;
-
-  const rectOrErr = await nodeBoundingRect(cdp, tabId, backendNodeId);
-  if (isRpcError(rectOrErr)) return rectOrErr;
+  if (signal?.aborted) return cancelled("screenshot");
+  const geometry = await resolveNodeGeometry(
+    cdp,
+    tabId,
+    { target, backendNodeId, ...(frameId ? { frameId } : {}) },
+    { scrollIntoView: true },
+  );
+  if (isRpcError(geometry)) return geometry;
+  if (signal?.aborted) return cancelled("screenshot");
+  const rect = geometry.topBounds;
+  const clip = screenshotPageRect(rect, geometry.topViewport);
+  if (!clip) return { code: "cdp_failed", message: "invalid screenshot coordinate space" };
 
   try {
     const shot = await cdp.send<{ data?: string }>(tabId, "Page.captureScreenshot", {
       format: "png",
       clip: {
-        x: rectOrErr.x,
-        y: rectOrErr.y,
-        width: rectOrErr.width,
-        height: rectOrErr.height,
+        ...clip.rect,
         scale: 1,
       },
     });
+    if (signal?.aborted) return cancelled("screenshot");
     const image_base64 = shot.data ?? "";
     if (!image_base64) {
       return { code: "cdp_failed", message: "Page.captureScreenshot returned no data" };
     }
     const dims = parsePngDimensions(image_base64) ?? {
-      width: Math.round(rectOrErr.width),
-      height: Math.round(rectOrErr.height),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
     };
     return { image_base64, width: dims.width, height: dims.height };
   } catch (err) {
@@ -146,16 +222,83 @@ async function captureElementScreenshot(
   }
 }
 
+/**
+ * Full-tab PNG capture. The primary path is `chrome.tabs.captureVisibleTab`;
+ * when it rejects, fall back to CDP `Page.captureScreenshot` with
+ * `fromSurface: true`. `captureVisibleTab` reads back the window surface,
+ * which fails outright on some Windows/Chrome combinations (Chromium's
+ * FAILURE_REASON_READBACK_FAILED — "Failed to capture tab: image readback
+ * failed"); the CDP path captures through the renderer's BeginFrame
+ * pipeline instead, which does not depend on that readback.
+ *
+ * When both paths fail the returned error carries
+ * `data.reason = "screenshot_capture_failed"` and both underlying messages
+ * so the CLI can point the user at the browser-side cause.
+ */
+async function captureFullTabPng(
+  deps: ScreenshotDeps,
+  ctx: SessionContext,
+  target: ResolvedTargetTab,
+  signal?: AbortSignal,
+): Promise<string | RpcError> {
+  if (signal?.aborted) return cancelled("screenshot");
+  try {
+    const dataUrl = await deps.captureApi.captureVisibleTab(target.windowId, { format: "png" });
+    if (signal?.aborted) return cancelled("screenshot");
+    return stripDataUrlPrefix(dataUrl);
+  } catch (primaryErr) {
+    if (signal?.aborted) return cancelled("screenshot");
+    const cdp = deps.cdp;
+    if (!cdp) {
+      return {
+        code: "cdp_failed",
+        message: primaryErr instanceof Error ? primaryErr.message : String(primaryErr),
+      };
+    }
+    let fallbackMsg: string;
+    try {
+      if (signal?.aborted) return cancelled("screenshot");
+      cdp.trackSessionTab?.(ctx.sessionId, target.tabId);
+      await cdp.ensureAttachedToUrl?.(target.tabId, target.url);
+      if (signal?.aborted) return cancelled("screenshot");
+      const shot = await cdp.send<{ data?: string }>(target.tabId, "Page.captureScreenshot", {
+        format: "png",
+        fromSurface: true,
+      });
+      if (signal?.aborted) return cancelled("screenshot");
+      if (shot.data) return shot.data;
+      fallbackMsg = "Page.captureScreenshot returned no data";
+    } catch (fallbackErr) {
+      fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+    }
+    const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+    return rpcError(
+      "cdp_failed",
+      "screenshot_capture_failed",
+      `captureVisibleTab failed: ${primaryMsg}; CDP Page.captureScreenshot fallback failed: ${fallbackMsg}`,
+    );
+  }
+}
+
 export async function handleScreenshot(
   manager: SessionManager,
   params: ScreenshotParams,
   deps: ScreenshotDeps = defaultScreenshotDeps(),
+  signal?: AbortSignal,
 ): Promise<ScreenshotResult | RpcError> {
+  if (signal?.aborted) return cancelled("screenshot");
   const ctxOrErr = lookupSession(manager, params, "screenshot");
   if (isRpcError(ctxOrErr)) return ctxOrErr;
   const ctx = ctxOrErr;
-  const target = await resolveTargetTab(manager, ctx, params.tab_id, deps.tabsApi);
+  const target = await resolveCdpAccessibleTargetTab(
+    manager,
+    ctx,
+    params.tab_id,
+    deps.tabsApi,
+    "screenshot",
+  );
   if (isRpcError(target)) return target;
+  if (signal?.aborted) return cancelled("screenshot");
   const dialogCursor = deps.cdp ? markDialogCursor(deps.cdp, target.tabId) : 0;
   const withShotDialogs = <T extends object>(result: T) =>
     deps.cdp ? attachDialogs(deps.cdp, target.tabId, dialogCursor, result) : result;
@@ -167,9 +310,30 @@ export async function handleScreenshot(
     }
     const node = resolveSnapshotRef(ctx, ref, target.tabId);
     if (isRpcError(node)) return node;
+    if (signal?.aborted) return cancelled("screenshot");
     deps.cdp.trackSessionTab?.(ctx.sessionId, target.tabId);
-    const captured = await captureElementScreenshot(deps.cdp, target.tabId, node.backendNodeId);
+    await deps.cdp.ensureAttachedToUrl?.(target.tabId, target.url);
+    if (signal?.aborted) return cancelled("screenshot");
+    const cdp = deps.cdp;
+    const nodeTarget = {
+      tabId: target.tabId,
+      ...(node.cdpSessionId ? { sessionId: node.cdpSessionId } : {}),
+    };
+    const captured = await withExtensionOverlayHidden(
+      target.tabId,
+      () =>
+        captureElementScreenshot(
+          cdp,
+          target.tabId,
+          nodeTarget,
+          node.backendNodeId,
+          node.frameId,
+          signal,
+        ),
+      deps.sendToTab,
+    );
     if (isRpcError(captured)) return captured;
+    if (signal?.aborted) return cancelled("screenshot");
     return withShotDialogs({
       image_base64: captured.image_base64,
       width: captured.width,
@@ -187,23 +351,22 @@ export async function handleScreenshot(
     );
   }
 
-  try {
-    const dataUrl = await deps.captureApi.captureVisibleTab(target.windowId, { format: "png" });
-    const image_base64 = stripDataUrlPrefix(dataUrl);
-    const dims = parsePngDimensions(image_base64) ?? { width: 0, height: 0 };
-    return withShotDialogs({
-      image_base64,
-      width: dims.width,
-      height: dims.height,
-      format: "png",
-      tab_id: target.tabId,
-    });
-  } catch (err) {
-    return {
-      code: "cdp_failed",
-      message: err instanceof Error ? err.message : String(err),
-    };
-  }
+  const captured = await withExtensionOverlayHidden(
+    target.tabId,
+    () => captureFullTabPng(deps, ctx, target, signal),
+    deps.sendToTab,
+  );
+  if (isRpcError(captured)) return captured;
+  if (signal?.aborted) return cancelled("screenshot");
+  const image_base64 = captured;
+  const dims = parsePngDimensions(image_base64) ?? { width: 0, height: 0 };
+  return withShotDialogs({
+    image_base64,
+    width: dims.width,
+    height: dims.height,
+    format: "png",
+    tab_id: target.tabId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -218,187 +381,309 @@ export async function handleScreenshot(
 export type CdpRunner = SharedCdpRunner;
 
 /** Subset of CDP `AXNode` we care about — see `Accessibility.AXNode`. */
-export interface CdpAxNode {
-  nodeId: string;
-  parentId?: string;
-  backendDOMNodeId?: number;
-  ignored?: boolean;
-  role?: { type: string; value?: string };
-  name?: { type: string; value?: string };
-  description?: { value?: string };
-  value?: { value?: string | number | boolean };
-  childIds?: string[];
+export type CdpAxNode = SemanticAxNode;
+
+function normalizeTag(tag: string | undefined): string {
+  return tag?.toLowerCase() ?? "";
 }
 
-const INTERACTIVE_ROLES = new Set([
-  "button",
-  "link",
-  "checkbox",
-  "radio",
-  "textbox",
-  "combobox",
-  "listbox",
-  "option",
-  "switch",
-  "tab",
-  "menuitem",
-  "menuitemcheckbox",
-  "menuitemradio",
-  "searchbox",
-  "slider",
-  "spinbutton",
-  "scrollbar",
-  "treeitem",
-]);
-
-const STRUCTURAL_ROLES = new Set([
-  "heading",
-  "main",
-  "navigation",
-  "banner",
-  "contentinfo",
-  "complementary",
-  "form",
-  "search",
-  "region",
-  "article",
-  "list",
-  "listitem",
-  "table",
-  "row",
-  "cell",
-  "rowheader",
-  "columnheader",
-  "dialog",
-  "alertdialog",
-  "img",
-  "figure",
-  "section",
-  "RootWebArea",
-  "WebArea",
-]);
-
-const SKIP_ROLES = new Set(["generic", "none", "presentation", "InlineTextBox"]);
-
-/**
- * Decide whether an aria node should appear in the rendered tree.
- * Exported for unit tests.
- */
-export function shouldRender(node: CdpAxNode): boolean {
-  if (node.ignored) return false;
-  const role = node.role?.value ?? "";
-  if (!role) return false;
-  if (SKIP_ROLES.has(role)) return false;
-  const name = node.name?.value ?? "";
-  if (INTERACTIVE_ROLES.has(role)) return true;
-  if (STRUCTURAL_ROLES.has(role)) return true;
-  return name.trim().length > 0;
+function cleanAttr(value: string | undefined): string | undefined {
+  const trimmed = value?.replace(/\s+/g, " ").trim();
+  return trimmed ? trimmed : undefined;
 }
 
-/**
- * Approximate-token estimator (~4 chars / token, GPT-style). Good
- * enough for `max_tokens` budgets.
- */
-function estimateTokens(s: string): number {
-  return Math.ceil(s.length / 4);
-}
+const ACTIVE_SCOPE_MAX_BLOCKS = 8;
+const ACTIVE_SCOPE_MAX_LINES = 40;
+const ACTIVE_SCOPE_MAX_LINE_LENGTH = 160;
+const ACTIVE_SCOPE_MAX_TOTAL_CHARS = 8_000;
+const ACTIVE_SCOPE_SKIP_TAGS = new Set(["script", "style", "noscript", "template"]);
 
-interface RenderedSnapshot {
-  text: string;
-  refs: Array<{ ref: string; backendNodeId: number }>;
-  truncated: boolean;
-}
-
-/**
- * Convert an `Accessibility.getFullAXTree` result into the
- * `@e<N>`-tagged indented text plus the ref → backendNodeId map for
- * the session's RefStore. Exported for unit tests.
- */
-export function renderAxTree(
-  nodes: CdpAxNode[],
-  opts: { maxDepth?: number; maxTokens?: number } = {},
-): RenderedSnapshot {
-  const byId = new Map<string, CdpAxNode>();
-  const childParent = new Map<string, string>();
-  for (const n of nodes) {
-    byId.set(n.nodeId, n);
+function buildCapturedChildren(capturedNodes: CapturedNode[]): Map<number, CapturedNode[]> {
+  const children = new Map<number, CapturedNode[]>();
+  for (const node of capturedNodes) {
+    if (node.parentBackendNodeId === null) continue;
+    const siblings = children.get(node.parentBackendNodeId);
+    if (siblings) siblings.push(node);
+    else children.set(node.parentBackendNodeId, [node]);
   }
-  // Detect roots: nodes whose `parentId` is undefined OR not in the
-  // returned set. CDP sometimes ships orphan branches.
-  for (const n of nodes) {
-    if (n.parentId && byId.has(n.parentId)) {
-      childParent.set(n.nodeId, n.parentId);
-    }
+  return children;
+}
+
+interface VomNodeDomSignals {
+  capturedByBackendId: Map<number, CapturedNode>;
+  childrenByParentId: Map<number, CapturedNode[]>;
+}
+
+function capturedOnlySignals(capturedNodes: CapturedNode[]): VomNodeDomSignals {
+  const capturedByBackendId = new Map<number, CapturedNode>();
+  for (const node of capturedNodes) {
+    capturedByBackendId.set(node.backendNodeId, node);
   }
-  const roots = nodes.filter((n) => !childParent.has(n.nodeId));
-
-  const lines: string[] = [];
-  const refs: Array<{ ref: string; backendNodeId: number }> = [];
-  const maxDepth = opts.maxDepth ?? Number.POSITIVE_INFINITY;
-  const maxTokens = opts.maxTokens ?? Number.POSITIVE_INFINITY;
-  let truncated = false;
-  let tokenTruncated = false;
-  let tokenBudget = 0;
-  let nextRef = 1;
-
-  const walk = (node: CdpAxNode, depth: number, ancestorRendered: boolean): void => {
-    if (tokenTruncated) return;
-    const renderThis = shouldRender(node) && depth <= maxDepth;
-    if (renderThis) {
-      const role = node.role?.value ?? "";
-      const name = node.name?.value ?? "";
-      let line = `${"  ".repeat(Math.min(depth, 32))}`;
-      let ref: string | null = null;
-      if (typeof node.backendDOMNodeId === "number") {
-        ref = `e${nextRef}`;
-        line += `@${ref} `;
-      }
-      line += role;
-      if (name.length > 0) {
-        const cleaned = name.replace(/\s+/g, " ").trim();
-        line += ` ${JSON.stringify(cleaned)}`;
-      }
-      const value = node.value?.value;
-      if (typeof value === "string" && value.length > 0 && value !== name) {
-        line += ` =${JSON.stringify(value.slice(0, 200))}`;
-      }
-      const lineTokens = estimateTokens(line) + 1; // +1 for newline
-      if (tokenBudget + lineTokens > maxTokens) {
-        truncated = true;
-        tokenTruncated = true;
-        return;
-      }
-      tokenBudget += lineTokens;
-      if (ref && typeof node.backendDOMNodeId === "number") {
-        refs.push({ ref, backendNodeId: node.backendDOMNodeId });
-        nextRef += 1;
-      }
-      lines.push(line);
-    }
-    const nextDepth = renderThis ? depth + 1 : ancestorRendered ? depth : depth;
-    if (depth + 1 > maxDepth && renderThis && (node.childIds?.length ?? 0) > 0) {
-      // Children would exceed depth cap — note truncation flag without
-      // bailing on siblings elsewhere in the tree.
-      truncated = true;
-      return;
-    }
-    for (const cid of node.childIds ?? []) {
-      const child = byId.get(cid);
-      if (!child) continue;
-      if (tokenTruncated) return;
-      walk(child, nextDepth, ancestorRendered || renderThis);
-    }
-  };
-
-  for (const r of roots) {
-    walk(r, 0, false);
-    if (tokenTruncated) break;
-  }
-
   return {
-    text: lines.join("\n"),
-    refs,
-    truncated,
+    capturedByBackendId,
+    childrenByParentId: buildCapturedChildren(capturedNodes),
+  };
+}
+
+function normalizeProbeKey(value: string | undefined): string {
+  return cleanAttr(value)?.toLowerCase() ?? "";
+}
+
+function controlledIds(attrs: Record<string, string>): string[] {
+  return (attrs["aria-controls"] ?? "").split(/\s+/).filter(Boolean);
+}
+
+function isActiveScopeTrigger(node: VomNode): boolean {
+  const attrs = node.attrs ?? {};
+  if (controlledIds(attrs).length === 0) return false;
+  const role = normalizeTag(attrs.role) || normalizedVomRole(node);
+  return (
+    (role === "tab" && (attrs["aria-selected"] ?? "").toLowerCase() === "true") ||
+    (attrs["aria-expanded"] ?? "").toLowerCase() === "true"
+  );
+}
+
+function normalizedVomRole(node: VomNode): string {
+  return node.role?.toLowerCase() ?? "";
+}
+
+function collectScopeLines(
+  root: CapturedNode,
+  triggerLabel: string,
+  childrenByParentId: Map<number, CapturedNode[]>,
+): string[] {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  const triggerKey = normalizeProbeKey(triggerLabel);
+  const stack = [root];
+  while (stack.length > 0 && lines.length < ACTIVE_SCOPE_MAX_LINES) {
+    const node = stack.shift() as CapturedNode;
+    const tag = normalizeTag(node.tag);
+    if (ACTIVE_SCOPE_SKIP_TAGS.has(tag)) continue;
+    if ((node.attrs.type ?? "").toLowerCase() === "password") continue;
+
+    const text = cleanAttr(node.textContent);
+    const key = normalizeProbeKey(text);
+    if (text && key !== triggerKey && !seen.has(key)) {
+      seen.add(key);
+      lines.push(
+        text.length > ACTIVE_SCOPE_MAX_LINE_LENGTH
+          ? text.slice(0, ACTIVE_SCOPE_MAX_LINE_LENGTH)
+          : text,
+      );
+    }
+    stack.push(...(childrenByParentId.get(node.backendNodeId) ?? []));
+  }
+  return lines;
+}
+
+function buildActiveScopeBlocks(nodes: VomNode[], signals: VomNodeDomSignals): ActiveScopeBlock[] {
+  const panelByDomId = new Map<string, CapturedNode>();
+  for (const capturedNode of signals.capturedByBackendId.values()) {
+    const domId = capturedNode.attrs.id;
+    if (domId) panelByDomId.set(domId, capturedNode);
+  }
+
+  const blocks: ActiveScopeBlock[] = [];
+  let totalChars = 0;
+  for (const node of nodes) {
+    if (blocks.length >= ACTIVE_SCOPE_MAX_BLOCKS) break;
+    if (!isActiveScopeTrigger(node)) continue;
+    const label =
+      cleanAttr(node.name) ?? cleanAttr(node.text) ?? cleanAttr(node.attrs?.["aria-label"]);
+    if (!label) continue;
+
+    const lines: string[] = [];
+    for (const controlId of controlledIds(node.attrs ?? {})) {
+      const panel = panelByDomId.get(controlId);
+      if (!panel) continue;
+      lines.push(...collectScopeLines(panel, label, signals.childrenByParentId));
+      if (lines.length >= ACTIVE_SCOPE_MAX_LINES) break;
+    }
+
+    const uniqueLines: string[] = [];
+    const seen = new Set<string>();
+    for (const line of lines) {
+      const key = normalizeProbeKey(line);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      uniqueLines.push(line);
+      totalChars += line.length;
+      if (
+        uniqueLines.length >= ACTIVE_SCOPE_MAX_LINES ||
+        totalChars >= ACTIVE_SCOPE_MAX_TOTAL_CHARS
+      ) {
+        break;
+      }
+    }
+    if (uniqueLines.length === 0) continue;
+    blocks.push({ triggerId: node.id, label, lines: uniqueLines });
+    if (totalChars >= ACTIVE_SCOPE_MAX_TOTAL_CHARS) break;
+  }
+  return blocks;
+}
+
+function buildConditionalSurfaces(
+  nodes: VomNode[],
+  captured: CapturedSceneInput,
+  probes: CapturedSurfaceProbe[],
+): CondSurface[] {
+  if (probes.length === 0) return [];
+
+  const surfaces: CondSurface[] = [];
+  const recoveredNodes = applyVomInteractionRecovery(nodes);
+  const signals = capturedOnlySignals(captured.nodes);
+  const used = new Set<number>();
+  for (const probe of probes) {
+    if (probe.subItems.length === 0 || used.has(probe.triggerBackendNodeId)) continue;
+    const match = findSurfaceTriggerNode(
+      probe.triggerBackendNodeId,
+      recoveredNodes,
+      signals,
+      probe.triggerPoint,
+    );
+    if (!match) continue;
+    if (used.has(match.id)) continue;
+    used.add(probe.triggerBackendNodeId);
+    used.add(match.id);
+    surfaces.push({
+      triggerId: match.id,
+      triggerAction: probe.triggerAction,
+      subItems: probe.subItems,
+    });
+  }
+  return surfaces;
+}
+
+function findSurfaceTriggerNode(
+  triggerBackendNodeId: number,
+  nodes: VomNode[],
+  signals: VomNodeDomSignals,
+  triggerPoint?: { x: number; y: number },
+): VomNode | undefined {
+  const renderedById = new Map(nodes.map((node) => [node.id, node]));
+  const renderedByBackendId = new Map(
+    nodes.flatMap((node) =>
+      node.backendNodeId === undefined ? [] : ([[node.backendNodeId, node]] as const),
+    ),
+  );
+  const exact =
+    renderedByBackendId.get(triggerBackendNodeId) ?? renderedById.get(triggerBackendNodeId);
+  if (exact && isSurfaceAttachableNode(exact)) return exact;
+
+  const isCapturedDescendant = (backendNodeId: number): boolean => {
+    let current = signals.capturedByBackendId.get(backendNodeId);
+    const seen = new Set<number>();
+    while (current?.parentBackendNodeId !== null && current?.parentBackendNodeId !== undefined) {
+      if (current.parentBackendNodeId === triggerBackendNodeId) return true;
+      if (seen.has(current.parentBackendNodeId)) break;
+      seen.add(current.parentBackendNodeId);
+      current = signals.capturedByBackendId.get(current.parentBackendNodeId);
+    }
+    return false;
+  };
+  const domDescendant = nodes.find(
+    (node) =>
+      isSurfaceAttachableNode(node) &&
+      node.backendNodeId !== undefined &&
+      isCapturedDescendant(node.backendNodeId),
+  );
+  if (domDescendant) return domDescendant;
+
+  const queue = [...(signals.childrenByParentId.get(triggerBackendNodeId) ?? [])];
+  while (queue.length > 0) {
+    const child = queue.shift() as CapturedNode;
+    const rendered = renderedByBackendId.get(child.backendNodeId);
+    if (rendered && isSurfaceAttachableNode(rendered)) return rendered;
+    queue.push(...(signals.childrenByParentId.get(child.backendNodeId) ?? []));
+  }
+
+  let current = signals.capturedByBackendId.get(triggerBackendNodeId);
+  while (current?.parentBackendNodeId !== null && current?.parentBackendNodeId !== undefined) {
+    const parent = renderedByBackendId.get(current.parentBackendNodeId);
+    if (parent && isSurfaceAttachableNode(parent)) return parent;
+    current = signals.capturedByBackendId.get(current.parentBackendNodeId);
+  }
+
+  if (triggerPoint) {
+    return findSurfaceNodeByPoint(triggerPoint, nodes, signals);
+  }
+
+  return undefined;
+}
+
+function isSurfaceAttachableNode(node: VomNode): boolean {
+  return isVomReferenceNode(node);
+}
+
+function findSurfaceNodeByPoint(
+  point: { x: number; y: number },
+  nodes: VomNode[],
+  signals: VomNodeDomSignals,
+): VomNode | undefined {
+  let best: { node: VomNode; score: number } | undefined;
+  for (const node of nodes) {
+    if (!isSurfaceAttachableNode(node)) continue;
+    const rect =
+      node.rect ??
+      (node.backendNodeId === undefined
+        ? undefined
+        : signals.capturedByBackendId.get(node.backendNodeId)?.rect);
+    if (!rect) continue;
+    const contains =
+      point.x >= rect.x &&
+      point.x <= rect.x + rect.w &&
+      point.y >= rect.y &&
+      point.y <= rect.y + rect.h;
+    const centerX = rect.x + rect.w / 2;
+    const centerY = rect.y + rect.h / 2;
+    const distance = Math.hypot(point.x - centerX, point.y - centerY);
+    if (!contains && distance > 40) continue;
+    const score = contains ? distance : distance + 1_000;
+    if (!best || score < best.score) {
+      best = { node, score };
+    }
+  }
+  return best?.node;
+}
+
+export interface BuildVomSceneOptions {
+  pageUrl?: string;
+  supplementalNames?: ReadonlyMap<string, string>;
+  surfaceProbes?: CapturedSurfaceProbe[];
+}
+
+export type VomFrameDocument = CapturedFrameDocument<CdpAxNode>;
+
+export function buildFrameVomScene(
+  documents: VomFrameDocument[],
+  captured: CapturedSceneInput,
+  options: BuildVomSceneOptions = {},
+): VomScene {
+  const scene = buildSemanticVomScene({
+    documents,
+    viewport: captured.viewport,
+    rootFrameId: captured.rootFrameId,
+    excludedBackendNodeIds: captured.excludedBackendNodeIds,
+    supplementalNames: options.supplementalNames,
+  });
+  return attachCapturedSceneAnnotations(scene, documents, captured, options.surfaceProbes ?? []);
+}
+
+function attachCapturedSceneAnnotations(
+  scene: VomScene,
+  documents: VomFrameDocument[],
+  captured: CapturedSceneInput,
+  surfaceProbes: CapturedSurfaceProbe[],
+): VomScene {
+  const rootDocument = documents.find((document) => document.frameId === scene.rootFrameId);
+  const signals = capturedOnlySignals(rootDocument?.domNodes ?? captured.nodes);
+  const activeScopeBlocks = buildActiveScopeBlocks(scene.nodes, signals);
+  const surfaces = buildConditionalSurfaces(scene.nodes, captured, surfaceProbes);
+  return {
+    ...scene,
+    ...(surfaces.length > 0 ? { surfaces } : {}),
+    ...(activeScopeBlocks.length > 0 ? { activeScopeBlocks } : {}),
   };
 }
 
@@ -408,6 +693,8 @@ export interface SnapshotDeps {
     get(tabId: number): Promise<chrome.tabs.Tab>;
     query(q: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]>;
   };
+  conditionalSurfaceProbe?: boolean;
+  hoverProbeBypassOverlay?: (tabId: number, enabled: boolean) => Promise<void>;
 }
 
 let defaultDeps: SnapshotDeps | null = null;
@@ -459,26 +746,45 @@ export async function handleGetHtml(
   manager: SessionManager,
   params: GetHtmlParams,
   deps: SnapshotDeps = getDefaultDeps(),
+  signal?: AbortSignal,
 ): Promise<GetHtmlResult | RpcError> {
+  if (signal?.aborted) return cancelled("get_html");
   const ctxOrErr = lookupSession(manager, params, "get_html");
   if (isRpcError(ctxOrErr)) return ctxOrErr;
   const ctx = ctxOrErr;
-  const target = await resolveTargetTab(manager, ctx, params.tab_id, deps.tabsApi);
+  const target = await resolveCdpAccessibleTargetTab(
+    manager,
+    ctx,
+    params.tab_id,
+    deps.tabsApi,
+    "get_html",
+  );
   if (isRpcError(target)) return target;
+  if (signal?.aborted) return cancelled("get_html");
   const dialogCursor = markDialogCursor(deps.cdp, target.tabId);
 
   const maxBytes =
     params.max_bytes && params.max_bytes > 0 ? params.max_bytes : DEFAULT_GET_HTML_MAX_BYTES;
 
   try {
+    throwIfAborted(signal, "get_html");
     deps.cdp.trackSessionTab?.(ctx.sessionId, target.tabId);
+    await deps.cdp.ensureAttachedToUrl?.(target.tabId, target.url);
+    throwIfAborted(signal, "get_html");
     let html: string;
     if (params.ref) {
       const resolved = resolveSnapshotRef(ctx, params.ref, target.tabId);
       if (isRpcError(resolved)) return resolved;
-      const resp = await deps.cdp.send<{ outerHTML?: string }>(target.tabId, "DOM.getOuterHTML", {
-        backendNodeId: resolved.backendNodeId,
-      });
+      const resp = await sendToCdpTarget<{ outerHTML?: string }>(
+        deps.cdp,
+        {
+          tabId: target.tabId,
+          ...(resolved.cdpSessionId ? { sessionId: resolved.cdpSessionId } : {}),
+        },
+        "DOM.getOuterHTML",
+        { backendNodeId: resolved.backendNodeId },
+      );
+      throwIfAborted(signal, "get_html");
       html = resp.outerHTML ?? "";
     } else {
       const doc = await deps.cdp.send<{ root?: { nodeId?: number } }>(
@@ -486,6 +792,7 @@ export async function handleGetHtml(
         "DOM.getDocument",
         { depth: 0 },
       );
+      throwIfAborted(signal, "get_html");
       const nodeId = doc.root?.nodeId;
       if (typeof nodeId !== "number") {
         return {
@@ -496,6 +803,7 @@ export async function handleGetHtml(
       const resp = await deps.cdp.send<{ outerHTML?: string }>(target.tabId, "DOM.getOuterHTML", {
         nodeId,
       });
+      throwIfAborted(signal, "get_html");
       html = resp.outerHTML ?? "";
     }
     const originalBytes = utf8ByteLength(html);
@@ -507,6 +815,251 @@ export async function handleGetHtml(
       tab_id: target.tabId,
     });
   } catch (err) {
+    if (isAbortError(err)) return cancelled("get_html");
+    return {
+      code: "cdp_failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export interface HoverProbeOutcome {
+  /** Whether any active hover was dispatched during this observation. */
+  performed: boolean;
+  /**
+   * Whether hovering surfaced content absent from the static snapshot. Cached
+   * tooltip names count, so this may over-report on repeat observations — it
+   * errs towards telling the caller the snapshot is less fresh than it looks.
+   */
+  revealedContent: boolean;
+  surfaceProbes: CapturedSurfaceProbe[];
+  tooltipNames: Map<string, string>;
+}
+
+const NO_HOVER_PROBES: HoverProbeOutcome = {
+  performed: false,
+  revealedContent: false,
+  surfaceProbes: [],
+  tooltipNames: new Map(),
+};
+
+/**
+ * Runs both active-hover chains back to back.
+ *
+ * Ordering matters: this happens after DOM *and* accessibility capture so a
+ * hover that opens a menu cannot leave one half of the observation describing
+ * the page before the change and the other half after it. Sharing one overlay
+ * bypass span also means the agent overlay toggles once per observation
+ * instead of once per chain.
+ */
+async function runHoverProbes(
+  cdp: CdpRunner,
+  tabId: number,
+  captured: CapturedSceneInput,
+  documents: VomFrameDocument[],
+  staticSemantics: ReturnType<typeof resolveSemanticGraph>,
+  options: CaptureVomObservationOptions,
+): Promise<HoverProbeOutcome> {
+  if (!options.conditionalSurfaceProbe) return NO_HOVER_PROBES;
+
+  return withOverlayBypass(options.hoverProbeBypassOverlay, tabId, async () => {
+    const surfaceProbes = await probeHoverSurfaces(cdp, tabId, captured.nodes, {
+      signal: options.signal,
+    });
+    throwIfAborted(options.signal, "observation");
+    const tooltipNames = await probeTooltipNames(cdp, tabId, documents, staticSemantics, {
+      signal: options.signal,
+    });
+    return {
+      performed: true,
+      revealedContent: surfaceProbes.length > 0 || tooltipNames.size > 0,
+      surfaceProbes,
+      tooltipNames,
+    };
+  });
+}
+
+export interface CaptureVomObservationOptions extends VomOptions {
+  conditionalSurfaceProbe?: boolean;
+  hoverProbeBypassOverlay?: (tabId: number, enabled: boolean) => Promise<void>;
+  signal?: AbortSignal;
+}
+
+export async function captureVomObservation(
+  cdp: CdpRunner,
+  tabId: number,
+  url: string | undefined,
+  options: CaptureVomObservationOptions = {},
+): Promise<CaptureVomObservationResult> {
+  throwIfAborted(options.signal, "observation");
+  await cdp.ensureAttachedToUrl?.(tabId, url);
+  throwIfAborted(options.signal, "observation");
+  const facts = await captureObservationFacts<CdpAxNode>(cdp, tabId, options.signal, url);
+  const { captured, documents: normalizedDocuments } = semanticCapture(facts);
+  throwIfAborted(options.signal, "observation");
+  const semanticGraph = buildSemanticGraph({
+    documents: normalizedDocuments,
+    viewport: captured.viewport,
+    rootFrameId: captured.rootFrameId,
+    excludedBackendNodeIds: captured.excludedBackendNodeIds,
+  });
+  const staticSemantics = resolveSemanticGraph(semanticGraph, { identifierFallback: false });
+  const hoverProbes = await runHoverProbes(
+    cdp,
+    tabId,
+    captured,
+    normalizedDocuments,
+    staticSemantics,
+    options,
+  );
+  throwIfAborted(options.signal, "observation");
+  const scene = projectSemanticGraph(
+    normalizeSemanticStructure(
+      resolveSemanticGraph(semanticGraph, { supplementalNames: hoverProbes.tooltipNames }),
+    ),
+  );
+  const decoratedScene = attachCapturedSceneAnnotations(
+    scene,
+    normalizedDocuments,
+    captured,
+    hoverProbes.surfaceProbes,
+  );
+  // Reserve space using the renderer's character-based token estimate. Like VOM
+  // headers, this integrity notice remains visible even under a tiny token budget.
+  const notices: string[] = [];
+  if (facts.issues.some((issue) => issue.stage === "geometry"))
+    notices.push(
+      "@warning geometry incomplete: some page or frame content has no top-level coordinates.",
+    );
+  const incompleteStages = ["dom", "ax", "forms", "ownership"].filter((stage) =>
+    facts.issues.some((issue) => issue.stage === stage),
+  );
+  if (incompleteStages.length)
+    notices.push(
+      `@warning observation incomplete: some ${incompleteStages.join(", ")} data is unavailable or omitted.`,
+    );
+  if (
+    facts.issues.some(
+      (issue) => issue.stage === "identity" && issue.reason !== "identity-unverified",
+    )
+  )
+    notices.push(
+      "@warning observation incomplete: some documents were omitted because their identity changed or could not be revalidated.",
+    );
+  if (facts.issues.some((issue) => issue.reason === "identity-unverified"))
+    notices.push(
+      "@warning document identity unverified: some retained documents could not be checked for changes during capture.",
+    );
+  const captureNotice = notices.join("\n");
+  const rendered = renderVom(decoratedScene, {
+    maxDepth: options.maxDepth,
+    maxTokens:
+      !captureNotice || options.maxTokens === undefined
+        ? options.maxTokens
+        : Math.max(0, options.maxTokens - Math.ceil((captureNotice.length + 1) / 4)),
+    redactValues: options.redactValues,
+    activeRegionPolicy: options.activeRegionPolicy,
+  });
+  if (captureNotice) rendered.text += `\n${captureNotice}`;
+  throwIfAborted(options.signal, "observation");
+  return projectRecordSafeObservation({
+    rootFrameId: captured.rootFrameId ?? normalizedDocuments[0]?.frameId ?? "root",
+    frameDocuments: normalizedDocuments,
+    rendered,
+    surfaceProbes: hoverProbes.surfaceProbes,
+    hoverProbe: {
+      performed: hoverProbes.performed,
+      revealedContent: hoverProbes.revealedContent,
+    },
+  });
+}
+
+async function handleVomObservation(
+  manager: SessionManager,
+  params: SnapshotParams | ObserveParams,
+  toolName: "snapshot" | "observe",
+  effect: ToolEffect,
+  conditionalSurfaceProbe: boolean,
+  deps: SnapshotDeps = getDefaultDeps(),
+  signal?: AbortSignal,
+): Promise<SnapshotResult | ObserveResult | RpcError> {
+  if (signal?.aborted) return cancelled(toolName);
+  const ctxOrErr = lookupSession(manager, params, toolName);
+  if (isRpcError(ctxOrErr)) return ctxOrErr;
+  const ctx = ctxOrErr;
+  const target = await resolveCdpAccessibleTargetTab(
+    manager,
+    ctx,
+    params.tab_id,
+    deps.tabsApi,
+    toolName,
+  );
+  if (isRpcError(target)) return target;
+  if (signal?.aborted) return cancelled(toolName);
+  const denied = enforceToolTargetScope(ctx, target, effect, toolName);
+  if (denied) return denied;
+  const dialogCursor = markDialogCursor(deps.cdp, target.tabId);
+
+  try {
+    throwIfAborted(signal, toolName);
+    deps.cdp.trackSessionTab?.(ctx.sessionId, target.tabId);
+    const effectiveConditionalSurfaceProbe =
+      deps.conditionalSurfaceProbe ?? conditionalSurfaceProbe;
+    const observation = await captureVomObservation(deps.cdp, target.tabId, target.url, {
+      maxDepth: params.max_depth,
+      maxTokens: params.max_tokens,
+      activeRegionPolicy: true,
+      conditionalSurfaceProbe: effectiveConditionalSurfaceProbe,
+      hoverProbeBypassOverlay: deps.hoverProbeBypassOverlay,
+      signal,
+    });
+    throwIfAborted(signal, toolName);
+    const targetByFrameId = new Map(
+      observation.frames.map((frame) => [frame.frameId, frame.target]),
+    );
+    ctx.refStore.replace(
+      observation.refs.map((ref) => {
+        const refTarget = ref.frameId ? targetByFrameId.get(ref.frameId) : undefined;
+        return [
+          ref.ref,
+          {
+            backendNodeId: ref.backendNodeId,
+            tabId: target.tabId,
+            ...(ref.frameId ? { frameId: ref.frameId } : {}),
+            ...(refTarget?.sessionId ? { cdpSessionId: refTarget.sessionId } : {}),
+          },
+        ] as const;
+      }),
+    );
+    return attachDialogs(deps.cdp, target.tabId, dialogCursor, {
+      text: observation.text,
+      ref_count: observation.refs.length,
+      tab_id: target.tabId,
+      truncated: observation.truncated,
+      ...(toolName === "observe" && observation.hoverProbe?.performed
+        ? {
+            hover_probe: {
+              performed: true,
+              revealed_content: observation.hoverProbe.revealedContent,
+            },
+          }
+        : {}),
+      ...(toolName === "observe" && (params as ObserveParams).debug_surfaces
+        ? {
+            debug: {
+              surface_probes: (observation.surfaceProbes ?? []).map((probe) => ({
+                trigger_backend_node_id: probe.triggerBackendNodeId,
+                ...(probe.triggerPoint ? { trigger_point: probe.triggerPoint } : {}),
+                trigger_action: probe.triggerAction,
+                sub_items: probe.subItems,
+                ...(probe.confidence ? { confidence: probe.confidence } : {}),
+              })),
+            },
+          }
+        : {}),
+    });
+  } catch (err) {
+    if (isAbortError(err)) return cancelled(toolName);
     return {
       code: "cdp_failed",
       message: err instanceof Error ? err.message : String(err),
@@ -518,42 +1071,24 @@ export async function handleSnapshot(
   manager: SessionManager,
   params: SnapshotParams,
   deps: SnapshotDeps = getDefaultDeps(),
+  signal?: AbortSignal,
 ): Promise<SnapshotResult | RpcError> {
-  const ctxOrErr = lookupSession(manager, params, "snapshot");
-  if (isRpcError(ctxOrErr)) return ctxOrErr;
-  const ctx = ctxOrErr;
-  const target = await resolveTargetTab(manager, ctx, params.tab_id, deps.tabsApi);
-  if (isRpcError(target)) return target;
-  const dialogCursor = markDialogCursor(deps.cdp, target.tabId);
+  return handleVomObservation(manager, params, "snapshot", "passive_read", false, deps, signal);
+}
 
-  try {
-    deps.cdp.trackSessionTab?.(ctx.sessionId, target.tabId);
-    await deps.cdp.send<unknown>(target.tabId, "Accessibility.enable", {});
-    const result = await deps.cdp.send<{ nodes: CdpAxNode[] }>(
-      target.tabId,
-      "Accessibility.getFullAXTree",
-      {},
-    );
-    const rendered = renderAxTree(result.nodes ?? [], {
-      maxDepth: params.max_depth,
-      maxTokens: params.max_tokens,
-    });
-    // Reset the session-scoped ref-store for this fresh snapshot.
-    ctx.refStore.replace(
-      rendered.refs.map(
-        (r) => [r.ref, { backendNodeId: r.backendNodeId, tabId: target.tabId }] as const,
-      ),
-    );
-    return attachDialogs(deps.cdp, target.tabId, dialogCursor, {
-      text: rendered.text,
-      ref_count: rendered.refs.length,
-      tab_id: target.tabId,
-      truncated: rendered.truncated,
-    });
-  } catch (err) {
-    return {
-      code: "cdp_failed",
-      message: err instanceof Error ? err.message : String(err),
-    };
-  }
+export async function handleObserve(
+  manager: SessionManager,
+  params: ObserveParams,
+  deps: SnapshotDeps = getDefaultDeps(),
+  signal?: AbortSignal,
+): Promise<ObserveResult | RpcError> {
+  return handleVomObservation(
+    manager,
+    params,
+    "observe",
+    "transient_input",
+    params.probe_hover === true,
+    deps,
+    signal,
+  );
 }

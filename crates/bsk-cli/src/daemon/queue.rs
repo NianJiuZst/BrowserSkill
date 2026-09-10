@@ -43,6 +43,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
+use super::abort::AbortToken;
 use super::browsers::BrowserRegistry;
 use super::inflight::{PromoteOutcome, ToolInflightEntry};
 use super::sessions::{SessionId, SessionRegistry};
@@ -58,6 +59,11 @@ pub const QUEUE_CAPACITY: usize = 64;
 /// so tests can default it.
 pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Once a forwarded request is cancelled, keep the session queue busy while
+/// the extension finishes handler-side compensation. This is deliberately
+/// bounded so a wedged extension cannot pin the session forever.
+pub const CANCEL_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Job submitted into a session queue. Carries everything the worker
 /// needs to forward one RPC and one oneshot to deliver the answer.
 pub struct ToolJob {
@@ -70,14 +76,22 @@ pub struct ToolJob {
     /// the queued/forwarded state machine; the worker checks it on
     /// pre-flight (so a cancel arriving while the job was still
     /// queued short-circuits without ever touching the extension)
-    /// and selects on `cancel.cancelled()` while awaiting the WS
-    /// response (so a cancel arriving mid-flight unblocks the worker
-    /// the same way the WS-side cancel frame already did).
+    /// and observes `cancel.cancelled()` while awaiting the WS response.
+    /// A forwarded cancel keeps the worker busy until the extension's
+    /// final response arrives or the bounded cleanup timeout expires.
     ///
     /// `None` for daemon-internal callers that do not flow through an
     /// IPC request id (e.g. `session.stop`'s queued teardown call —
     /// those already carry their own bespoke retry / abort path).
     pub inflight: Option<Arc<ToolInflightEntry>>,
+    /// Cancellation token for session-lifecycle work registered in the
+    /// daemon-local abort registry. Unlike `inflight`, lifecycle callers
+    /// forward their own WS cancel after the request has been queued.
+    pub lifecycle_cancel: Option<AbortToken>,
+    /// How long cancellation keeps the worker busy while the extension
+    /// finishes compensation. Session teardown uses its full RPC budget
+    /// so daemon state is reconciled even after the CLI exits.
+    pub cancel_cleanup_timeout: Duration,
     /// Owning session — used by `ToolInflightRegistry::cancel_session`
     /// to drain queued jobs that have not yet been promoted to
     /// "forwarded". Worker callers also have access to it via the
@@ -221,6 +235,13 @@ impl ToolQueueRegistry {
         guard.get(sid).is_some_and(|entry| entry.accepting)
     }
 
+    #[cfg(test)]
+    fn force_busy_for_tests(&self, sid: &SessionId, busy: bool) {
+        let guard = self.queues.lock().expect("tool queue registry poisoned");
+        let entry = guard.get(sid).expect("queue must exist");
+        entry.state.lock().expect("queue state poisoned").busy = busy;
+    }
+
     /// Spawn the worker task for a session id. Idempotent: spawning the
     /// same id twice replaces the previous queue (the previous worker
     /// closes when its sender drops).
@@ -300,7 +321,8 @@ impl ToolQueueRegistry {
             queue_state.busy = true;
             (entry.sender.clone(), Arc::clone(&entry.state))
         };
-        dispatch_with_sender(
+        self.sessions.touch(sid);
+        let outcome = dispatch_with_sender(
             sender,
             state,
             sid.clone(),
@@ -309,8 +331,54 @@ impl ToolQueueRegistry {
             timeout,
             false,
             inflight,
+            None,
+            CANCEL_CLEANUP_TIMEOUT,
         )
-        .await
+        .await;
+        // A long-running request may outlive the idle threshold. Touching
+        // after completion prevents the reaper from immediately closing it;
+        // while it is running, session.stop observes SessionBusy and retries
+        // on a later sweep rather than interrupting the tool.
+        self.sessions.touch(sid);
+        outcome
+    }
+
+    /// Forward a tool RPC to the extension without taking the
+    /// per-session busy lock. Used by `tool.record_stop` so a second
+    /// CLI can finish an in-flight `tool.record_await` (extension
+    /// dispatch already runs concurrent `void dispatch(msg)` handlers).
+    pub async fn dispatch_unlocked(
+        &self,
+        sid: &SessionId,
+        method: Method,
+        params: Value,
+        timeout: Duration,
+        inflight: Option<Arc<ToolInflightEntry>>,
+    ) -> Result<Value, DispatchError> {
+        {
+            let guard = self.queues.lock().expect("tool queue registry poisoned");
+            let Some(entry) = guard.get(sid) else {
+                return Err(DispatchError::SessionNotFound);
+            };
+            if !entry.accepting {
+                return Err(DispatchError::SessionStopping);
+            }
+        }
+        let (respond_tx, _respond_rx) = oneshot::channel();
+        let job = ToolJob {
+            method,
+            params,
+            timeout,
+            respond: respond_tx,
+            inflight,
+            lifecycle_cancel: None,
+            cancel_cleanup_timeout: CANCEL_CLEANUP_TIMEOUT,
+            session_id: sid.clone(),
+        };
+        match forward_one(sid, &self.browsers, &self.sessions, &job).await {
+            Ok(v) => Ok(v),
+            Err(err) => Err(DispatchError::Rpc(err)),
+        }
     }
 
     /// Stop accepting new jobs for `sid`, enqueue one final control RPC,
@@ -323,6 +391,7 @@ impl ToolQueueRegistry {
         method: Method,
         params: Value,
         timeout: Duration,
+        cancel: Option<AbortToken>,
     ) -> Result<Value, DispatchError> {
         let (sender, state) = {
             let mut guard = self.queues.lock().expect("tool queue registry poisoned");
@@ -349,6 +418,8 @@ impl ToolQueueRegistry {
             timeout,
             true,
             None,
+            cancel,
+            timeout,
         )
         .await
     }
@@ -364,7 +435,10 @@ async fn dispatch_with_sender(
     timeout: Duration,
     wait_for_capacity: bool,
     inflight: Option<Arc<ToolInflightEntry>>,
+    lifecycle_cancel: Option<AbortToken>,
+    cancel_cleanup_timeout: Duration,
 ) -> Result<Value, DispatchError> {
+    let effect_aware_transfer = is_effect_aware_transfer(&method);
     let (respond_tx, respond_rx) = oneshot::channel();
     let job = ToolJob {
         method,
@@ -372,8 +446,11 @@ async fn dispatch_with_sender(
         timeout,
         respond: respond_tx,
         inflight,
+        lifecycle_cancel,
+        cancel_cleanup_timeout,
         session_id,
     };
+    let lifecycle_cancellable = job.lifecycle_cancel.is_some();
     if wait_for_capacity {
         let waited = tokio::time::timeout(
             timeout.saturating_add(Duration::from_secs(1)),
@@ -398,8 +475,21 @@ async fn dispatch_with_sender(
             mpsc::error::TrySendError::Closed(_) => DispatchError::QueueClosed,
         });
     }
-    let waited =
-        tokio::time::timeout(timeout.saturating_add(Duration::from_secs(1)), respond_rx).await;
+    // Lifecycle teardown and effect-aware transfers both keep the worker busy
+    // for bounded compensation after their original deadline. Keep the outer
+    // waiter alive for the same grace period so it cannot abandon reconciliation.
+    let response_grace = if lifecycle_cancellable || effect_aware_transfer {
+        cancel_cleanup_timeout
+    } else {
+        Duration::ZERO
+    };
+    let waited = tokio::time::timeout(
+        timeout
+            .saturating_add(response_grace)
+            .saturating_add(Duration::from_secs(1)),
+        respond_rx,
+    )
+    .await;
     match waited {
         Ok(Ok(Ok(v))) => Ok(v),
         Ok(Ok(Err(rpc))) => Err(DispatchError::Rpc(rpc)),
@@ -437,11 +527,17 @@ async fn forward_one(
     // / browser resolution work, and before any WS frame leaves the
     // daemon (review C2). We keep the `tokio::select!` later so
     // cancels arriving mid-WS-hop also unblock the worker.
-    if let Some(entry) = job.inflight.as_ref()
-        && entry.is_cancelled()
+    if job
+        .inflight
+        .as_ref()
+        .is_some_and(|entry| entry.is_cancelled())
+        || job
+            .lifecycle_cancel
+            .as_ref()
+            .is_some_and(AbortToken::is_cancelled)
     {
         return Err(cancelled_error(
-            Some(entry),
+            job.inflight.as_deref(),
             "tool dispatch cancelled before forwarding",
         ));
     }
@@ -505,11 +601,20 @@ async fn forward_one(
             }
         }
         None => {
-            // Daemon-internal callers (e.g. queued session.stop drain)
-            // don't carry an inflight entry; they cannot be cancelled
-            // through the IPC `cancel` surface, so a plain sink send
-            // is sufficient and keeps the existing transport-error
-            // behaviour.
+            // Daemon-internal callers do not carry a tool-inflight entry.
+            // Session lifecycle jobs instead use the abort-registry token
+            // below; other internal callers keep the plain send path.
+            if job
+                .lifecycle_cancel
+                .as_ref()
+                .is_some_and(AbortToken::is_cancelled)
+            {
+                client.pending.lock().unwrap().cancel(&rpc_id);
+                return Err(cancelled_error(
+                    None,
+                    "session lifecycle cancelled before forwarding",
+                ));
+            }
             if client.sink.send(request).is_err() {
                 client.pending.lock().unwrap().cancel(&rpc_id);
                 return Err(RpcError {
@@ -518,25 +623,161 @@ async fn forward_one(
                     data: None,
                 });
             }
-            None
+            job.lifecycle_cancel.clone()
         }
     };
-    let waited = await_with_optional_cancel(job.timeout, waiter, cancel_token.as_ref()).await;
+    let forward_lifecycle_cancel = || {
+        if job.lifecycle_cancel.is_none() {
+            return;
+        }
+        let cancel = Frame::Request(RequestFrame {
+            id: format!("cancel-{rpc_id}"),
+            method: Method::Cancel,
+            params: Some(serde_json::json!({ "rpc_id": rpc_id })),
+        });
+        if let Err(err) = client.sink.send(cancel) {
+            warn!(%rpc_id, ?err, "failed to forward session lifecycle cancel");
+        }
+    };
+    let on_abort: Option<&(dyn Fn() + Sync)> = job
+        .lifecycle_cancel
+        .as_ref()
+        .map(|_| &forward_lifecycle_cancel as &(dyn Fn() + Sync));
+    let send_deadline_cancel = || {
+        client
+            .sink
+            .send(Frame::Request(RequestFrame {
+                id: format!("deadline-cancel-{rpc_id}"),
+                method: Method::Cancel,
+                params: Some(serde_json::json!({ "rpc_id": rpc_id })),
+            }))
+            .is_ok()
+    };
+    let deadline_cancel: Option<&(dyn Fn() -> bool + Sync)> =
+        is_effect_aware_transfer(&job.method).then_some(&send_deadline_cancel);
+    let waited = await_with_optional_cancel(
+        job.timeout,
+        job.cancel_cleanup_timeout,
+        waiter,
+        cancel_token.as_ref(),
+        on_abort,
+        deadline_cancel,
+    )
+    .await;
     let response = match waited {
         WaitOutcome::Response(resp) => resp,
-        WaitOutcome::Cancelled => {
-            // Drop the WS waiter so a late extension reply is dropped
-            // cleanly (otherwise pending.resolve would log a stale
-            // entry). The CLI caller will get a synthesised
-            // `cancelled` here even if the extension never answers.
+        WaitOutcome::CancelledAfterResponse(resp) => {
+            if job.method == Method::ToolSessionStop
+                && let ResponseBody::Ok(value) = &resp.body
+            {
+                // Teardown crossed its final irreversible boundary before
+                // the cancel landed. Commit the real extension result so the
+                // daemon does not retain a session whose window is gone.
+                return Ok(value.clone());
+            }
+            // File transfer commits are irreversible. A late cancel cannot
+            // overwrite a confirmed success, and an unknown transfer effect
+            // must remain explicit so callers do not retry or release upload
+            // staging as though nothing happened.
+            if is_effect_aware_transfer(&job.method) {
+                match &resp.body {
+                    ResponseBody::Ok(_) => resp,
+                    ResponseBody::Err(err)
+                        if transfer_effect(err) == Some("unknown")
+                            || transfer_effect(err) == Some("committed") =>
+                    {
+                        return Err(err.clone());
+                    }
+                    ResponseBody::Err(err)
+                        if !matches!(err.code, ErrorCode::Cancelled | ErrorCode::UserAborted) =>
+                    {
+                        return Err(err.clone());
+                    }
+                    ResponseBody::Err(_) => {
+                        return Err(cancelled_error(
+                            job.inflight.as_deref(),
+                            "tool dispatch cancelled after extension cleanup",
+                        ));
+                    }
+                }
+            } else {
+                // For ordinary tools cancellation keeps the existing verdict,
+                // while non-cancel errors still expose compensation failures.
+                if let ResponseBody::Err(err) = resp.body
+                    && !matches!(err.code, ErrorCode::Cancelled | ErrorCode::UserAborted)
+                {
+                    return Err(err);
+                }
+                return Err(cancelled_error(
+                    job.inflight.as_deref(),
+                    "tool dispatch cancelled after extension cleanup",
+                ));
+            }
+        }
+        WaitOutcome::TimedOutAfterResponse(resp) => match resp.body {
+            ResponseBody::Ok(value)
+                if job.method == Method::ToolSessionStop
+                    || is_effect_aware_transfer(&job.method) =>
+            {
+                // The close crossed its irreversible boundary during the
+                // timeout cleanup grace, or the transfer committed before its
+                // deadline cancel settled. Preserve the irreversible result.
+                return Ok(value);
+            }
+            ResponseBody::Err(err)
+                if !matches!(err.code, ErrorCode::Cancelled | ErrorCode::UserAborted) =>
+            {
+                return Err(err);
+            }
+            ResponseBody::Err(err) if is_effect_aware_transfer(&job.method) => {
+                return Err(timed_out_transfer_error(&err));
+            }
+            _ => {
+                return Err(RpcError {
+                    code: ErrorCode::Timeout,
+                    message: format!("tool RPC timed out after {:?}", job.timeout),
+                    data: None,
+                });
+            }
+        },
+        WaitOutcome::CleanupTimeout => {
             client.pending.lock().unwrap().cancel(&rpc_id);
-            return Err(cancelled_error(
-                job.inflight.as_deref(),
-                "tool dispatch cancelled mid-flight",
+            if is_effect_aware_transfer(&job.method) {
+                return Err(unknown_transfer_error(
+                    ErrorCode::Timeout,
+                    "cancelled file transfer did not confirm its outcome before cleanup timed out",
+                    "cleanup",
+                    true,
+                ));
+            }
+            return Err(RpcError {
+                code: ErrorCode::Timeout,
+                message: format!(
+                    "cancelled tool did not finish cleanup within {:?}",
+                    job.cancel_cleanup_timeout
+                ),
+                data: Some(serde_json::json!({ "reason": "cancel_cleanup_timeout" })),
+            });
+        }
+        WaitOutcome::TimeoutCleanupFailed => {
+            client.pending.lock().unwrap().cancel(&rpc_id);
+            return Err(unknown_transfer_error(
+                ErrorCode::Timeout,
+                "file transfer timed out and cleanup could not be confirmed",
+                "cleanup",
+                true,
             ));
         }
         WaitOutcome::WaiterClosed => {
             client.pending.lock().unwrap().cancel(&rpc_id);
+            if is_effect_aware_transfer(&job.method) {
+                return Err(unknown_transfer_error(
+                    ErrorCode::ProtocolError,
+                    "file transfer transport closed after dispatch; outcome is unknown",
+                    "transport",
+                    false,
+                ));
+            }
             return Err(RpcError {
                 code: ErrorCode::ProtocolError,
                 message: "transport closed mid-call".into(),
@@ -545,6 +786,14 @@ async fn forward_one(
         }
         WaitOutcome::Timeout => {
             client.pending.lock().unwrap().cancel(&rpc_id);
+            if is_effect_aware_transfer(&job.method) {
+                return Err(unknown_transfer_error(
+                    ErrorCode::Timeout,
+                    "file transfer timed out after dispatch; outcome is unknown",
+                    "transport",
+                    false,
+                ));
+            }
             return Err(RpcError {
                 code: ErrorCode::Timeout,
                 message: format!("tool RPC timed out after {:?}", job.timeout),
@@ -558,53 +807,136 @@ async fn forward_one(
     }
 }
 
+fn is_effect_aware_transfer(method: &Method) -> bool {
+    matches!(method, Method::ToolUpload | Method::ToolDownload)
+}
+
+fn transfer_effect(err: &RpcError) -> Option<&str> {
+    err.data.as_ref()?.get("effect_state")?.as_str()
+}
+
+fn unknown_transfer_error(
+    code: ErrorCode,
+    message: impl Into<String>,
+    phase: &str,
+    cleanup_failed: bool,
+) -> RpcError {
+    let mut data = serde_json::json!({
+        "reason": "transfer_outcome_unknown",
+        "effect_state": "unknown",
+        "phase": phase,
+    });
+    if cleanup_failed {
+        data["cleanup_state"] = serde_json::json!("failed");
+    }
+    RpcError {
+        code,
+        message: message.into(),
+        data: Some(data),
+    }
+}
+
+fn timed_out_transfer_error(err: &RpcError) -> RpcError {
+    let data = err.data.as_ref();
+    RpcError {
+        code: ErrorCode::Timeout,
+        message: "file transfer timed out after dispatch".into(),
+        data: Some(serde_json::json!({
+            "reason": "transfer_timeout",
+            "effect_state": data
+                .and_then(|value| value.get("effect_state"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            "phase": data
+                .and_then(|value| value.get("phase"))
+                .and_then(Value::as_str)
+                .unwrap_or("cleanup"),
+            "cleanup_state": data
+                .and_then(|value| value.get("cleanup_state"))
+                .and_then(Value::as_str)
+                .unwrap_or("complete"),
+        })),
+    }
+}
+
 #[derive(Debug)]
 enum WaitOutcome {
     Response(bsk_protocol::ResponseFrame),
-    Cancelled,
+    CancelledAfterResponse(bsk_protocol::ResponseFrame),
+    TimedOutAfterResponse(bsk_protocol::ResponseFrame),
+    CleanupTimeout,
+    TimeoutCleanupFailed,
     WaiterClosed,
     Timeout,
 }
 
 async fn await_with_optional_cancel(
     timeout: Duration,
-    waiter: oneshot::Receiver<bsk_protocol::ResponseFrame>,
+    cleanup_timeout: Duration,
+    mut waiter: oneshot::Receiver<bsk_protocol::ResponseFrame>,
     cancel: Option<&super::abort::AbortToken>,
+    on_abort: Option<&(dyn Fn() + Sync)>,
+    on_deadline: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> WaitOutcome {
     match cancel {
-        // Cancel wins if both ready: when a cancel notification and
-        // the extension's response are both observable on the same
-        // tokio tick, `biased;` polls `token.cancelled()` first and
-        // resolves the whole `select!` to `WaitOutcome::Cancelled`.
-        // The already-arrived tool result is intentionally dropped.
-        //
-        // This extends design §4.6 — which only specifies "CLI sends
-        // `cancel` on SIGINT and waits for the extension's
-        // `cancelled` reply (≤ 2s before forced exit)" — by pinning
-        // the same-tick race to a single, observable verdict.
-        // Without `biased;`, an extension racing a fast successful
-        // reply against a cancel notification could occasionally
-        // resolve as `ok` even though the caller had already moved on
-        // to compensation logic, leaving the agent trusting state the
-        // daemon had just been asked to roll back. Picking
-        // cancel-wins keeps the external observation rule simple
-        // ("once a cancel is in flight, the in-flight RPC's verdict
-        // is `cancelled`") and matches what the CLI / agent already
-        // assumes after firing SIGINT. Round 3 M1 / round 4 M2
-        // nail-down.
-        Some(token) => tokio::select! {
-            biased;
-            _ = token.cancelled() => WaitOutcome::Cancelled,
-            outcome = tokio::time::timeout(timeout, waiter) => match outcome {
-                Ok(Ok(resp)) => WaitOutcome::Response(resp),
-                Ok(Err(_)) => WaitOutcome::WaiterClosed,
-                Err(_) => WaitOutcome::Timeout,
-            },
-        },
-        None => match tokio::time::timeout(timeout, waiter).await {
+        Some(token) => {
+            let deadline = tokio::time::sleep(timeout);
+            tokio::pin!(deadline);
+            tokio::select! {
+                // Cancel keeps same-tick priority, but it no longer drops the
+                // waiter. The worker remains busy until the extension replies
+                // after compensation or the cleanup deadline expires.
+                biased;
+                _ = token.cancelled() => {
+                    if let Some(on_abort) = on_abort {
+                        on_abort();
+                    }
+                    match tokio::time::timeout(cleanup_timeout, &mut waiter).await {
+                        Ok(Ok(resp)) => WaitOutcome::CancelledAfterResponse(resp),
+                        Ok(Err(_)) => WaitOutcome::WaiterClosed,
+                        Err(_) => WaitOutcome::CleanupTimeout,
+                    }
+                },
+                outcome = &mut waiter => match outcome {
+                    Ok(resp) => WaitOutcome::Response(resp),
+                    Err(_) => WaitOutcome::WaiterClosed,
+                },
+                _ = &mut deadline => {
+                    if let Some(send_cancel) = on_deadline {
+                        return if send_cancel() {
+                            match tokio::time::timeout(cleanup_timeout, &mut waiter).await {
+                                Ok(Ok(resp)) => WaitOutcome::TimedOutAfterResponse(resp),
+                                Ok(Err(_)) | Err(_) => WaitOutcome::TimeoutCleanupFailed,
+                            }
+                        } else {
+                            WaitOutcome::TimeoutCleanupFailed
+                        };
+                    }
+                    let Some(on_abort) = on_abort else {
+                        return WaitOutcome::Timeout;
+                    };
+                    on_abort();
+                    match tokio::time::timeout(cleanup_timeout, &mut waiter).await {
+                        Ok(Ok(resp)) => WaitOutcome::TimedOutAfterResponse(resp),
+                        Ok(Err(_)) => WaitOutcome::WaiterClosed,
+                        Err(_) => WaitOutcome::CleanupTimeout,
+                    }
+                },
+            }
+        }
+        None => match tokio::time::timeout(timeout, &mut waiter).await {
             Ok(Ok(resp)) => WaitOutcome::Response(resp),
             Ok(Err(_)) => WaitOutcome::WaiterClosed,
-            Err(_) => WaitOutcome::Timeout,
+            Err(_) => match on_deadline {
+                Some(send_cancel) if send_cancel() => {
+                    match tokio::time::timeout(cleanup_timeout, &mut waiter).await {
+                        Ok(Ok(resp)) => WaitOutcome::TimedOutAfterResponse(resp),
+                        Ok(Err(_)) | Err(_) => WaitOutcome::TimeoutCleanupFailed,
+                    }
+                }
+                Some(_) => WaitOutcome::TimeoutCleanupFailed,
+                None => WaitOutcome::Timeout,
+            },
         },
     }
 }
@@ -683,10 +1015,18 @@ mod await_with_optional_cancel_tests {
         let (tx, rx) = oneshot::channel();
         tx.send(dummy_response()).unwrap();
 
-        let outcome = await_with_optional_cancel(Duration::from_secs(10), rx, Some(&token)).await;
+        let outcome = await_with_optional_cancel(
+            Duration::from_secs(10),
+            Duration::from_secs(1),
+            rx,
+            Some(&token),
+            None,
+            None,
+        )
+        .await;
         assert!(
-            matches!(outcome, WaitOutcome::Cancelled),
-            "expected Cancelled when both arms are ready under biased; (got something else)"
+            matches!(outcome, WaitOutcome::CancelledAfterResponse(_)),
+            "expected cancellation to win while retaining the ready response"
         );
     }
 
@@ -699,7 +1039,15 @@ mod await_with_optional_cancel_tests {
         let (tx, rx) = oneshot::channel();
         tx.send(dummy_response()).unwrap();
 
-        let outcome = await_with_optional_cancel(Duration::from_secs(10), rx, Some(&token)).await;
+        let outcome = await_with_optional_cancel(
+            Duration::from_secs(10),
+            Duration::from_secs(1),
+            rx,
+            Some(&token),
+            None,
+            None,
+        )
+        .await;
         match outcome {
             WaitOutcome::Response(frame) => {
                 assert!(matches!(frame.body, ResponseBody::Ok(_)));
@@ -712,8 +1060,122 @@ mod await_with_optional_cancel_tests {
     async fn no_cancel_token_still_returns_response() {
         let (tx, rx) = oneshot::channel();
         tx.send(dummy_response()).unwrap();
-        let outcome = await_with_optional_cancel(Duration::from_secs(10), rx, None).await;
+        let outcome = await_with_optional_cancel(
+            Duration::from_secs(10),
+            Duration::from_secs(1),
+            rx,
+            None,
+            None,
+            None,
+        )
+        .await;
         assert!(matches!(outcome, WaitOutcome::Response(_)));
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_stays_pending_until_cleanup_response_arrives() {
+        let token = AbortToken::new();
+        let (tx, rx) = oneshot::channel();
+        token.cancel();
+        let pending = tokio::spawn(async move {
+            await_with_optional_cancel(
+                Duration::from_secs(10),
+                Duration::from_secs(1),
+                rx,
+                Some(&token),
+                None,
+                None,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!pending.is_finished());
+        tx.send(dummy_response()).unwrap();
+        assert!(matches!(
+            pending.await.unwrap(),
+            WaitOutcome::CancelledAfterResponse(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_releases_after_cleanup_timeout() {
+        let token = AbortToken::new();
+        let (_tx, rx) = oneshot::channel();
+        token.cancel();
+        let outcome = await_with_optional_cancel(
+            Duration::from_secs(10),
+            Duration::from_millis(10),
+            rx,
+            Some(&token),
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(outcome, WaitOutcome::CleanupTimeout));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_timeout_forwards_abort_and_waits_for_cleanup_response() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let token = AbortToken::new();
+        let (tx, rx) = oneshot::channel();
+        let abort_forwarded = AtomicBool::new(false);
+        let forward_abort = || abort_forwarded.store(true, Ordering::SeqCst);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tx.send(dummy_response()).unwrap();
+        });
+
+        let outcome = await_with_optional_cancel(
+            Duration::from_millis(5),
+            Duration::from_millis(100),
+            rx,
+            Some(&token),
+            Some(&forward_abort),
+            None,
+        )
+        .await;
+
+        assert!(abort_forwarded.load(Ordering::SeqCst));
+        assert!(matches!(outcome, WaitOutcome::TimedOutAfterResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn transfer_deadline_sends_cancel_and_waits_for_cleanup_response() {
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            tx.send(dummy_response()).unwrap();
+        });
+        let send_cancel = || true;
+        let outcome = await_with_optional_cancel(
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            rx,
+            None,
+            None,
+            Some(&send_cancel),
+        )
+        .await;
+        assert!(matches!(outcome, WaitOutcome::TimedOutAfterResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn transfer_deadline_is_unknown_when_cancel_cannot_be_sent() {
+        let (_tx, rx) = oneshot::channel();
+        let send_cancel = || false;
+        let outcome = await_with_optional_cancel(
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+            rx,
+            None,
+            None,
+            Some(&send_cancel),
+        )
+        .await;
+        assert!(matches!(outcome, WaitOutcome::TimeoutCleanupFailed));
     }
 }
 
@@ -777,8 +1239,57 @@ mod tool_job_session_id_tests {
             timeout: Duration::from_secs(1),
             respond: tx,
             inflight: None,
+            lifecycle_cancel: None,
+            cancel_cleanup_timeout: CANCEL_CLEANUP_TIMEOUT,
             session_id: SessionId("sess-A".into()),
         };
         assert_eq!(job.session_id.0, "sess-A");
+    }
+}
+
+#[cfg(test)]
+mod dispatch_unlocked_tests {
+    use super::*;
+    use crate::daemon::browsers::BrowserRegistry;
+    use crate::daemon::sessions::{SessionId, SessionRegistry};
+    use bsk_protocol::Method;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn unlocked_dispatch_skips_session_busy_gate() {
+        let browsers = Arc::new(BrowserRegistry::new());
+        let sessions = Arc::new(SessionRegistry::new());
+        let queues = ToolQueueRegistry::new(browsers, sessions);
+        let sid = SessionId("s-record".into());
+        queues.spawn(sid.clone());
+        queues.force_busy_for_tests(&sid, true);
+
+        let busy = queues
+            .dispatch(
+                &sid,
+                Method::ToolTabList,
+                json!({ "session_id": "s-record" }),
+                Duration::from_secs(1),
+                None,
+            )
+            .await;
+        assert!(matches!(busy, Err(DispatchError::SessionBusy)));
+
+        let unlocked = queues
+            .dispatch_unlocked(
+                &sid,
+                Method::ToolRecordStop,
+                json!({ "session_id": "s-record" }),
+                Duration::from_secs(1),
+                None,
+            )
+            .await;
+        assert!(
+            !matches!(unlocked, Err(DispatchError::SessionBusy)),
+            "record_stop must not be rejected as SessionBusy; got {unlocked:?}"
+        );
+        // No session row → forward_one returns NotFound as Rpc.
+        assert!(matches!(unlocked, Err(DispatchError::Rpc(_))));
     }
 }

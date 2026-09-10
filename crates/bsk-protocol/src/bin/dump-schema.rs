@@ -45,6 +45,14 @@ fn main() {
     dump!(SessionStopParams, "tool_session_stop_params");
     dump!(SessionStopResult, "tool_session_stop_result");
 
+    dump!(WindowResizeParams, "tool_window_resize_params");
+    dump!(WindowResizeResult, "tool_window_resize_result");
+
+    dump!(EmulateParams, "tool_emulate_params");
+    dump!(EmulateResult, "tool_emulate_result");
+    dump!(EmulateOverrides, "tool_emulate_overrides");
+    dump!(UserAgentMetadata, "tool_emulate_user_agent_metadata");
+
     dump!(TabListParams, "tool_tab_list_params");
     dump!(TabListResult, "tool_tab_list_result");
     dump!(TabCreateParams, "tool_tab_create_params");
@@ -69,15 +77,29 @@ fn main() {
 
     dump!(ClickParams, "tool_click_params");
     dump!(ClickResult, "tool_click_result");
+    dump!(HoverParams, "tool_hover_params");
+    dump!(HoverResult, "tool_hover_result");
+    dump!(ScrollToParams, "tool_scroll_to_params");
+    dump!(ScrollToResult, "tool_scroll_to_result");
+    dump!(FocusParams, "tool_focus_params");
+    dump!(FocusResult, "tool_focus_result");
+    dump!(BlurParams, "tool_blur_params");
+    dump!(BlurResult, "tool_blur_result");
     dump!(FillParams, "tool_fill_params");
     dump!(FillResult, "tool_fill_result");
     dump!(PressParams, "tool_press_params");
     dump!(PressResult, "tool_press_result");
     dump!(SelectParams, "tool_select_params");
     dump!(SelectResult, "tool_select_result");
+    dump!(UploadParams, "tool_upload_params");
+    dump!(UploadResult, "tool_upload_result");
+    dump!(DownloadParams, "tool_download_params");
+    dump!(DownloadResult, "tool_download_result");
 
     dump!(SnapshotParams, "tool_snapshot_params");
     dump!(SnapshotResult, "tool_snapshot_result");
+    dump!(ObserveParams, "tool_observe_params");
+    dump!(ObserveResult, "tool_observe_result");
     dump!(GetHtmlParams, "tool_get_html_params");
     dump!(GetHtmlResult, "tool_get_html_result");
     dump!(ScreenshotParams, "tool_screenshot_params");
@@ -86,6 +108,9 @@ fn main() {
     dump!(ConsoleResult, "tool_console_result");
     dump!(ConsoleEntry, "tool_console_entry");
     dump!(ConsoleStackFrame, "tool_console_stack_frame");
+    dump!(NetworkParams, "tool_network_params");
+    dump!(NetworkResult, "tool_network_result");
+    dump!(NetworkEntry, "tool_network_entry");
 
     dump!(EvaluateParams, "tool_evaluate_params");
     dump!(EvaluateResult, "tool_evaluate_result");
@@ -97,4 +122,17 @@ fn main() {
     dump!(WaitMsResult, "tool_wait_ms_result");
     dump!(RequestHelpParams, "tool_request_help_params");
     dump!(RequestHelpResult, "tool_request_help_result");
+
+    dump!(TraceV2, "trace_v2");
+    dump!(TraceV3, "trace_v3");
+    dump!(RecordedTrace, "trace");
+    dump!(StepV2, "trace_step_v2");
+    dump!(StepV3, "trace_step_v3");
+    dump!(RecordedStep, "trace_step");
+    dump!(RecordStartParams, "tool_record_start_params");
+    dump!(RecordStartResult, "tool_record_start_result");
+    dump!(RecordStopParams, "tool_record_stop_params");
+    dump!(RecordStopResult, "tool_record_stop_result");
+    dump!(RecordAwaitParams, "tool_record_await_params");
+    dump!(RecordAwaitResult, "tool_record_await_result");
 }

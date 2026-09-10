@@ -6,19 +6,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use bsk_protocol::system::{BrowserStatusEntry, SessionStatusEntry};
 use bsk_protocol::tools::{
     SessionStartParams, SessionStartResult, SessionStopParams, SessionStopResult,
 };
-use bsk_protocol::{Frame, RequestFrame, ResponseBody, RpcError, RpcId};
+use bsk_protocol::{ErrorCode, Frame, Method, RequestFrame, ResponseBody, RpcError, RpcId};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
 
+use super::abort::AbortToken;
 use super::browsers::{BrowserClient, BrowserId, BrowserRegistry, SelectError};
-use super::queue::{DispatchError, ToolQueueRegistry};
+use super::queue::{CANCEL_CLEANUP_TIMEOUT, DispatchError, ToolQueueRegistry};
 use super::session_interrupt::SessionInterruptRegistry;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -66,6 +67,9 @@ impl Session {
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
     inner: Mutex<HashMap<SessionId, Session>>,
+    /// Operational metadata kept outside the public `Session` wire/domain
+    /// shape so idle enforcement does not break external struct users.
+    last_activity: Mutex<HashMap<SessionId, Instant>>,
 }
 
 impl SessionRegistry {
@@ -100,10 +104,13 @@ impl SessionRegistry {
     }
 
     pub fn insert(&self, session: Session) {
-        self.inner
+        let session_id = session.id.clone();
+        let mut sessions = self.inner.lock().expect("session registry poisoned");
+        sessions.insert(session_id.clone(), session);
+        self.last_activity
             .lock()
-            .expect("session registry poisoned")
-            .insert(session.id.clone(), session);
+            .expect("session activity registry poisoned")
+            .insert(session_id, Instant::now());
     }
 
     /// Reserve a fresh, collision-free [`SessionId`] under the registry
@@ -141,6 +148,10 @@ impl SessionRegistry {
                     created_at_ms: now_ms_fn(),
                 },
             );
+            self.last_activity
+                .lock()
+                .expect("session activity registry poisoned")
+                .insert(candidate.clone(), Instant::now());
             return Some(candidate);
         }
         None
@@ -168,13 +179,23 @@ impl SessionRegistry {
             .lock()
             .expect("session registry poisoned")
             .remove(session_id);
+        self.last_activity
+            .lock()
+            .expect("session activity registry poisoned")
+            .remove(session_id);
     }
 
     pub fn remove(&self, id: &SessionId) -> Option<Session> {
-        self.inner
+        let removed = self
+            .inner
             .lock()
             .expect("session registry poisoned")
-            .remove(id)
+            .remove(id);
+        self.last_activity
+            .lock()
+            .expect("session activity registry poisoned")
+            .remove(id);
+        removed
     }
 
     pub fn get(&self, id: &SessionId) -> Option<Session> {
@@ -183,6 +204,42 @@ impl SessionRegistry {
             .expect("session registry poisoned")
             .get(id)
             .cloned()
+    }
+
+    /// Record accepted or completed tool activity for a live session.
+    pub fn touch(&self, id: &SessionId) -> bool {
+        if !self
+            .inner
+            .lock()
+            .expect("session registry poisoned")
+            .contains_key(id)
+        {
+            return false;
+        }
+        self.last_activity
+            .lock()
+            .expect("session activity registry poisoned")
+            .insert(id.clone(), Instant::now());
+        true
+    }
+
+    /// Return sessions whose last tool activity is at least `idle_for`
+    /// old. The caller supplies `now` to keep boundary tests deterministic.
+    pub fn idle_ids_at(&self, idle_for: Duration, now: Instant) -> Vec<SessionId> {
+        let sessions = self.inner.lock().expect("session registry poisoned");
+        let activity = self
+            .last_activity
+            .lock()
+            .expect("session activity registry poisoned");
+        sessions
+            .values()
+            .filter(|session| {
+                activity
+                    .get(&session.id)
+                    .is_some_and(|last| now.saturating_duration_since(*last) >= idle_for)
+            })
+            .map(|session| session.id.clone())
+            .collect()
     }
 
     /// Drop all sessions owned by `browser_id` (e.g. on disconnect).
@@ -195,6 +252,13 @@ impl SessionRegistry {
             .collect();
         for s in &drained {
             guard.remove(&s.id);
+        }
+        let mut activity = self
+            .last_activity
+            .lock()
+            .expect("session activity registry poisoned");
+        for session in &drained {
+            activity.remove(&session.id);
         }
         drained
     }
@@ -276,6 +340,14 @@ pub enum StartSessionError {
     IdExhausted,
     #[error("session creation timed out waiting for extension")]
     Timeout,
+    #[error("session creation was cancelled")]
+    Cancelled,
+    #[error("session creation cancellation cleanup failed for {session_id}: {message}")]
+    CleanupFailed {
+        session_id: SessionId,
+        agent_window_id: Option<i64>,
+        message: String,
+    },
     #[error("extension rejected tool.session_start: {0:?}")]
     ExtensionError(RpcError),
     #[error("transport closed while waiting for extension response")]
@@ -291,6 +363,8 @@ impl StartSessionError {
             StartSessionError::AmbiguousBrowserLabel { .. } => "invalid_params",
             StartSessionError::IdExhausted => "protocol_error",
             StartSessionError::Timeout => "timeout",
+            StartSessionError::Cancelled => "cancelled",
+            StartSessionError::CleanupFailed { .. } => "protocol_error",
             StartSessionError::TransportClosed => "protocol_error",
             StartSessionError::ExtensionError(err) => match err.code {
                 bsk_protocol::ErrorCode::Timeout => "timeout",
@@ -327,43 +401,67 @@ pub enum StopSessionError {
 /// of live sessions.
 const SESSION_ID_MAX_RESERVE_ATTEMPTS: u32 = 64;
 
+/// Agent Window creation hints forwarded to the extension on
+/// `tool.session_start`. `None` fields keep the extension-side defaults
+/// (focused window, browser-chosen size).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AgentWindowOptions {
+    /// Optional outer size as `(width, height)` CSS pixels.
+    pub size: Option<(u32, u32)>,
+    /// Optional focus hint (`None` = extension default: focused).
+    pub focused: Option<bool>,
+}
+
 /// Ask the chosen browser to create a fresh Agent Window for a brand-new
 /// session id, registering the result on success.
 ///
 /// On success the matching per-session dispatch queue (M6.5,
 /// design §5) is also spawned so that subsequent `tool.*` RPCs serialise
 /// against this session's Agent Window / ref-store.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_session(
     registry: &Arc<BrowserRegistry>,
     sessions: &Arc<SessionRegistry>,
     queues: &Arc<ToolQueueRegistry>,
     requested: Option<&str>,
+    window: AgentWindowOptions,
     connect_wait: Duration,
     timeout_dur: Duration,
+    cancel: Option<AbortToken>,
 ) -> Result<Session, StartSessionError> {
-    let client: Arc<BrowserClient> = registry
-        .select_with_connect_wait(requested, connect_wait)
-        .await
-        .map_err(|e| match e {
-            SelectError::NoBrowserConnected => StartSessionError::NoBrowserConnected,
-            SelectError::MultipleBrowsersOnline => StartSessionError::MultipleBrowsersOnline {
-                browsers: snapshot_status_entries(registry, sessions),
-            },
-            SelectError::NotFound => StartSessionError::BrowserNotFound,
-            SelectError::AmbiguousLabel {
-                label,
-                instance_ids,
-            } => StartSessionError::AmbiguousBrowserLabel {
-                label,
-                instance_ids,
-            },
-        })?;
+    let selection = registry.select_with_connect_wait(requested, connect_wait);
+    tokio::pin!(selection);
+    let selected = match cancel.as_ref() {
+        Some(token) => tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err(StartSessionError::Cancelled),
+            selected = &mut selection => selected,
+        },
+        None => selection.await,
+    };
+    let client: Arc<BrowserClient> = selected.map_err(|e| match e {
+        SelectError::NoBrowserConnected => StartSessionError::NoBrowserConnected,
+        SelectError::MultipleBrowsersOnline => StartSessionError::MultipleBrowsersOnline {
+            browsers: snapshot_status_entries(registry, sessions),
+        },
+        SelectError::NotFound => StartSessionError::BrowserNotFound,
+        SelectError::AmbiguousLabel {
+            label,
+            instance_ids,
+        } => StartSessionError::AmbiguousBrowserLabel {
+            label,
+            instance_ids,
+        },
+    })?;
     let session_id = sessions
         .reserve_id(client.id.clone(), SESSION_ID_MAX_RESERVE_ATTEMPTS, now_ms)
         .ok_or(StartSessionError::IdExhausted)?;
     let params = SessionStartParams {
         session_id: session_id.0.clone(),
         browser_instance_id: Some(client.id.0.clone()),
+        width: window.size.map(|(width, _)| width),
+        height: window.size.map(|(_, height)| height),
+        focused: window.focused,
     };
     let rpc_id = next_rpc_id("sess-start");
     let request = RequestFrame {
@@ -375,22 +473,71 @@ pub async fn start_session(
         let mut pending = client.pending.lock().unwrap();
         pending.register(rpc_id.clone())
     };
+    if cancel.as_ref().is_some_and(AbortToken::is_cancelled) {
+        sessions.cancel_reservation(&session_id);
+        client.pending.lock().unwrap().cancel(&rpc_id);
+        return Err(StartSessionError::Cancelled);
+    }
     if client.sink.send(Frame::Request(request)).is_err() {
         sessions.cancel_reservation(&session_id);
         client.pending.lock().unwrap().cancel(&rpc_id);
         return Err(StartSessionError::TransportClosed);
     }
-    let response = match timeout(timeout_dur, waiter).await {
-        Ok(Ok(resp)) => resp,
-        Ok(Err(_)) => {
+    let mut waiter = waiter;
+    enum StartWaitOutcome {
+        Response(bsk_protocol::ResponseFrame),
+        WaiterClosed,
+        Cancelled,
+        Timeout,
+    }
+    let wait_outcome = match cancel.as_ref() {
+        Some(token) => {
+            let deadline = tokio::time::sleep(timeout_dur);
+            tokio::pin!(deadline);
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => StartWaitOutcome::Cancelled,
+                response = &mut waiter => match response {
+                    Ok(response) => StartWaitOutcome::Response(response),
+                    Err(_) => StartWaitOutcome::WaiterClosed,
+                },
+                _ = &mut deadline => StartWaitOutcome::Timeout,
+            }
+        }
+        None => match timeout(timeout_dur, &mut waiter).await {
+            Ok(Ok(response)) => StartWaitOutcome::Response(response),
+            Ok(Err(_)) => StartWaitOutcome::WaiterClosed,
+            Err(_) => StartWaitOutcome::Timeout,
+        },
+    };
+    let response = match wait_outcome {
+        StartWaitOutcome::Response(response) => response,
+        StartWaitOutcome::WaiterClosed => {
             sessions.cancel_reservation(&session_id);
             client.pending.lock().unwrap().cancel(&rpc_id);
             return Err(StartSessionError::TransportClosed);
         }
-        Err(_) => {
-            sessions.cancel_reservation(&session_id);
-            client.pending.lock().unwrap().cancel(&rpc_id);
-            return Err(StartSessionError::Timeout);
+        StartWaitOutcome::Cancelled => {
+            return Err(finish_aborted_start(
+                &client,
+                sessions,
+                &session_id,
+                &rpc_id,
+                waiter,
+                StartAbortReason::Cancelled,
+            )
+            .await);
+        }
+        StartWaitOutcome::Timeout => {
+            return Err(finish_aborted_start(
+                &client,
+                sessions,
+                &session_id,
+                &rpc_id,
+                waiter,
+                StartAbortReason::Timeout,
+            )
+            .await);
         }
     };
     let agent_window_id = match response.body {
@@ -426,6 +573,124 @@ pub async fn start_session(
     Ok(session)
 }
 
+#[derive(Clone, Copy)]
+enum StartAbortReason {
+    Cancelled,
+    Timeout,
+}
+
+impl StartAbortReason {
+    fn error(self) -> StartSessionError {
+        match self {
+            Self::Cancelled => StartSessionError::Cancelled,
+            Self::Timeout => StartSessionError::Timeout,
+        }
+    }
+}
+
+async fn finish_aborted_start(
+    client: &Arc<BrowserClient>,
+    sessions: &Arc<SessionRegistry>,
+    session_id: &SessionId,
+    rpc_id: &RpcId,
+    mut waiter: tokio::sync::oneshot::Receiver<bsk_protocol::ResponseFrame>,
+    reason: StartAbortReason,
+) -> StartSessionError {
+    sessions.cancel_reservation(session_id);
+    let cancel = Frame::Request(RequestFrame {
+        id: format!("cancel-{rpc_id}"),
+        method: Method::Cancel,
+        params: Some(serde_json::json!({ "rpc_id": rpc_id })),
+    });
+    if client.sink.send(cancel).is_err() {
+        client.pending.lock().unwrap().cancel(rpc_id);
+        return StartSessionError::TransportClosed;
+    }
+
+    match timeout(CANCEL_CLEANUP_TIMEOUT, &mut waiter).await {
+        Ok(Ok(response)) => match response.body {
+            ResponseBody::Err(err)
+                if matches!(err.code, ErrorCode::Cancelled | ErrorCode::UserAborted) =>
+            {
+                reason.error()
+            }
+            ResponseBody::Err(err) => StartSessionError::ExtensionError(err),
+            ResponseBody::Ok(value) => {
+                let agent_window_id = serde_json::from_value::<SessionStartResult>(value)
+                    .ok()
+                    .and_then(|result| result.agent_window_id);
+                match rollback_extension_session(client, session_id).await {
+                    Ok(()) => reason.error(),
+                    Err(message) => StartSessionError::CleanupFailed {
+                        session_id: session_id.clone(),
+                        agent_window_id,
+                        message,
+                    },
+                }
+            }
+        },
+        Ok(Err(_)) => {
+            client.pending.lock().unwrap().cancel(rpc_id);
+            StartSessionError::TransportClosed
+        }
+        Err(_) => {
+            // The cancel frame is already queued behind session_start. Even
+            // if chrome.windows.create is still blocked, the extension will
+            // observe the aborted signal and compensate before replying.
+            client.pending.lock().unwrap().cancel(rpc_id);
+            reason.error()
+        }
+    }
+}
+
+async fn rollback_extension_session(
+    client: &Arc<BrowserClient>,
+    session_id: &SessionId,
+) -> Result<(), String> {
+    let rollback_id = next_rpc_id("sess-start-rollback");
+    let waiter = {
+        let mut pending = client.pending.lock().unwrap();
+        pending.register(rollback_id.clone())
+    };
+    let request = RequestFrame {
+        id: rollback_id.clone(),
+        method: Method::ToolSessionStop,
+        params: Some(
+            serde_json::to_value(SessionStopParams {
+                session_id: session_id.0.clone(),
+            })
+            .expect("serialize session_start rollback params"),
+        ),
+    };
+    if client.sink.send(Frame::Request(request)).is_err() {
+        client.pending.lock().unwrap().cancel(&rollback_id);
+        return Err("browser disconnected before rollback was queued".into());
+    }
+    let response = match timeout(CANCEL_CLEANUP_TIMEOUT, waiter).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(_)) => return Err("browser disconnected during rollback".into()),
+        Err(_) => {
+            client.pending.lock().unwrap().cancel(&rollback_id);
+            return Err(format!(
+                "extension did not finish rollback within {CANCEL_CLEANUP_TIMEOUT:?}"
+            ));
+        }
+    };
+    match response.body {
+        ResponseBody::Ok(value) => {
+            let result: SessionStopResult = serde_json::from_value(value)
+                .map_err(|err| format!("invalid rollback response: {err}"))?;
+            if result.return_failures.is_empty() {
+                Ok(())
+            } else {
+                Err("rollback reported borrowed-tab return failures".into())
+            }
+        }
+        ResponseBody::Err(err) if err.code == ErrorCode::NotFound => Ok(()),
+        ResponseBody::Err(err) => Err(format!("rollback failed: {} ({:?})", err.message, err.code)),
+    }
+}
+
 /// Tear down a single session id (round-trips `tool.session_stop` to the
 /// owning extension and unregisters on success). Also tears down the
 /// per-session dispatch queue so the worker task exits.
@@ -436,6 +701,7 @@ pub async fn stop_session(
     interrupts: &Arc<SessionInterruptRegistry>,
     session_id: &SessionId,
     timeout_dur: Duration,
+    cancel: Option<AbortToken>,
 ) -> Result<SessionStopResult, StopSessionError> {
     let session = sessions.get(session_id).ok_or(StopSessionError::NotFound)?;
     if registry.get(&session.browser_id).is_none() {
@@ -446,12 +712,17 @@ pub async fn stop_session(
         session_id: session_id.0.clone(),
     })
     .unwrap();
+    // Internal callers (idle reaping and shutdown) do not have a CLI-owned
+    // token, but still need timeout-driven WS cancellation so a late window
+    // close cannot leave daemon state pointing at a vanished session.
+    let lifecycle_cancel = Some(cancel.unwrap_or_default());
     match queues
         .dispatch_after_closing(
             session_id,
             bsk_protocol::Method::ToolSessionStop,
             params,
             timeout_dur,
+            lifecycle_cancel,
         )
         .await
     {
@@ -472,10 +743,9 @@ pub async fn stop_session(
             Ok(result)
         }
         Err(DispatchError::Rpc(err)) => {
-            // After an extension SW restart the daemon still owns the
-            // session entry (the generation-guard ensures we do not
-            // purge across reconnects), but the extension's in-memory
-            // SessionManager is reset and now answers `not_found`.
+            // A legacy extension or an unusual reconnect race may still
+            // leave a daemon session after the extension's in-memory
+            // SessionManager has reset and now answers `not_found`.
             // Treat that as an authoritative signal that the session is
             // already gone and reconcile our local state instead of
             // leaving an orphan row visible to `bsk session list`
@@ -489,6 +759,10 @@ pub async fn stop_session(
                 }
                 drop_session_local(queues, interrupts, session_id);
                 return Ok(SessionStopResult::default());
+            }
+            if err.code == bsk_protocol::ErrorCode::Timeout {
+                queues.reopen(session_id);
+                return Err(StopSessionError::Timeout);
             }
             queues.reopen(session_id);
             Err(StopSessionError::ExtensionError(err))

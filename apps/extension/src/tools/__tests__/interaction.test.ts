@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { SessionManager } from "@/session-manager/manager";
 import type { CdpRunner } from "@/tools/shared";
 import {
+  handleBlur,
   handleClick,
   handleFill,
+  handleFocus,
+  handleHover,
   handlePress,
   handleSelect,
   modifiersBitfield,
@@ -20,7 +23,7 @@ function fakeAgentWindow(ids: number[]) {
       return id;
     }),
     remove: vi.fn(async () => {}),
-    ensureActiveTab: vi.fn(async () => {}),
+    ensureActiveTab: vi.fn(async () => 1),
   };
 }
 
@@ -29,6 +32,9 @@ function makeFakeCdp(handlers: Record<string, (params: unknown) => unknown>) {
   const sendImpl = async (tabId: number, method: string, params?: object) => {
     sent.push({ tabId, method, params });
     const h = handlers[method];
+    if (!h && method === "Page.getLayoutMetrics") {
+      return { cssLayoutViewport: { clientWidth: 1280, clientHeight: 720 } };
+    }
     if (!h) throw new Error(`unexpected CDP call ${method}`);
     return h(params);
   };
@@ -161,6 +167,65 @@ describe("handleClick", () => {
       button: "left",
       clickCount: 2,
     });
+  });
+
+  it("resolves frame refs in their CDP session and dispatches input in top coordinates", async () => {
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, {
+      tabId: 4,
+      frameId: "child-frame",
+      cdpSessionId: "child-session",
+    });
+    const fake = makeFakeCdp({
+      "Input.dispatchMouseEvent": () => ({}),
+      "DOM.scrollIntoViewIfNeeded": () => ({}),
+      "DOM.getBoxModel": () => ({
+        model: { content: [204, 306, 604, 306, 604, 506, 204, 506] },
+      }),
+    });
+    fake.cdp.getFrameGraph = vi.fn(async () => ({
+      rootFrameId: "main",
+      frames: [
+        { frameId: "main", target: { tabId: 4 } },
+        {
+          frameId: "child-frame",
+          parentFrameId: "main",
+          ownerBackendNodeId: 99,
+          target: { tabId: 4, sessionId: "child-session" },
+        },
+      ],
+    }));
+    const targetCalls: Array<{ sessionId?: string; method: string }> = [];
+    fake.cdp.sendToTarget = vi.fn(async (target, method) => {
+      targetCalls.push({ sessionId: target.sessionId, method });
+      if (method === "DOM.scrollIntoViewIfNeeded") return {};
+      if (method === "DOM.getContentQuads") {
+        return { quads: [[10, 20, 110, 20, 110, 60, 10, 60]] };
+      }
+      if (method === "Runtime.evaluate") return { result: { value: { width: 200, height: 100 } } };
+      if (method === "Page.getLayoutMetrics") {
+        return { cssLayoutViewport: { clientWidth: 200, clientHeight: 100 } };
+      }
+      throw new Error(`unexpected child CDP call ${method}`);
+    }) as CdpRunner["sendToTarget"];
+
+    const res = await handleClick(
+      sm,
+      { session_id: "aa11", ref: "@e3" },
+      { cdp: fake.cdp, tabsApi: fake.tabsApi },
+    );
+
+    if ("code" in res) throw new Error(`unexpected error: ${JSON.stringify(res)}`);
+    // The iframe content box starts at (204, 306) after its border and is scaled 2x.
+    expect(res).toMatchObject({ x: 324, y: 386 });
+    expect(targetCalls).toEqual([
+      { sessionId: "child-session", method: "DOM.scrollIntoViewIfNeeded" },
+      { sessionId: "child-session", method: "DOM.getContentQuads" },
+      { sessionId: "child-session", method: "Page.getLayoutMetrics" },
+      { sessionId: "child-session", method: "Runtime.evaluate" },
+    ]);
+    expect(fake.sent.filter((call) => call.method === "Input.dispatchMouseEvent")).toHaveLength(3);
   });
 
   it("enables overlay bypass before mouse events when overlay blocks the click point", async () => {
@@ -435,6 +500,220 @@ describe("handleClick", () => {
   });
 });
 
+describe("handleHover", () => {
+  it("keeps overlay bypass enabled after a successful hover when requested", async () => {
+    const bypassOverlay = vi.fn().mockResolvedValue(undefined);
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, { tabId: 4 });
+    const fake = makeFakeCdp({
+      "DOM.scrollIntoViewIfNeeded": () => ({}),
+      "DOM.getContentQuads": () => ({ quads: [[10, 20, 110, 20, 110, 60, 10, 60]] }),
+      "Runtime.evaluate": (params: unknown) => {
+        const expr = String((params as { expression?: string })?.expression ?? "");
+        if (expr.includes("overlayHostPresent") && !expr.includes("hitIndex")) {
+          return { result: { value: { overlayHostPresent: true, overlayHostConnected: true } } };
+        }
+        if (expr.includes("hitIndex")) {
+          return {
+            result: {
+              value: { overlayHostPresent: true, overlayHostConnected: true, hitIndex: 0 },
+            },
+          };
+        }
+        throw new Error(`unexpected Runtime.evaluate: ${expr.slice(0, 80)}`);
+      },
+      "Input.dispatchMouseEvent": () => ({}),
+    });
+
+    const res = await handleHover(
+      sm,
+      { session_id: "aa11", ref: "@e3", settle_ms: 0 },
+      {
+        cdp: fake.cdp,
+        tabsApi: fake.tabsApi,
+        bypassOverlay,
+        keepOverlayBypassAfterHover: true,
+      },
+    );
+
+    if ("code" in res) throw new Error(`unexpected error: ${JSON.stringify(res)}`);
+    expect(res).toMatchObject({ tab_id: 4, used_ref: "e3", x: 60, y: 40 });
+    expect(bypassOverlay).toHaveBeenCalledTimes(1);
+    expect(bypassOverlay).toHaveBeenCalledWith(4, true);
+  });
+});
+
+describe("handleFocus and handleBlur", () => {
+  it("focuses a ref and verifies the deep active element", async () => {
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, { tabId: 4 });
+    const fake = makeFakeCdp({
+      "DOM.scrollIntoViewIfNeeded": () => ({}),
+      "DOM.focus": () => ({}),
+      "DOM.resolveNode": () => ({ object: { objectId: "focus-target" } }),
+      "Runtime.callFunctionOn": () => ({ result: { value: true } }),
+    });
+
+    const res = await handleFocus(
+      sm,
+      { session_id: "aa11", ref: "@e3" },
+      { cdp: fake.cdp, tabsApi: fake.tabsApi },
+    );
+
+    if ("code" in res) throw new Error(`unexpected error: ${JSON.stringify(res)}`);
+    expect(res).toMatchObject({ tab_id: 4, used_ref: "e3", focused: true });
+    expect(fake.sent.map((call) => call.method)).toEqual([
+      "DOM.scrollIntoViewIfNeeded",
+      "DOM.resolveNode",
+      "DOM.focus",
+      "Runtime.callFunctionOn",
+      "Runtime.releaseObject",
+    ]);
+  });
+
+  it("focuses an OOPIF ref in its CDP session", async () => {
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, {
+      tabId: 4,
+      frameId: "child-frame",
+      cdpSessionId: "child-session",
+    });
+    const fake = makeFakeCdp({
+      "DOM.scrollIntoViewIfNeeded": () => ({}),
+    });
+    fake.cdp.getFrameGraph = vi.fn(async () => ({
+      rootFrameId: "main",
+      frames: [
+        { frameId: "main", target: { tabId: 4 } },
+        {
+          frameId: "child-frame",
+          parentFrameId: "main",
+          ownerBackendNodeId: 99,
+          target: { tabId: 4, sessionId: "child-session" },
+        },
+      ],
+    }));
+    const targetCalls: Array<{ sessionId?: string; method: string }> = [];
+    fake.cdp.sendToTarget = vi.fn(async (target, method) => {
+      targetCalls.push({ sessionId: target.sessionId, method });
+      if (method === "DOM.scrollIntoViewIfNeeded") return {};
+      if (method === "DOM.focus" || method === "Runtime.releaseObject") return {};
+      if (method === "DOM.resolveNode") return { object: { objectId: "focus-target" } };
+      if (method === "Runtime.callFunctionOn") return { result: { value: true } };
+      throw new Error(`unexpected child CDP call ${method}`);
+    }) as CdpRunner["sendToTarget"];
+
+    const res = await handleFocus(
+      sm,
+      { session_id: "aa11", ref: "@e3" },
+      { cdp: fake.cdp, tabsApi: fake.tabsApi },
+    );
+
+    if ("code" in res) throw new Error(`unexpected error: ${JSON.stringify(res)}`);
+    expect(res.focused).toBe(true);
+    expect(targetCalls).toEqual([
+      { sessionId: "child-session", method: "DOM.scrollIntoViewIfNeeded" },
+      { sessionId: "child-session", method: "DOM.resolveNode" },
+      { sessionId: "child-session", method: "DOM.focus" },
+      { sessionId: "child-session", method: "Runtime.callFunctionOn" },
+      { sessionId: "child-session", method: "Runtime.releaseObject" },
+    ]);
+  });
+
+  it("does not focus after cancellation during scrolling", async () => {
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, { tabId: 4 });
+    const abort = new AbortController();
+    const fake = makeFakeCdp({
+      "DOM.scrollIntoViewIfNeeded": () => {
+        abort.abort();
+        return {};
+      },
+    });
+
+    const res = await handleFocus(
+      sm,
+      { session_id: "aa11", ref: "@e3" },
+      { cdp: fake.cdp, tabsApi: fake.tabsApi, signal: abort.signal },
+    );
+
+    expect(res).toMatchObject({ code: "cancelled" });
+    expect(fake.sent.some((call) => call.method === "DOM.focus")).toBe(false);
+  });
+
+  it("blurs a ref and returns its previous focus state", async () => {
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, { tabId: 4 });
+    const fake = makeFakeCdp({
+      "DOM.resolveNode": () => ({ object: { objectId: "focus-target" } }),
+      "Runtime.callFunctionOn": vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { ok: true, was_focused: true } } })
+        .mockResolvedValueOnce({ result: { value: false } }),
+    });
+
+    const res = await handleBlur(
+      sm,
+      { session_id: "aa11", ref: "@e3" },
+      { cdp: fake.cdp, tabsApi: fake.tabsApi },
+    );
+
+    if ("code" in res) throw new Error(`unexpected error: ${JSON.stringify(res)}`);
+    expect(res).toMatchObject({
+      tab_id: 4,
+      used_ref: "e3",
+      was_focused: true,
+      focused: false,
+    });
+    expect(fake.sent.map((call) => call.method)).toEqual([
+      "DOM.resolveNode",
+      "Runtime.callFunctionOn",
+      "Runtime.callFunctionOn",
+      "Runtime.releaseObject",
+    ]);
+  });
+
+  it("rejects a target that does not implement blur", async () => {
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, { tabId: 4 });
+    const fake = makeFakeCdp({
+      "DOM.resolveNode": () => ({ object: { objectId: "focus-target" } }),
+      "Runtime.callFunctionOn": () => ({
+        result: { value: { ok: false, was_focused: false, focused: false } },
+      }),
+    });
+
+    const res = await handleBlur(
+      sm,
+      { session_id: "aa11", ref: "@e3" },
+      { cdp: fake.cdp, tabsApi: fake.tabsApi },
+    );
+
+    expect(res).toMatchObject({ code: "invalid_params", message: /does not support blur/ });
+  });
+});
+
+function successfulFillScript(params: unknown) {
+  const script = params as { arguments?: Array<{ value: unknown }>; functionDeclaration: string };
+  const args = script.arguments ?? [];
+  return {
+    result: {
+      value:
+        args.length === 2
+          ? { before: "", expected: args[0].value }
+          : script.functionDeclaration.startsWith("function(expected)")
+            ? { connected: true, matches: true, valueLength: String(args[0].value).length }
+            : "ready",
+    },
+  };
+}
+
 describe("handleFill", () => {
   it("returns not_found for unknown ref", async () => {
     const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
@@ -481,7 +760,8 @@ describe("handleFill", () => {
       "DOM.scrollIntoViewIfNeeded": () => ({}),
       "DOM.focus": () => ({}),
       "DOM.resolveNode": () => ({ object: { objectId: "obj-1" } }),
-      "Runtime.callFunctionOn": () => ({ result: { type: "undefined" } }),
+      "Runtime.callFunctionOn": successfulFillScript,
+      "Runtime.releaseObject": () => ({}),
       "Input.insertText": () => ({}),
     });
     const res = await handleFill(
@@ -495,13 +775,12 @@ describe("handleFill", () => {
     expect(res.used_ref).toBe("e1");
     const insert = fake.sent.find((c) => c.method === "Input.insertText");
     expect(insert?.params).toEqual({ text: "hello" });
-    // clear_before defaults to true → callFunctionOn invoked once to
-    // clear, once to fire input/change after typing.
+    // Foreground replacement needs no extra caret-positioning round trip.
     const callFns = fake.sent.filter((c) => c.method === "Runtime.callFunctionOn");
-    expect(callFns.length).toBeGreaterThanOrEqual(2);
+    expect(callFns).toHaveLength(4);
   });
 
-  it("clear_before=false skips the wipe call", async () => {
+  it("passes clear_before=false to preparation and verifies the result", async () => {
     const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
     const ctx = await sm.start("aa11");
     ctx.refStore.set("e1", 1, { tabId: 4 });
@@ -513,12 +792,12 @@ describe("handleFill", () => {
       "DOM.focus": () => ({}),
       "DOM.resolveNode": () => ({ object: { objectId: "obj-2" } }),
       "Runtime.callFunctionOn": (p) => {
-        const fn = (p as { functionDeclaration?: string }).functionDeclaration ?? "";
-        // No "this.value = ''" clearing on a no-clear path; only the
-        // post-input dispatchEvent.
-        expect(fn).not.toMatch(/this\.value\s*=\s*''/);
-        return { result: { type: "undefined" } };
+        const args = (p as { arguments?: Array<{ value: unknown }> }).arguments ?? [];
+        if (args.length === 2) expect(args[1].value).toBe(false);
+        return successfulFillScript(p);
       },
+      "Input.dispatchKeyEvent": () => ({}),
+      "Runtime.releaseObject": () => ({}),
       "Input.insertText": () => ({}),
     });
     const res = await handleFill(
@@ -545,7 +824,8 @@ describe("handleFill", () => {
       "DOM.scrollIntoViewIfNeeded": () => ({}),
       "DOM.focus": () => ({}),
       "DOM.resolveNode": () => ({ object: { objectId: "obj-3" } }),
-      "Runtime.callFunctionOn": () => ({ result: { type: "undefined" } }),
+      "Runtime.callFunctionOn": successfulFillScript,
+      "Runtime.releaseObject": () => ({}),
       "Input.insertText": () => ({}),
     });
     const res = await handleFill(

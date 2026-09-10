@@ -1,5 +1,5 @@
-//! DOM interaction tools (`tool.click`, `tool.fill`, `tool.press`,
-//! `tool.select`).
+//! DOM interaction tools (`tool.click`, `tool.hover`, `tool.focus`,
+//! `tool.blur`, `tool.fill`, `tool.press`, `tool.select`).
 //!
 //! Element-targeted tools accept either a snapshot `ref` (`@e<N>` form,
 //! normalised against the session's RefStore) **or** a CSS selector
@@ -81,6 +81,128 @@ pub struct ClickResult {
     pub x: f64,
     pub y: f64,
     /// Native JS dialogs observed and auto-handled during this call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogs: Vec<JavaScriptDialogInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// hover
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HoverParams {
+    pub session_id: String,
+    /// Optional `@e<N>` ref allocated by the last observation.
+    /// Mutually exclusive with `selector`.
+    #[serde(
+        rename = "ref",
+        alias = "ref_",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ref_: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Target tab. Defaults to the Agent Window's active tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modifiers: Option<Vec<KeyModifier>>,
+    /// Wait after the mouse move so hover-triggered UI can settle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0))]
+    pub settle_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub timeout_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HoverResult {
+    pub tab_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_selector: Option<String>,
+    /// Viewport-relative hover coordinates (CSS pixels).
+    pub x: f64,
+    pub y: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogs: Vec<JavaScriptDialogInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// focus / blur
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FocusParams {
+    pub session_id: String,
+    /// Optional `@e<N>` ref allocated by the last observation.
+    /// Mutually exclusive with `selector`.
+    #[serde(
+        rename = "ref",
+        alias = "ref_",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ref_: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Target tab. Defaults to the Agent Window's active tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub timeout_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FocusResult {
+    pub tab_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_selector: Option<String>,
+    /// Whether the target holds DOM focus in its document or shadow root after the call.
+    pub focused: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogs: Vec<JavaScriptDialogInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BlurParams {
+    pub session_id: String,
+    /// Optional `@e<N>` ref allocated by the last observation.
+    /// Mutually exclusive with `selector`.
+    #[serde(
+        rename = "ref",
+        alias = "ref_",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ref_: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Target tab. Defaults to the Agent Window's active tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub timeout_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BlurResult {
+    pub tab_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_selector: Option<String>,
+    /// Whether the target held focus before the call.
+    pub was_focused: bool,
+    /// Always false for a successful blur; included for machine verification.
+    pub focused: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<JavaScriptDialogInfo>,
 }
@@ -259,6 +381,55 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(p.ref_.as_deref(), Some("e1"));
+    }
+
+    #[test]
+    fn hover_params_serialise_ref_field_name() {
+        let p = HoverParams {
+            session_id: "abcd".into(),
+            ref_: Some("@e3".into()),
+            selector: None,
+            tab_id: Some(42),
+            modifiers: Some(vec![KeyModifier::Shift]),
+            settle_ms: Some(200),
+            timeout_ms: Some(5_000),
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v.get("ref").and_then(|v| v.as_str()), Some("@e3"));
+        assert!(v.get("ref_").is_none());
+        let round: HoverParams = serde_json::from_value(v).unwrap();
+        assert_eq!(round, p);
+    }
+
+    #[test]
+    fn focus_params_serialise_ref_field_name() {
+        let p = FocusParams {
+            session_id: "abcd".into(),
+            ref_: Some("@e4".into()),
+            selector: None,
+            tab_id: Some(42),
+            timeout_ms: Some(5_000),
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v.get("ref").and_then(|v| v.as_str()), Some("@e4"));
+        assert!(v.get("ref_").is_none());
+        let round: FocusParams = serde_json::from_value(v).unwrap();
+        assert_eq!(round, p);
+    }
+
+    #[test]
+    fn blur_result_round_trips_focus_state() {
+        let result = BlurResult {
+            tab_id: 42,
+            used_ref: Some("e4".into()),
+            used_selector: None,
+            was_focused: true,
+            focused: false,
+            dialogs: vec![],
+        };
+        let value = serde_json::to_value(&result).unwrap();
+        let round: BlurResult = serde_json::from_value(value).unwrap();
+        assert_eq!(round, result);
     }
 
     #[test]

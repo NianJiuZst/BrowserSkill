@@ -11,6 +11,7 @@ use bsk::ipc_client::IpcClient;
 use bsk_protocol::system::{HandshakeParams, HandshakeResult};
 use bsk_protocol::tools::{
     ConsoleEntry, ConsoleEntryKind, ConsoleParams, ConsoleResult, GetHtmlParams, GetHtmlResult,
+    NetworkEntry, NetworkEntryKind, NetworkParams, NetworkResult, ObserveParams, ObserveResult,
     ScreenshotParams, ScreenshotResult, SessionStartParams, SessionStartResult, SnapshotParams,
     SnapshotResult, TabInfo, TabListParams, TabListResult, TabScope,
 };
@@ -366,6 +367,62 @@ async fn console_returns_buffered_entries() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn network_returns_buffered_entries() {
+    let (handle, sock) = spawn_daemon().await;
+    let mut ws = connect_ext(handle.ws_addr()).await;
+    let _ = do_handshake(&mut ws).await;
+
+    run_extension(ws, |req| {
+        assert_eq!(req.method, Method::ToolNetwork);
+        let params: NetworkParams = serde_json::from_value(req.params.clone().unwrap()).unwrap();
+        assert_eq!(params.tab_id, Some(7));
+        assert_eq!(params.since, Some(3));
+        assert_eq!(params.limit, Some(50));
+        assert_eq!(params.max_text_chars, Some(1000));
+        ResponseBody::Ok(
+            serde_json::to_value(NetworkResult {
+                tab_id: 7,
+                entries: vec![NetworkEntry {
+                    sequence: 4,
+                    kind: NetworkEntryKind::Response,
+                    method: Some("GET".into()),
+                    url: Some("https://example.test/api".into()),
+                    status: Some(404),
+                    status_text: Some("Not Found".into()),
+                    mime_type: Some("application/json".into()),
+                    resource_type: Some("Fetch".into()),
+                    error_text: None,
+                    timestamp: None,
+                    truncated: false,
+                }],
+                next_since: 4,
+                truncated: false,
+            })
+            .unwrap(),
+        )
+    });
+
+    let session_id = ipc_session_start(&sock).await;
+    let result: NetworkResult = ipc_tool_call(
+        &sock,
+        Method::ToolNetwork,
+        NetworkParams {
+            session_id,
+            tab_id: Some(7),
+            since: Some(3),
+            limit: Some(50),
+            max_text_chars: Some(1000),
+        },
+    )
+    .await
+    .expect("network ok");
+    assert_eq!(result.tab_id, 7);
+    assert_eq!(result.next_since, 4);
+    assert_eq!(result.entries[0].status, Some(404));
+    handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_returns_text_and_ref_count() {
     let (handle, sock) = spawn_daemon().await;
     let mut ws = connect_ext(handle.ws_addr()).await;
@@ -401,6 +458,50 @@ async fn snapshot_returns_text_and_ref_count() {
     .expect("snapshot ok");
     assert_eq!(result.ref_count, 2);
     assert!(result.text.contains("@e1"));
+    assert_eq!(result.tab_id, 13);
+    handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observe_returns_semantic_text_and_ref_count() {
+    let (handle, sock) = spawn_daemon().await;
+    let mut ws = connect_ext(handle.ws_addr()).await;
+    let _ = do_handshake(&mut ws).await;
+
+    run_extension(ws, |req| {
+        assert_eq!(req.method, Method::ToolObserve);
+        let _: ObserveParams = serde_json::from_value(req.params.clone().unwrap()).unwrap();
+        ResponseBody::Ok(
+            serde_json::to_value(ObserveResult {
+                text: "@vom 1\n  @e1 button \"Products\" [hover: Shoes]\n".into(),
+                ref_count: 1,
+                tab_id: 13,
+                truncated: false,
+                dialogs: vec![],
+                hover_probe: None,
+                debug: None,
+            })
+            .unwrap(),
+        )
+    });
+
+    let session_id = ipc_session_start(&sock).await;
+    let result: ObserveResult = ipc_tool_call(
+        &sock,
+        Method::ToolObserve,
+        ObserveParams {
+            session_id,
+            tab_id: None,
+            max_depth: None,
+            max_tokens: None,
+            debug_surfaces: false,
+            probe_hover: false,
+        },
+    )
+    .await
+    .expect("observe ok");
+    assert_eq!(result.ref_count, 1);
+    assert!(result.text.contains("[hover: Shoes]"));
     assert_eq!(result.tab_id, 13);
     handle.shutdown().await;
 }
