@@ -32,7 +32,7 @@ Reusable trace and documentation filenames are compatibility aliases, not a seco
 | Debug action owner and effect | `src/tools/debug.rs` | The CLI parser and generated extension metadata consume the same actions |
 | Extension implementations | `apps/extension/src/tools/dispatcher.ts` | `ToolHandlerMap` requires every extension method with its own parameter/result types |
 | Background targeting, popup tracking, remote support | `apps/extension/src/tools/policy.ts` | Complete `Record<ExtensionToolMethod, ToolPolicy>`; shared effects come from generated metadata |
-| Daemon deadlines, grace and settlement | `crates/bsk-cli/src/daemon/tool_policy.rs` | Exhaustive `Method` match consumed by IPC and the queue |
+| Daemon deadlines, grace and cancellation | `crates/bsk-cli/src/daemon/tool_policy.rs` | Exhaustive `Method` match consumed by IPC and the queue |
 
 Adding an extension method requires choosing its Rust payloads and effects, generating the contract,
 and implementing its handler and local policies. Missing cases produce compilation errors. Browser
@@ -65,21 +65,16 @@ arrays for bounded collections and unions for conditional schemas; runtime valid
 numeric and conditional constraints that TypeScript cannot express. String formats are descriptive;
 semantic URL/regex/session checks remain in the existing handlers.
 
-## Evaluation deadlines and settlement
+## Evaluation deadlines and cancellation
 
-A deadline or cancel acknowledgement does not prove that arbitrary JavaScript has stopped. The
-daemon sends cancellation at an evaluation deadline, allows the cleanup grace, then can return
-`execution_pending` while retaining the original response receiver and the session's busy state.
-`debug activity` reports `settling`; `debug wait` observes the original operation without replaying it.
-Only its final response releases the queue. Other sessions remain independent.
+Evaluation retains the existing bounded timeout and cancellation behavior. A caller deadline or
+cancel acknowledgement does not prove that arbitrary page JavaScript stopped, and cancellation
+cannot roll back browser effects. Scripts can also schedule independent work after returning.
 
-If the connection disappears before completion, an operation whose session survives becomes
-`unconfirmed`. The existing disconnect/replacement lifecycle may instead invalidate the entire
-session. Neither path makes the old session available for new commands. Inspect the page and end
-the affected browser task before starting a new one. This deliberately avoids pretending
-that `Runtime.evaluate` cancellation rolls back page effects. Scripts may also schedule independent
-work after returning; settlement tracks the awaited evaluation, not all future page activity.
-Other tools retain their existing bounded compensation behavior, described by the daemon policy.
+This contract refactor does not retain an evaluation's queue lock indefinitely after the caller's
+wait ends. An unresolving promise therefore does not permanently prevent later commands, session
+stop, or idle cleanup. Execution settlement and recovery require a separate lifecycle design with
+an explicit teardown path; generated contracts do not establish execution safety after a timeout.
 
 ## Compatibility and verification limits
 

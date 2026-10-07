@@ -1,5 +1,5 @@
 //! Daemon scheduling policy. Exhaustive matching makes every new method choose
-//! a timeout and settlement policy independently of its browser effect class.
+//! a timeout and cancellation policy independently of its browser effect class.
 use bsk_protocol::Method;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -14,7 +14,6 @@ pub enum Outcome {
     Ordinary,
     NativeInput,
     FileTransfer,
-    Evaluation,
 }
 
 #[derive(Clone, Copy)]
@@ -23,34 +22,51 @@ pub struct ExecutionPolicy {
     pub response_grace: bool,
     pub cancel_at_deadline: bool,
     pub outcome: Outcome,
-    /// A caller deadline cannot prove that arbitrary page JavaScript has stopped.
-    pub retain_until_settled: bool,
 }
 
 pub fn execution_policy(method: &Method) -> ExecutionPolicy {
     use Method::*;
-    let (deadline, response_grace, cancel_at_deadline, outcome, retain_until_settled) = match method
-    {
-        ToolTabBorrow => (
-            Deadline::BorrowConfirmation,
-            false,
-            true,
-            Outcome::Ordinary,
-            false,
-        ),
-        ToolNavigate => (Deadline::Standard, true, false, Outcome::Ordinary, false),
-        ToolNavigateBack => (Deadline::Standard, true, false, Outcome::Ordinary, false),
-        ToolNavigateForward => (Deadline::Standard, true, false, Outcome::Ordinary, false),
-        ToolReload => (Deadline::Standard, true, false, Outcome::Ordinary, false),
-        ToolClick => (Deadline::Standard, false, true, Outcome::NativeInput, false),
-        ToolWheel => (Deadline::Standard, false, true, Outcome::NativeInput, false),
-        ToolPress => (Deadline::Standard, false, true, Outcome::NativeInput, false),
-        ToolUpload => (Deadline::Standard, true, true, Outcome::FileTransfer, false),
-        ToolDownload => (Deadline::Standard, true, true, Outcome::FileTransfer, false),
-        ToolScreenshotFullPage => (Deadline::FullPage, false, true, Outcome::Ordinary, false),
-        ToolEvaluate => (Deadline::Standard, false, true, Outcome::Evaluation, true),
-        ToolWaitForNavigation => (Deadline::Standard, true, false, Outcome::Ordinary, false),
-        ToolRequestHelp => (Deadline::Standard, true, true, Outcome::Ordinary, false),
+    const ORDINARY: ExecutionPolicy = ExecutionPolicy {
+        deadline: Deadline::Standard,
+        response_grace: false,
+        cancel_at_deadline: false,
+        outcome: Outcome::Ordinary,
+    };
+    match method {
+        ToolTabBorrow => ExecutionPolicy {
+            deadline: Deadline::BorrowConfirmation,
+            cancel_at_deadline: true,
+            ..ORDINARY
+        },
+        ToolNavigate
+        | ToolNavigateBack
+        | ToolNavigateForward
+        | ToolReload
+        | ToolWaitForNavigation => ExecutionPolicy {
+            response_grace: true,
+            ..ORDINARY
+        },
+        ToolClick | ToolWheel | ToolPress => ExecutionPolicy {
+            cancel_at_deadline: true,
+            outcome: Outcome::NativeInput,
+            ..ORDINARY
+        },
+        ToolUpload | ToolDownload => ExecutionPolicy {
+            response_grace: true,
+            cancel_at_deadline: true,
+            outcome: Outcome::FileTransfer,
+            ..ORDINARY
+        },
+        ToolScreenshotFullPage => ExecutionPolicy {
+            deadline: Deadline::FullPage,
+            cancel_at_deadline: true,
+            ..ORDINARY
+        },
+        ToolRequestHelp => ExecutionPolicy {
+            response_grace: true,
+            cancel_at_deadline: true,
+            ..ORDINARY
+        },
         AuditRequest
         | SystemHandshake
         | SystemPing
@@ -86,6 +102,7 @@ pub fn execution_policy(method: &Method) -> ExecutionPolicy {
         | ToolConsole
         | ToolDebug
         | ToolNetwork
+        | ToolEvaluate
         | ToolWaitMs
         | ToolRecordStart
         | ToolRecordStop
@@ -95,13 +112,6 @@ pub fn execution_policy(method: &Method) -> ExecutionPolicy {
         | TransferFinish
         | TransferRead
         | TransferRelease
-        | Cancel => (Deadline::Standard, false, false, Outcome::Ordinary, false),
-    };
-    ExecutionPolicy {
-        deadline,
-        response_grace,
-        cancel_at_deadline,
-        outcome,
-        retain_until_settled,
+        | Cancel => ORDINARY,
     }
 }

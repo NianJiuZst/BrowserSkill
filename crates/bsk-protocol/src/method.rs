@@ -45,6 +45,21 @@ macro_rules! methods {
                 match self { $(Self::$variant => MethodOwner::$owner,)* }
             }
 
+            /// **Judgment calls** (read these before adding new variants):
+            ///
+            /// * `tool.evaluate` is classified as browser-mutating because the
+            ///   daemon cannot statically distinguish a `document.title`
+            ///   read from a `form.submit()` write.
+            /// * `tool.observe` is classified as transient input: its bounded
+            ///   hover probes do not commit browser state, but they dispatch real
+            ///   page input events and therefore must be gated like automation.
+            /// * `tool.wait_*` are classified as read-only: they do not
+            ///   initiate any browser action; they observe state only.
+            /// * `session.*` and `tool.session_*` are NOT gated. Blocking
+            ///   `session.stop` would prevent the agent from gracefully
+            ///   tearing down after observing the user's interrupt.
+            /// * `cancel` is NOT gated. It's a control-plane operation
+            ///   (stops another in-flight RPC), not a browser action.
             pub const fn effect(&self) -> MethodEffect {
                 match self { $(Self::$variant => MethodEffect::$effect,)* }
             }
