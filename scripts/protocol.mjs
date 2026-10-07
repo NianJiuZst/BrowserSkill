@@ -2,7 +2,8 @@
 // Generate the extension contract from the Rust method catalog. --check never writes source files.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Ajv from "ajv";
@@ -17,23 +18,41 @@ const args = new Set(process.argv.slice(2));
 if ([...args].some((arg) => !["--check", "--json"].includes(arg))) {
   throw new Error("Usage: node scripts/protocol.mjs [--check] [--json]");
 }
-const exported = spawnSync(
-  "cargo",
-  [
-    "run",
-    "--quiet",
-    "--locked",
-    "--target-dir",
-    join(root, "target/protocol"),
-    "-p",
-    "bsk-protocol",
-    "--bin",
-    "export-protocol",
-  ],
-  { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 300_000 },
-);
-if (exported.status !== 0) throw new Error(exported.error?.message ?? exported.stderr);
-const catalog = JSON.parse(exported.stdout);
+function runExporter(binary, extraArgs = []) {
+  const exported = spawnSync(
+    "cargo",
+    [
+      "run",
+      "--quiet",
+      "--locked",
+      "--target-dir",
+      join(root, "target/protocol"),
+      "-p",
+      "bsk-protocol",
+      "--bin",
+      binary,
+      ...extraArgs,
+    ],
+    { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 300_000 },
+  );
+  if (exported.status !== 0) throw new Error(exported.error?.message ?? exported.stderr);
+  return exported.stdout;
+}
+const catalog = JSON.parse(runExporter("export-protocol"));
+// Export through the same Rust entry point as cli:build. Even --check writes
+// only into this temporary directory before comparing checked-in schemas.
+const temporarySchemas = mkdtempSync(join(tmpdir(), "bsk-protocol-"));
+let schemas;
+try {
+  runExporter("dump-schema", ["--", "--out-dir", temporarySchemas]);
+  schemas = new Map(
+    readdirSync(temporarySchemas)
+      .sort()
+      .map((name) => [name, readFileSync(join(temporarySchemas, name), "utf8")]),
+  );
+} finally {
+  rmSync(temporarySchemas, { recursive: true, force: true });
+}
 if (catalog.format_version !== 1 || !catalog.methods.length)
   throw new Error("Invalid protocol catalog");
 const definitions = catalog.schema.definitions;
@@ -318,26 +337,40 @@ const outputs = new Map([
   ],
 ]);
 const changed = [];
-for (const [name, source] of outputs) {
-  let existing;
+for (const [directory, files, label] of [
+  [destination, outputs, ""],
+  [join(root, "crates/bsk-protocol/schema"), schemas, "schema/"],
+]) {
+  let unexpected = [];
   try {
-    existing = readFileSync(join(destination, name), "utf8");
+    unexpected = readdirSync(directory).filter((name) => !files.has(name));
   } catch {}
-  if (existing !== source) changed.push(name);
-  if (!args.has("--check")) {
-    mkdirSync(destination, { recursive: true });
-    writeFileSync(join(destination, name), source);
+  if (unexpected.length)
+    throw new Error(
+      `Unexpected generated files: ${unexpected.map((name) => label + name).join(", ")}`,
+    );
+  for (const [name, source] of files) {
+    let existing;
+    try {
+      existing = readFileSync(join(directory, name), "utf8");
+    } catch {}
+    if (existing !== source) changed.push(label + name);
+    if (!args.has("--check")) {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, name), source);
+    }
   }
 }
-let unexpected = [];
-try {
-  unexpected = readdirSync(destination).filter((name) => !outputs.has(name));
-} catch {}
-if (unexpected.length) throw new Error(`Unexpected generated files: ${unexpected.join(", ")}`);
-const report = { methods: methods.length, contracts: names.length, fingerprint, stale: changed };
+const report = {
+  methods: methods.length,
+  contracts: names.length,
+  schemas: schemas.size,
+  fingerprint,
+  stale: changed,
+};
 console.log(
   args.has("--json")
     ? JSON.stringify(report, null, 2)
-    : `${args.has("--check") ? "Checked" : "Generated"} ${methods.length} extension methods and ${names.length} contracts.${args.has("--check") && changed.length ? ` Stale: ${changed.join(", ")}. Run pnpm protocol:generate.` : ""}`,
+    : `${args.has("--check") ? "Checked" : "Generated"} ${methods.length} extension methods, ${names.length} contracts and ${schemas.size} standalone schemas.${args.has("--check") && changed.length ? ` Stale: ${changed.join(", ")}. Run pnpm protocol:generate.` : ""}`,
 );
 if (args.has("--check") && changed.length) process.exitCode = 1;

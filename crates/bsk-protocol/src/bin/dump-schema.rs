@@ -34,7 +34,12 @@ fn standalone(catalog: &Value, name: &str) -> Value {
     let definitions = catalog["schema"]["definitions"]
         .as_object()
         .expect("definitions");
-    let mut root = definitions[name].clone();
+    let mut root = definitions.get(name).expect("root definition").clone();
+    // Boolean schemas are valid Draft-07 roots, but cannot carry metadata.
+    // Wrapping them preserves their meaning while allowing a title and dialect.
+    if root.is_boolean() {
+        root = serde_json::json!({ "allOf": [root] });
+    }
     let mut pending = BTreeSet::new();
     let mut included = Map::new();
     references(&root, &mut pending);
@@ -88,7 +93,9 @@ fn main() {
         for part in ["params", "result"] {
             let name = method[part].as_str().expect("contract name");
             // Daemon-private payloads are intentionally not extension contracts.
-            if name == "Value" {
+            if method["owner"] == "daemon"
+                && catalog["schema"]["definitions"][name] == Value::Bool(true)
+            {
                 continue;
             }
             write_schema(&dir, &format!("{base}_{part}"), standalone(&catalog, name));

@@ -14,8 +14,9 @@ cargo run -p bsk-protocol --bin dump-schema --locked -- --out-dir /tmp/bsk-schem
 ```
 
 `protocol:generate` builds the current Rust exporter with the locked Cargo dependencies, then writes
-`apps/extension/src/transport/generated/`. Commit those generated files with the Rust change.
-`protocol:check` regenerates in memory and compares every expected file byte for byte. Missing,
+`apps/extension/src/transport/generated/` and `crates/bsk-protocol/schema/`. Commit those generated
+files with the Rust change. `protocol:check` regenerates extension files in memory and standalone
+schemas in a temporary directory, then compares every expected file byte for byte. Missing,
 modified, or unexpected generated files fail the check. Frontend CI runs it before typechecking.
 There is no hand-maintained type-name intersection that can silently lose method coverage.
 
