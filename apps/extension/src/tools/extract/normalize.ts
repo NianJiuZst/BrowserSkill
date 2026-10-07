@@ -5,6 +5,7 @@ import type {
   ExtractSource,
   RawCapture,
   RawCell,
+  RawRow,
 } from "./types";
 import { ExtractionFailure } from "./validation";
 
@@ -35,6 +36,10 @@ export function normalizeExtract(
     },
     warnings: [...new Set(raw.warnings)],
   };
+  const positions = (visible: number[]) =>
+    [...new Set([...visible, ...(raw.omitted_rows ?? [])])].sort((a, b) => a - b);
+  const hasGaps = (indices: number[]) =>
+    indices.some((value, index) => value !== (index ? indices[index - 1] + 1 : 1));
   if (options.action === "list") {
     const fields = options.fields ?? [
       { key: "text", name: "Text" },
@@ -48,29 +53,64 @@ export function normalizeExtract(
     }));
     result.rows = raw.items;
     result.row_sources = raw.item_sources;
+    const indices = positions(raw.item_sources.map((row) => row.source_row));
     if (
-      (raw.item_sources[0]?.source_row ?? 1) > 1 ||
-      raw.item_sources.some(
-        (row, index) => index > 0 && row.source_row > raw.item_sources[index - 1].source_row + 1,
-      ) ||
+      hasGaps(indices) ||
       (raw.declared_rows !== undefined &&
-        (raw.declared_rows === -1 || raw.declared_rows > raw.items.length))
+        (raw.declared_rows === -1 || raw.declared_rows > indices.length))
     ) {
       result.coverage.dataset_complete = "incomplete";
       result.warnings.push("partial_dom_dataset");
     }
   } else if (options.action === "table") {
+    let rows = raw.rows;
+    if (raw.aria_rows) {
+      if (rows.some((row, index) => index > 0 && row.source_row < rows[index - 1].source_row))
+        result.warnings.push("aria_rows_reordered");
+      const ordered = [...rows].sort((a, b) => a.source_row - b.source_row);
+      const groups = new Map<number, number>();
+      const group = (value: number): number => {
+        while (groups.has(value)) value = groups.get(value)!;
+        return value;
+      };
+      const merged: RawRow[] = [];
+      for (const row of ordered) {
+        const previous = merged.at(-1);
+        if (!previous || previous.source_row !== row.source_row) {
+          merged.push({ ...row, cells: [...row.cells] });
+          continue;
+        }
+        // Duplicate indices are only safe to join when every fragment states
+        // its columns. The matrix below still rejects overlapping cells.
+        if (
+          !previous.indexed ||
+          !row.indexed ||
+          previous.kind !== row.kind ||
+          [...previous.cells, ...row.cells].some((cell) => cell.column_index === undefined)
+        )
+          throw new ExtractionFailure("extract_structure_invalid", "Ambiguous ARIA row fragments");
+        if (previous.cells.length + row.cells.length > options.max_columns)
+          throw new ExtractionFailure("extract_limit", "Merged ARIA row exceeds max_columns");
+        const from = group(row.group);
+        const to = group(previous.group);
+        if (from !== to) groups.set(from, to);
+        previous.cells.push(...row.cells);
+        previous.locator += ` | ${row.locator}`;
+        result.warnings.push("split_aria_rows_merged");
+      }
+      rows = merged.map((row) => ({ ...row, group: group(row.group) }));
+    }
     type Slot = { cell: RawCell; row: number; column: number; end: number; group: number };
     const active: (Slot | undefined)[] = [];
     const matrix: (Slot | undefined)[][] = [];
     const groupEnds = new Map<number, number>();
     const headers = new Map<string, RawCell>();
-    for (const row of raw.rows) {
+    for (const row of rows) {
       groupEnds.set(row.group, Math.max(groupEnds.get(row.group) ?? 0, row.source_row));
       for (const cell of row.cells) if (cell.id) headers.set(cell.id, cell);
     }
     let width = 0;
-    for (const [rowIndex, row] of raw.rows.entries()) {
+    for (const [rowIndex, row] of rows.entries()) {
       const slots: (Slot | undefined)[] = [];
       for (let col = 0; col < active.length; col++) {
         const slot = active[col];
@@ -105,7 +145,7 @@ export function normalizeExtract(
     for (let col = 0; col < width; col++) {
       const path: string[] = [];
       const seen = new Set<RawCell>();
-      for (const [rowIndex, row] of raw.rows.entries()) {
+      for (const [rowIndex, row] of rows.entries()) {
         if (row.kind !== "header") continue;
         const cell = matrix[rowIndex][col]?.cell;
         if (cell?.text && cell.header && !seen.has(cell)) {
@@ -114,7 +154,7 @@ export function normalizeExtract(
         }
       }
       // Explicit header IDs take precedence when the page supplies them.
-      const associations = raw.rows.flatMap((row, rowIndex) => {
+      const associations = rows.flatMap((row, rowIndex) => {
         if (row.kind === "header") return [];
         const cell = matrix[rowIndex][col]?.cell;
         if (!cell?.headers.length) return [];
@@ -139,7 +179,7 @@ export function normalizeExtract(
       };
       result.columns.push(column);
     }
-    for (const [rowIndex, row] of raw.rows.entries()) {
+    for (const [rowIndex, row] of rows.entries()) {
       if (row.kind === "header") continue;
       const output: Record<string, string | null> = Object.create(null);
       for (let col = 0; col < width; col++) {
@@ -170,13 +210,11 @@ export function normalizeExtract(
     }
     if (result.columns.some((column) => column.name_source === "generated"))
       result.warnings.push("generated_column_names");
+    const indices = positions(rows.map((row) => row.source_row));
     if (
-      raw.rows.some(
-        (row, index) => index > 0 && row.source_row > raw.rows[index - 1].source_row + 1,
-      ) ||
-      (raw.rows[0]?.source_row ?? 1) > 1 ||
+      hasGaps(indices) ||
       (raw.declared_rows !== undefined &&
-        (raw.declared_rows === -1 || raw.declared_rows > raw.rows.length)) ||
+        (raw.declared_rows === -1 || raw.declared_rows > indices.length)) ||
       (raw.declared_columns !== undefined &&
         (raw.declared_columns === -1 || raw.declared_columns > width))
     ) {

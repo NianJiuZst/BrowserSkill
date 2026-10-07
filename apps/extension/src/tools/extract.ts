@@ -80,6 +80,10 @@ function registry(ctx: SessionContext): Map<string, RetainedTarget> {
   for (const [id, target] of retained) if (target.expires <= Date.now()) retained.delete(id);
   return retained;
 }
+/** Preserve a discovery handle's tab before shared background preparation pins it. */
+export function extractTargetTab(ctx: SessionContext, targetId: string): number | undefined {
+  return registry(ctx).get(targetId)?.identity.target.tabId;
+}
 async function documentIdentity(
   cdp: CdpRunner,
   frame: CdpFrame,
@@ -184,10 +188,17 @@ export async function handleExtract(
     const options = validateExtract(params);
     const ctx = lookupSession(manager, params, "extract");
     if (isRpcError(ctx)) return ctx;
+    const retained = registry(ctx);
+    const saved = params.target_id ? retained.get(params.target_id) : undefined;
+    if (
+      params.target_id &&
+      (!saved || (params.tab_id !== undefined && params.tab_id !== saved.identity.target.tabId))
+    )
+      stale();
     const tab = await resolveCdpAccessibleTargetTab(
       manager,
       ctx,
-      params.tab_id,
+      params.tab_id ?? saved?.identity.target.tabId,
       deps.tabsApi,
       "extract",
     );
@@ -233,12 +244,10 @@ export async function handleExtract(
         message: "Could not establish the target document's frame identity",
       };
     const rootDoc = await documentIdentity(cdp, root, attachmentId);
-    const retained = registry(ctx);
     let selectedFrame = root;
     let backendNodeId: number | undefined;
     let expectedIdentity: DocumentIdentity | undefined;
     if (params.target_id) {
-      const saved = retained.get(params.target_id);
       if (!saved || saved.identity.target.tabId !== tab.tabId) stale();
       expectedIdentity = saved.identity;
       backendNodeId = saved.backendNodeId;
@@ -307,11 +316,6 @@ export async function handleExtract(
           output.coverage.stop_reason = raw.stop_reason;
         }
         for (const candidate of raw.targets) {
-          if (output.targets!.length === 32) {
-            output.coverage.truncated = true;
-            output.coverage.stop_reason = "target_limit";
-            break;
-          }
           if (!Number.isSafeInteger(candidate.node?.backendNodeId))
             throw new Error("Discovery did not return a DOM node identity");
           const id = `xt_${crypto.randomUUID()}`;
@@ -334,6 +338,19 @@ export async function handleExtract(
         }
       } catch (error) {
         if (
+          options.action === "discover" &&
+          output &&
+          !signal?.aborted &&
+          error instanceof ExtractionFailure &&
+          error.reason === "extract_limit"
+        ) {
+          output.coverage.truncated = true;
+          output.coverage.stop_reason = error.message.includes("deadline")
+            ? "time_limit"
+            : "collection_limit";
+          break;
+        }
+        if (
           options.action !== "discover" ||
           frame.frameId === root.frameId ||
           isCaptureTerminalError(error) ||
@@ -348,6 +365,12 @@ export async function handleExtract(
     }
     if (!output) throw new Error("No extraction result");
     if (options.action === "discover") {
+      output.targets!.sort((a, b) => Number(a.kind === "list") - Number(b.kind === "list"));
+      if (output.targets!.length > 32) {
+        output.targets!.length = 32;
+        output.coverage.truncated = true;
+        output.coverage.stop_reason ??= "target_limit";
+      }
       if (graph!.frames.length > frames.length && !options.selector) {
         output.coverage.truncated = true;
         output.coverage.stop_reason = "frame_limit";

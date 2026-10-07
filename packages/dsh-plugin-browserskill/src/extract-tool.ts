@@ -27,6 +27,10 @@ export const EXTRACT_PARAMETERS = {
   },
   maxRows: { type: "integer", description: "Maximum complete data rows, 1..5000; default 500." },
   maxColumns: { type: "integer", description: "Maximum logical columns, 1..200; default 100." },
+  extractTimeoutMs: {
+    type: "integer",
+    description: "Extraction time budget, 100..15000 milliseconds; default 5000.",
+  },
   extractFormat: {
     type: "string",
     enum: ["json", "csv"],
@@ -99,6 +103,7 @@ export function registerExtractTool(
           [args.maxRows, "--max-rows"],
           [args.maxColumns, "--max-columns"],
           [args.maxBytes, "--max-bytes"],
+          [args.extractTimeoutMs, "--timeout-ms"],
           [args.extractFormat, "--format"],
           [args.extractOutput, "--out"],
         ] as const)

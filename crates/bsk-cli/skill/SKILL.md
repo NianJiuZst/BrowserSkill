@@ -109,12 +109,13 @@ acting on HTML or screenshot findings. Inspect unknown effects before retrying.
 
 ## Read details only when needed
 
-Resolve paths from this skill's directory. Read the relevant reference before
-acting; load others as the task requires.
+Resolve references from this skill's directory, not the working directory.
+Read the matching reference before acting; do not preload all references.
+Load further references only as needed.
 
 | When | Read |
 | --- | --- |
-| Tables/lists: JSON/CSV, columns, sources, coverage | [Extraction](references/extraction.md) |
+| Table/list JSON/CSV export | [Extract](references/extraction.md) |
 | Website debugging, reproduction evidence, or request rules/replay | [Debugging](references/debugging.md) |
 | Required profile, existing user tab, multiple/background tabs, or remote tab ownership | [Tabs and profiles](references/tabs-and-profiles.md) |
 | Missing CLI, daemon startup failure, sandboxed startup, connection failure, or remote pairing | [Environment](references/environment.md) |

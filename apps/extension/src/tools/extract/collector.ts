@@ -1,4 +1,4 @@
-import type { CollectorOptions, RawCapture, RawCell, RawRow } from "./types";
+import type { CollectorOptions, RawCapture, RawCell, RawRow, RawTarget } from "./types";
 
 /**
  * Runs in an isolated renderer world. Keep all runtime helpers inside this
@@ -16,14 +16,24 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
     targets: [],
     truncated: false,
     warnings: [],
+    omitted_rows: [],
   };
   const started = performance.now();
   let work = 0;
   let textBytes = 0;
   const encoder = new TextEncoder();
-  const tableSelector = 'table,[role="table"],[role="grid"]';
+  const tableSelector = 'table,[role="table"],[role="grid"],[role="treegrid"]';
   const listSelector = 'ul,ol,[role="list"]';
   const hidden = new WeakMap<Element, boolean>();
+  const styles = new WeakMap<Element, CSSStyleDeclaration>();
+  const styleOf = (element: Element) => {
+    let style = styles.get(element);
+    if (!style) {
+      style = getComputedStyle(element);
+      styles.set(element, style);
+    }
+    return style;
+  };
   const fail = (reason: string, message: string): never => {
     throw new Error(`${reason}: ${message}`);
   };
@@ -53,7 +63,7 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
         break;
       }
       chain.push(current);
-      const style = getComputedStyle(current);
+      const style = styleOf(current);
       if (
         current.hasAttribute("hidden") ||
         current.hasAttribute("data-bsk-overlay") ||
@@ -67,44 +77,150 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
         value = true;
         break;
       }
-      current = current.parentElement ?? ((current.getRootNode() as ShadowRoot).host || null);
+      current =
+        current.assignedSlot ??
+        current.parentElement ??
+        ((current.getRootNode() as ShadowRoot).host || null);
     }
     for (const item of chain) hidden.set(item, value);
     return value;
   };
+  const childrenOf = (element: Element): ArrayLike<Node> => {
+    if (element instanceof HTMLSlotElement) return element.assignedNodes({ flatten: true });
+    return element.shadowRoot?.childNodes ?? element.childNodes;
+  };
   const text = (root: Element): string => {
     if (isHidden(root)) return "";
     const pieces: string[] = [];
-    const stack: Node[] = [...root.childNodes].reverse();
+    let pendingSpace = false;
+    let pendingBreak = false;
+    let lineStart = true;
+    const emit = (value: string) => {
+      if (!value) return;
+      if (pendingBreak && !lineStart) pieces.push("\n");
+      else if (pendingSpace && !lineStart && !value.startsWith("\n")) pieces.push(" ");
+      pendingSpace = false;
+      pendingBreak = false;
+      pieces.push(value);
+      lineStart = value.endsWith("\n");
+    };
+    const newline = () => {
+      pieces.push("\n");
+      pendingBreak = false;
+      pendingSpace = false;
+      lineStart = true;
+    };
+    const append = (value: string, whiteSpace: string) => {
+      consume(value);
+      if (["pre", "pre-wrap", "break-spaces"].includes(whiteSpace)) {
+        emit(value.replace(/\r\n?/g, "\n"));
+        return;
+      }
+      const lines = whiteSpace === "pre-line" ? value.replace(/\r\n?/g, "\n").split("\n") : [value];
+      for (const [index, line] of lines.entries()) {
+        if (index) newline();
+        const collapsed = line.replace(/[ \t\r\n\f]+/g, " ");
+        if (collapsed.startsWith(" ")) pendingSpace = true;
+        emit(collapsed.replace(/^ +| +$/g, ""));
+        if (collapsed.endsWith(" ")) pendingSpace = true;
+      }
+    };
+    type TextVisit = { node: Node; whiteSpace: string; exit?: boolean };
+    const stack: TextVisit[] = [{ node: root, whiteSpace: styleOf(root).whiteSpace }];
     while (stack.length) {
-      tick();
-      const node = stack.pop()!;
+      const { node, whiteSpace, exit } = stack.pop()!;
+      if (node !== root) tick();
+      if (exit) {
+        pendingBreak = true;
+        pendingSpace = false;
+        continue;
+      }
       if (node.nodeType === Node.TEXT_NODE) {
-        const part = node.nodeValue ?? "";
-        consume(part);
-        pieces.push(part);
+        append(node.nodeValue ?? "", whiteSpace);
         continue;
       }
       if (!(node instanceof Element)) continue;
       if (
         isHidden(node) ||
-        node.matches('script,style,template,noscript,input[type="password"]') ||
-        node.matches(tableSelector)
+        node.matches(
+          'script,style,template,noscript,input[type="password"],input[type="hidden"]',
+        ) ||
+        (node !== root && node.matches(tableSelector))
       )
         continue;
       if (node.tagName === "BR") {
-        pieces.push("\n");
+        newline();
         continue;
       }
-      if (node.matches("div,p,li,section,article")) pieces.push("\n");
-      const children = node.shadowRoot?.childNodes ?? node.childNodes;
-      for (let index = children.length - 1; index >= 0; index--) stack.push(children[index]);
+      const style = styleOf(node);
+      const block =
+        node !== root &&
+        /^(block|flow-root|list-item|flex|grid|table|table-row|table-caption)( |$)/.test(
+          style.display,
+        );
+      if (block) {
+        pendingBreak = true;
+        pendingSpace = false;
+        stack.push({ node, whiteSpace, exit: true });
+      }
+      if (node instanceof HTMLInputElement) {
+        if (!["checkbox", "radio", "file", "image"].includes(node.type))
+          append(node.value, "pre-wrap");
+        continue;
+      }
+      if (node instanceof HTMLTextAreaElement) {
+        append(node.value, "pre-wrap");
+        continue;
+      }
+      if (node instanceof HTMLSelectElement) {
+        for (const [index, option] of Array.from(node.selectedOptions).entries()) {
+          tick();
+          if (index) newline();
+          append(option.label, "normal");
+        }
+        continue;
+      }
+      const children = childrenOf(node);
+      for (let index = children.length - 1; index >= 0; index--)
+        stack.push({ node: children[index], whiteSpace: style.whiteSpace });
     }
-    return pieces
-      .join("")
-      .replace(/[ \t]+/g, " ")
-      .replace(/ *\n */g, "\n")
-      .trim();
+    return pieces.join("");
+  };
+  const ariaSpan = (cell: Element, name: string, allowZero = false) => {
+    const value = cell.getAttribute(name);
+    if (value === null) return 1;
+    const number = Number(value);
+    if (/^\d+$/.test(value) && Number.isSafeInteger(number) && number >= (allowZero ? 0 : 1))
+      return number;
+    result.warnings.push(`invalid_${name}`);
+    return 1;
+  };
+  const positions = new WeakMap<Element, number>();
+  const siblings = new WeakMap<ParentNode, { last: Element | null; counts: Map<string, number> }>();
+  const positionOf = (node: Element): number => {
+    const known = positions.get(node);
+    if (known !== undefined) return known;
+    const parent = node.parentNode as ParentNode | null;
+    if (!parent) return 1;
+    let scan = siblings.get(parent);
+    if (!scan) {
+      scan = { last: null, counts: new Map() };
+      siblings.set(parent, scan);
+    }
+    // Scan each parent's prefix once, without visiting an unneeded suffix.
+    for (
+      let child = scan.last ? scan.last.nextElementSibling : parent.firstElementChild;
+      child;
+      child = child.nextElementSibling
+    ) {
+      tick();
+      const count = (scan.counts.get(child.tagName) ?? 0) + 1;
+      scan.counts.set(child.tagName, count);
+      positions.set(child, count);
+      scan.last = child;
+      if (child === node) return count;
+    }
+    return fail("extract_target_stale", "The row is no longer attached to its parent");
   };
   const select = (root: ParentNode, selector: string): NodeListOf<Element> => {
     try {
@@ -132,15 +248,7 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
         segments.unshift(`#${CSS.escape(node.id)}`);
         break;
       }
-      let position = 1;
-      for (
-        let sibling = node.previousElementSibling;
-        sibling;
-        sibling = sibling.previousElementSibling
-      ) {
-        tick();
-        if (sibling.tagName === node.tagName) position++;
-      }
+      const position = positionOf(node);
       segments.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${position})`);
       if (!node.parentElement && (node.getRootNode() as ShadowRoot).host) {
         segments.unshift("::shadow");
@@ -152,6 +260,16 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
   const stop = (reason: string) => {
     result.truncated = true;
     result.stop_reason = reason;
+  };
+  const isLimit = (error: unknown): error is Error =>
+    error instanceof Error && error.message.startsWith("extract_limit:");
+  const limitReason = (error: Error, fallback: string) =>
+    error.message.includes("deadline") ? "time_limit" : fallback;
+  const omit = (element: Element, fallback: number, attribute: string) => {
+    const value = element.getAttribute(attribute);
+    const index = value === null ? fallback : Number(value);
+    if (Number.isSafeInteger(index) && index > 0) result.omitted_rows!.push(index);
+    result.warnings.push("hidden_rows_omitted");
   };
   try {
     if (options.anchored && (!this.isConnected || this.ownerDocument !== document))
@@ -167,40 +285,55 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
     }
     if (options.action === "discover") {
       const stack: Element[] = [root];
-      while (stack.length) {
-        tick();
-        const element = stack.pop()!;
-        if (isHidden(element)) continue;
-        if (
-          element.matches(`${tableSelector},${listSelector}`) &&
-          !["presentation", "none"].includes(element.getAttribute("role") ?? "")
-        ) {
-          if (result.targets.length === 32) {
-            stop("target_limit");
-            break;
+      const tables: RawTarget[] = [];
+      const lists: RawTarget[] = [];
+      let found = 0;
+      try {
+        while (stack.length) {
+          tick();
+          const element = stack.pop()!;
+          if (isHidden(element)) continue;
+          if (
+            element.matches(`${tableSelector},${listSelector}`) &&
+            !["presentation", "none"].includes(element.getAttribute("role") ?? "")
+          ) {
+            found++;
+            const candidates = element.matches(tableSelector) ? tables : lists;
+            if (tables.length === 32) {
+              stop("target_limit");
+              break;
+            }
+            if (candidates.length < 32) {
+              const columns: string[] = [];
+              for (const header of select(element, 'th,[role="columnheader"]')) {
+                if (columns.length >= 8) break;
+                if (header.closest(tableSelector) === element && !isHidden(header))
+                  columns.push(text(header));
+              }
+              const caption = element instanceof HTMLTableElement ? element.caption : null;
+              const label =
+                element.getAttribute("aria-label") ||
+                (caption ? text(caption) : "") ||
+                element.id ||
+                element.tagName.toLowerCase();
+              candidates.push({
+                kind: element.matches(tableSelector) ? "table" : "list",
+                name: label.slice(0, 500),
+                columns,
+                node: element as unknown as { backendNodeId: number },
+              });
+            }
           }
-          const columns: string[] = [];
-          for (const header of select(element, 'th,[role="columnheader"]')) {
-            if (columns.length >= 8) break;
-            if (header.closest(tableSelector) === element && !isHidden(header))
-              columns.push(text(header));
-          }
-          const caption = element instanceof HTMLTableElement ? element.caption : null;
-          const label =
-            element.getAttribute("aria-label") ||
-            (caption ? text(caption) : "") ||
-            element.id ||
-            element.tagName.toLowerCase();
-          result.targets.push({
-            kind: element.matches(tableSelector) ? "table" : "list",
-            name: label.slice(0, 500),
-            columns,
-            node: element as unknown as { backendNodeId: number },
-          });
+          const children = childrenOf(element);
+          for (let index = children.length - 1; index >= 0; index--)
+            if (children[index] instanceof Element) stack.push(children[index] as Element);
         }
-        const children = [...element.children, ...(element.shadowRoot?.children ?? [])];
-        for (let index = children.length - 1; index >= 0; index--) stack.push(children[index]);
+      } catch (error) {
+        if (!isLimit(error)) throw error;
+        stop(limitReason(error, "traversal_limit"));
       }
+      result.targets = [...tables, ...lists].slice(0, 32);
+      if (!result.truncated && found > 32) stop("target_limit");
       return result;
     }
     if (!options.anchored && !options.selector) {
@@ -238,16 +371,19 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
         : select(root, 'li,[role="listitem"]');
       let sourceRow = 0;
       for (const item of nodes) {
-        tick();
-        if (!options.item_selector && item.closest(listSelector) !== root) continue;
-        sourceRow++;
-        if (isHidden(item)) continue;
-        if (result.items.length === options.max_rows) {
-          stop("row_limit");
-          break;
-        }
-        const row: Record<string, string | null> = Object.create(null);
         try {
+          tick();
+          if (!options.item_selector && item.closest(listSelector) !== root) continue;
+          sourceRow++;
+          if (isHidden(item)) {
+            omit(item, sourceRow, "aria-posinset");
+            continue;
+          }
+          if (result.items.length === options.max_rows) {
+            stop("row_limit");
+            break;
+          }
+          const row: Record<string, string | null> = Object.create(null);
           const position = integer(item.getAttribute("aria-posinset"), sourceRow);
           if (position <= (result.item_sources.at(-1)?.source_row ?? 0))
             fail("extract_structure_invalid", "ARIA list positions must increase");
@@ -269,10 +405,15 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
               if (!isHidden(match)) visible.push(match);
               if (visible.length > 1) break;
             }
+            if (visible.length > 1 && !options.fields && field.key === "url") {
+              row[field.key] = null;
+              result.warnings.push("ambiguous_default_url");
+              continue;
+            }
             if (visible.length > 1)
               fail("extract_field_ambiguous", `Field ${field.key} matches multiple elements`);
             const element = visible[0];
-            if (!element || element.matches('input[type="password"]')) {
+            if (!element || element.matches('input[type="password"],input[type="hidden"]')) {
               row[field.key] = null;
               continue;
             }
@@ -301,12 +442,8 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
           result.items.push(row);
           result.item_sources.push(source);
         } catch (error) {
-          if (
-            error instanceof Error &&
-            error.message.startsWith("extract_limit:") &&
-            result.items.length
-          ) {
-            stop("collection_limit");
+          if (isLimit(error) && result.items.length) {
+            stop(limitReason(error, "collection_limit"));
             break;
           }
           throw error;
@@ -317,33 +454,38 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
     if (!root.matches(tableSelector))
       fail("extract_structure_invalid", "Target is not an HTML or ARIA table/grid");
     const native = root instanceof HTMLTableElement;
+    result.aria_rows = !native;
     const rows = native ? (root as HTMLTableElement).rows : select(root, '[role="row"]');
     const groups = new Map<Element | null, number>();
     let dataRows = 0;
     let previousSourceRow = 0;
+    const dataPositions = new Set<number>();
     let sawData = false;
     for (let index = 0; index < rows.length; index++) {
-      tick();
-      const element = rows[index];
-      if (element.closest(tableSelector) !== root) continue;
-      if (isHidden(element)) continue;
-      const sourceRow = integer(element.getAttribute("aria-rowindex"), index + 1);
-      if (sourceRow <= previousSourceRow)
-        fail("extract_structure_invalid", "ARIA row indices must increase");
-      previousSourceRow = sourceRow;
-      const rowCells =
-        element instanceof HTMLTableRowElement
-          ? element.cells
-          : select(
-              element,
-              '[role="cell"],[role="gridcell"],[role="columnheader"],[role="rowheader"]',
-            );
-      const cells: RawCell[] = [];
-      const groupElement = native ? element.parentElement : element.closest('[role="rowgroup"]');
-      if (!groups.has(groupElement)) groups.set(groupElement, groups.size);
-      const headerGroup = groupElement?.tagName === "THEAD";
-      const footerGroup = groupElement?.tagName === "TFOOT";
       try {
+        tick();
+        const element = rows[index];
+        if (element.closest(tableSelector) !== root) continue;
+        if (isHidden(element)) {
+          omit(element, index + 1, "aria-rowindex");
+          continue;
+        }
+        const sourceRow = integer(element.getAttribute("aria-rowindex"), index + 1);
+        if (native && sourceRow <= previousSourceRow)
+          fail("extract_structure_invalid", "ARIA row indices must increase");
+        previousSourceRow = sourceRow;
+        const rowCells =
+          element instanceof HTMLTableRowElement
+            ? element.cells
+            : select(
+                element,
+                '[role="cell"],[role="gridcell"],[role="columnheader"],[role="rowheader"]',
+              );
+        const cells: RawCell[] = [];
+        const groupElement = native ? element.parentElement : element.closest('[role="rowgroup"]');
+        if (!groups.has(groupElement)) groups.set(groupElement, groups.size);
+        const headerGroup = groupElement?.tagName === "THEAD";
+        const footerGroup = groupElement?.tagName === "TFOOT";
         for (let cellIndex = 0; cellIndex < rowCells.length; cellIndex++) {
           tick();
           const cell = rowCells[cellIndex];
@@ -359,7 +501,9 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
           const role = cell.getAttribute("role");
           const header =
             role === "columnheader" ||
-            (cell.tagName === "TH" && !["row", "rowgroup"].includes(scope) && role !== "rowheader");
+            ((headerGroup || cell.tagName === "TH") &&
+              !["row", "rowgroup"].includes(scope) &&
+              role !== "rowheader");
           const columnIndex =
             cell.getAttribute("aria-colindex") ??
             (cellIndex === 0 ? element.getAttribute("aria-colindex") : null);
@@ -369,24 +513,23 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
             headers: (cell.getAttribute("headers") ?? "").split(/\s+/).filter(Boolean),
             scope: role === "rowheader" ? "row" : scope,
             header,
-            row_span: integer(
-              cell.getAttribute("aria-rowspan") ?? cell.getAttribute("rowspan"),
-              1,
-              true,
-            ),
-            column_span: integer(
-              cell.getAttribute("aria-colspan") ?? cell.getAttribute("colspan"),
-              1,
-            ),
+            row_span:
+              cell instanceof HTMLTableCellElement
+                ? cell.getAttribute("rowspan") === "0"
+                  ? 0
+                  : cell.rowSpan
+                : ariaSpan(cell, "aria-rowspan", true),
+            column_span:
+              cell instanceof HTMLTableCellElement ? cell.colSpan : ariaSpan(cell, "aria-colspan"),
             ...(columnIndex !== null ? { column_index: integer(columnIndex, 1) } : {}),
           });
         }
         const isHeader =
           headerGroup ||
-          (!sawData &&
+          ((!native || !sawData) &&
             cells.some((cell) => cell.header) &&
             cells.every((cell) => cell.header || !cell.text));
-        if (!isHeader && dataRows === options.max_rows) {
+        if (!isHeader && !dataPositions.has(sourceRow) && dataRows === options.max_rows) {
           stop("row_limit");
           break;
         }
@@ -398,15 +541,17 @@ export function collectExtractDom(this: Element, options: CollectorOptions): Raw
           group: groups.get(groupElement)!,
           kind: isHeader ? "header" : footerGroup ? "footer" : "data",
           locator: locator(element),
+          indexed: element.hasAttribute("aria-rowindex"),
         };
         result.rows.push(row);
         if (!isHeader) {
-          dataRows++;
+          dataPositions.add(sourceRow);
+          dataRows = dataPositions.size;
           sawData = true;
         }
       } catch (error) {
-        if (error instanceof Error && error.message.startsWith("extract_limit:") && dataRows) {
-          stop("collection_limit");
+        if (isLimit(error) && dataRows) {
+          stop(limitReason(error, "collection_limit"));
           break;
         }
         throw error;

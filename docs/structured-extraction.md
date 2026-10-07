@@ -26,7 +26,10 @@ Discovery handles expire after five minutes and are scoped to the session,
 tab, attachment and frame document. Navigation, node removal or a new attachment
 invalidates them. Rediscover after such changes. Discovery is capped at 16 frames,
 32 returned targets and 8 preview headers per target; partial results are marked.
-A discovery selector limits the search to a subtree of the main document.
+A discovery selector limits the search to a subtree of the main document. Tables
+and grids take priority over lists within the visited DOM/frames. Traversal or
+time limits return the complete targets found so far. A target handle supplies
+its original tab when --tab-id is omitted; an explicit different tab is rejected.
 
 Fields files (or **--fields-json** with the same object) contain:
 
@@ -43,8 +46,9 @@ Fields files (or **--fields-json** with the same object) contain:
 Field selectors are relative to each item; **:scope** reads the item itself.
 Missing/hidden matches or absent attributes become null. More than one visible
 match is an error, rather than an arbitrary choice. Links are resolved against
-the document's base URL. Default semantic-list fields are text and url;
-items with multiple links need explicit field selectors. Arbitrary repeated
+the document's base URL. Default semantic-list fields are text and url; an item
+with multiple visible links retains its text and returns a null url with
+ambiguous_default_url. Use explicit field selectors to choose a link. Arbitrary repeated
 cards need both a container and an item selector. Fields files are limited to 256 KiB.
 
 ## JSON contract
@@ -62,17 +66,37 @@ The canonical result has schema_version 1, kind, tab_id, and:
 | warnings | Generated names, partial DOM data, varying header associations or unavailable frames. |
 | targets | Discovery only: handles, container kinds/names, frame provenance and column previews. |
 
-Native HTML tables and ARIA tables/grids support row/column spans, row headers,
+JSON object member order is not column order. Iterate columns and read
+row[column.key]; do not relabel Object.values(row) by position. CSV already uses
+this key-based mapping, including tables with more than nine columns.
+
+Native HTML tables and ARIA tables/grids/treegrids support row/column spans, row headers,
 multiple header rows, explicit header IDs, footer rows and ARIA row/column indices.
 Nested tables are independent targets; their cells do not leak into the parent.
 Duplicate names retain different column keys. Missing/empty headers become
 Column N; a headerless table keeps its first data row.
+Native spans use the browser's HTML parsing rules, including rowspan=0. Invalid
+ARIA spans fall back to one with invalid_aria-rowspan/invalid_aria-colspan warnings.
+ARIA rows are sorted by logical row index. Split rows sharing an explicit index
+are joined only when all fragments supply explicit, non-overlapping column indices
+and agree on row kind; ambiguous/conflicting fragments fail. Reordering and merges
+are reported as aria_rows_reordered and split_aria_rows_merged. Merged row locators
+join the contributing locations with " | ". Treegrid extraction reads loaded rows;
+it does not expand groups or infer an unrendered hierarchy.
 
 Hidden rows are omitted. Hidden cells, missing fields and span-covered cells
 are null; an existing empty cell is an empty string. Offscreen rendered DOM
 content can be read. Script/style/template content, password inputs and
-BrowserSkill overlays are excluded. Locators are diagnostic, not durable
+BrowserSkill overlays are excluded. Hidden rows produce hidden_rows_omitted;
+their known indices alone do not imply missing virtual rows. Locators are diagnostic, not durable
 selectors; ::shadow indicates a shadow boundary.
+
+Text follows open shadow roots and assigned slots, collapses ordinary template
+whitespace, and keeps BR/block boundaries and preformatted whitespace. Text-like
+inputs and textareas return live values; selects return selected option labels
+(one per line for multiple selections). Password/hidden inputs and checkbox,
+radio, file and image input values are not exported as text. This is DOM-based
+text extraction, not OCR or a complete reproduction of CSS generated content.
 
 Span counts retain the page-declared extent, including omitted rows. HTML
 rowspan=0 is resolved within the collected row group; if collection was truncated,
@@ -93,7 +117,11 @@ declared counts and warnings before using the result for totals.
 | --max-bytes | 1048576 | 1024–4194304 bytes of compact canonical JSON, including metadata |
 | --timeout-ms | 5000 | 100–15000 milliseconds |
 
-The collector also bounds DOM traversal and header rows. Time checking is
+These are upper bounds, not promises that every page will reach them. The collector
+also caps traversal work at 100,000 steps and header fragments at 32. Wider or
+more deeply nested content can exhaust work or byte budgets first. Row locator
+sibling positions are cached so ordinary long tables do not incur quadratic scans.
+Time checking is
 cooperative inside the collector; cancellation prevents publishing a cancelled
 result and releases remote object groups. An unresponsive renderer remains
 subject to the existing CDP/transport timeouts.
@@ -142,10 +170,11 @@ browser_inspect({ action: "extract", session: "<id>", extractKind: "table", sele
 ~~~
 
 List extraction uses itemSelector and the fields-object JSON string in
-extractFields. Budgets are maxRows, maxColumns and maxBytes. CSV requires an
+extractFields. Budgets are maxRows, maxColumns, maxBytes and extractTimeoutMs. CSV requires an
 output path so the plugin always receives structured JSON. The plugin uses the
 normal session registry, runner and queue; it does not introduce arbitrary
-page-script evaluation.
+page-script evaluation. Output paths are on the CLI host; relative paths resolve
+against that process's working directory. Prefer absolute paths in harness calls.
 
 ## Implementation
 

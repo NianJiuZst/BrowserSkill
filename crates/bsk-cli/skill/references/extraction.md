@@ -32,6 +32,8 @@ For repeated cards, use list with --selector, --item-selector and --fields:
 Field reads are text, href or attribute (also supply attribute). Selectors are
 relative to each item; :scope reads the item itself. Missing fields become null;
 multiple visible matches are errors. Semantic lists default to text and one link.
+The default URL is null with ambiguous_default_url when an item has several links;
+explicit field selectors remain strict.
 
 Discovery targets cover open shadow roots and available frames. They expire
 after five minutes and are bound to the session and document. Rediscover after
@@ -40,6 +42,7 @@ target and ref are mutually exclusive.
 
 Values stay strings. Empty cells are empty strings; missing/covered cells are
 null. Headers, spans, row positions and page/frame URLs are returned separately.
+Read each row by columns[].key; JSON object key order does not define column order.
 
 Raw CSV preserves formula-like text; use --csv-safe for untrusted spreadsheet
 imports. Originals are recorded in the sidecar. Verify its CSV hash after an

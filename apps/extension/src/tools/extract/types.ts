@@ -108,6 +108,7 @@ export interface RawRow {
   group: number;
   kind: "header" | "data" | "footer";
   locator: string;
+  indexed?: boolean;
 }
 export interface RawTarget {
   kind: "table" | "list";
@@ -129,5 +130,8 @@ export interface RawCapture {
   declared_rows?: number;
   declared_columns?: number;
   warnings: string[];
+  /** Internal facts for distinguishing hidden rows from missing virtual rows. */
+  omitted_rows?: number[];
+  aria_rows?: boolean;
   error?: { reason: string; message: string };
 }
