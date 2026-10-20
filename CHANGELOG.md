@@ -5,16 +5,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Starting from 0.2.0, CLI / Extension / DSH Plugin share the same version number.
 
-## [Unreleased]
+## [0.3.3] - 2026-10-14
+
+### Changed
+
+- **Breaking — DSH Plugin:** replace `browser_session`, `browser_page`,
+  `browser_inspect`, `browser_interact`, `browser_tabs`, and `browser_assist` with
+  the corresponding `bsk_*` names to coexist with other browser plugins.
+  The tool-name migration leaves actions, arguments, results and the
+  `browser-skill` skill name unchanged.
+  Old tool names are not registered as aliases. Upgrade the CLI and extension
+  to the coordinated 0.3.3 release before upgrading the plugin.
+  Update hardcoded calls and tool policies, restart the host, and reload the skill
+  in existing conversations. See the [migration guide](packages/dsh-plugin-browserskill/README.md#breaking-tool-api-migration-033).
+- CLI releases require verified Windows EV signing before publication. Builds,
+  internal signing and final publication are separate stages. Windows archives
+  contain the verified signed executable, and `version.json` hashes the final archives.
+- External links and manually created tabs that land in a background Agent Window
+  are routed to a normal user window, preserving task popups and human-assistance
+  or recording flows. Pending external tabs are excluded from default tool targeting.
+- English and Chinese privacy policies describe task video capture, the
+  `offscreen` permission, browser-local retention, authorized video exports and
+  deletion. The main READMEs document video recording and the DSH migration.
+
+### Added
+
+- [Task video recording](docs/video-recording.md): opt-in, silent H.264 MP4 capture
+  of one authorized tab through CLI, DSH or extension controls, with preview,
+  export, deletion and recovery of playable partial recordings. Recordings have
+  a 10-minute duration limit, a 256 MiB size limit and 24-hour retention.
+- [Structured extraction](docs/structured-extraction.md): discover and export
+  loaded tables and lists as JSON/CSV, retaining column order, page/frame sources,
+  merged-cell metadata and explicit completeness information. DSH bounds rows
+  returned to the model context.
+- [Element condition waits](docs/wait-for-element.md) in the CLI, extension and
+  DSH `bsk_page` tool, with explicit deadlines and recovery guidance.
+- CLI browser-selector errors list connected browsers when no instance matches.
 
 ### Fixed
 
+- DSH Plugin: roll back incomplete tool registration, surface activation failures,
+  and retry at skill/session lifecycle boundaries without leaving a partial suite.
+  Include tool schemas in the first `/browser-skill` request, and keep failure and
+  recovery notices synchronized with model skill results
+  ([#444](https://github.com/Tencent/BrowserSkill/issues/444)).
 - Extension: input to a background Agent Window tab no longer keeps failing with
   `input_not_ready` after Chrome drops the session's focus override without a detach
   ([#355](https://github.com/Tencent/BrowserSkill/issues/355)). The session's
   background-execution lease resends the override and waits for a rendered frame; the
   input is sent only once the page reports `visible`, and otherwise still fails before
   dispatch.
+- Fill editable controls and editor paragraphs through their editing host while
+  preserving the target paragraph's scope; reject noneditable targets and use a
+  consistent line model for reading editor text.
+- Downloads detect when the browser ignores the requested transfer directory and
+  validate the final path before importing a file.
+- Element waits enforce state and deadline contracts, treat absent elements as
+  hidden, and retry selectors after stale-node lookups.
+- Structured extraction preserves DOM values and bounded partial results, keeps
+  split grid rows together, and respects nested row ownership and frame visibility.
+- CLI navigation exits with code 4 when its lifecycle wait times out; DSH retains
+  the created session when start-with-URL navigation times out.
+- Video recording keeps startup cancellable, bounds capture waits, recovers from
+  navigation and transient overlay-discovery failures, prevents control-overlay
+  flashes, and selects an H.264 level appropriate for larger frames.
+- Avoid unnecessary debugger cancellation and incomplete tab cleanup in Yandex;
+  preserve task-popup provenance and recover transient focus changes.
 
 ## [0.3.2] - 2026-09-30
 

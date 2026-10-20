@@ -89,6 +89,7 @@ fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
         Command::Debug(args) => cli::debug::dispatch(*args, format),
         Command::Network(args) => cli::network::dispatch(args, format),
         Command::GetHtml(args) => cli::get_html::dispatch(args, format),
+        Command::Extract(args) => cli::extract::dispatch(args, format),
         Command::Navigate(args) => cli::navigate::dispatch_navigate_command(args, format),
         Command::NavigateBack(args) => cli::navigate::dispatch_navigate_back(args, format),
         Command::NavigateForward(args) => cli::navigate::dispatch_navigate_forward(args, format),
@@ -106,9 +107,11 @@ fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
         Command::Download(args) => cli::download::dispatch(args, format),
         Command::Evaluate(args) => cli::evaluate::dispatch(args, format),
         Command::WaitForNavigation(args) => cli::waits::dispatch_wait_for_navigation(args, format),
+        Command::WaitForElement(args) => cli::waits::dispatch_wait_for_element(args, format),
         Command::WaitMs(args) => cli::waits::dispatch_wait_ms(args, format),
         Command::RequestHelp(args) => cli::human_loop::dispatch(args, format),
         Command::Record(cmd) => cli::record::dispatch(cmd, format),
+        Command::Video(cmd) => cli::video::dispatch(cmd, format),
     }
 }
 

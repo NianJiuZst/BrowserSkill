@@ -378,7 +378,16 @@ pub enum StartSessionError {
         browsers: Vec<BrowserStatusEntry>,
     },
     #[error("requested browser is not connected")]
-    BrowserNotFound,
+    BrowserNotFound {
+        /// Snapshot of every currently connected browser, attached to
+        /// the daemon's structured error so a selector miss can list
+        /// the candidates the caller could have meant instead of
+        /// making the caller run `bsk browsers` and retry one instance
+        /// after another. Empty when nothing is connected, in which
+        /// case no `browsers` payload is emitted at all and the error
+        /// keeps its pre-existing wire shape.
+        browsers: Vec<BrowserStatusEntry>,
+    },
     #[error("label '{label}' matches {} connected browsers", instance_ids.len())]
     AmbiguousBrowserLabel {
         label: String,
@@ -409,7 +418,7 @@ impl StartSessionError {
         match self {
             StartSessionError::NoBrowserConnected => "no_browser_connected",
             StartSessionError::MultipleBrowsersOnline { .. } => "multiple_browsers_online",
-            StartSessionError::BrowserNotFound => "not_found",
+            StartSessionError::BrowserNotFound { .. } => "not_found",
             StartSessionError::AmbiguousBrowserLabel { .. } => "invalid_params",
             StartSessionError::IdExhausted => "protocol_error",
             StartSessionError::Timeout => "timeout",
@@ -454,12 +463,14 @@ const SESSION_ID_MAX_RESERVE_ATTEMPTS: u32 = 64;
 
 /// Agent Window creation hints forwarded to the extension on
 /// `tool.session_start`. `None` fields keep the extension-side defaults
-/// (focused window, browser-chosen size).
+/// (background window, browser-chosen size).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AgentWindowOptions {
+    /// Opt in to Chrome's shared incognito browsing session.
+    pub incognito: bool,
     /// Optional outer size as `(width, height)` CSS pixels.
     pub size: Option<(u32, u32)>,
-    /// Optional focus hint (`None` = extension default: focused).
+    /// Optional focus hint (`None` = extension default: background).
     pub focused: Option<bool>,
 }
 
@@ -524,7 +535,14 @@ pub(crate) async fn start_session_recoverable(
         SelectError::MultipleBrowsersOnline => StartSessionError::MultipleBrowsersOnline {
             browsers: snapshot_status_entries(registry, sessions),
         },
-        SelectError::NotFound => StartSessionError::BrowserNotFound,
+        // A selector miss is the one selection failure that used to
+        // carry no candidates, which pushed callers into enumerating
+        // `bsk browsers` and retrying instances one by one. Attach the
+        // same snapshot `multiple_browsers_online` already uses so the
+        // CLI can answer the miss in a single round trip.
+        SelectError::NotFound => StartSessionError::BrowserNotFound {
+            browsers: snapshot_status_entries(registry, sessions),
+        },
         SelectError::AmbiguousLabel {
             label,
             instance_ids,
@@ -536,6 +554,24 @@ pub(crate) async fn start_session_recoverable(
     if client.is_unresponsive() {
         return Err(StartSessionError::ExtensionUnresponsive);
     }
+    if window.incognito
+        && !bsk_protocol::tools::supports_incognito_sessions(&client.extension_protocol_version)
+    {
+        return Err(StartSessionError::ExtensionError(RpcError {
+            code: ErrorCode::Unsupported,
+            message: format!(
+                "Incognito sessions require extension protocol {} (connected: {}); update the BrowserSkill extension and retry",
+                bsk_protocol::tools::INCOGNITO_SESSION_PROTOCOL,
+                client.extension_protocol_version,
+            ),
+            data: Some(serde_json::json!({
+                "reason": "unsupported_feature", "operation": "session start --incognito",
+                "component": "extension",
+                "required_protocol": bsk_protocol::tools::INCOGNITO_SESSION_PROTOCOL,
+                "actual_protocol": client.extension_protocol_version,
+            })),
+        }));
+    }
     let session_id = sessions
         .reserve_id(client.id.clone(), SESSION_ID_MAX_RESERVE_ATTEMPTS, now_ms)
         .ok_or(StartSessionError::IdExhausted)?;
@@ -543,6 +579,7 @@ pub(crate) async fn start_session_recoverable(
         sessions.starting.lock().unwrap().insert(session_id.clone());
     }
     let params = SessionStartParams {
+        incognito: window.incognito,
         session_id: session_id.0.clone(),
         browser_instance_id: Some(client.id.0.clone()),
         width: window.size.map(|(width, _)| width),
@@ -1090,6 +1127,7 @@ mod link_tests {
                     AgentWindowOptions {
                         size: None,
                         focused: Some(false),
+                        ..Default::default()
                     },
                     Duration::ZERO,
                     timeout,

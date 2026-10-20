@@ -1,5 +1,6 @@
 import { isAgentControlledTab, type SessionManager } from "@/session-manager/manager";
 import type { RequestFrame, RpcError } from "@/transport/types";
+import { extractTargetTab } from "./extract";
 import { toolPolicy } from "./policy";
 import {
   type CdpRunner,
@@ -21,13 +22,21 @@ export async function prepareBackgroundExecution(
 ): Promise<RpcError | undefined> {
   const policy = toolPolicy(request.method);
   if (!cdp?.acquireBackgroundExecution || !policy || policy.background === "none") return;
-  const params = request.params as { session_id?: string; tab_id?: number } | undefined;
+  const params = request.params as
+    | { session_id?: string; tab_id?: number; target_id?: string }
+    | undefined;
   if (!params?.session_id) return;
   const ctx = manager.get(params.session_id);
   if (!ctx) return;
+  const extractionHandle =
+    request.method === "tool.extract" && typeof params.target_id === "string";
+  const tabId =
+    params.tab_id ?? (extractionHandle ? extractTargetTab(ctx, params.target_id!) : undefined);
+  // Let extraction report an expired/foreign handle before preparing a default tab.
+  if (extractionHandle && tabId === undefined) return;
   const target = await (policy.background === "accessible"
-    ? resolveCdpAccessibleTargetTab(manager, ctx, params.tab_id, tabs, request.method)
-    : resolveTargetTab(manager, ctx, params.tab_id, tabs));
+    ? resolveCdpAccessibleTargetTab(manager, ctx, tabId, tabs, request.method)
+    : resolveTargetTab(manager, ctx, tabId, tabs));
   if (isRpcError(target)) return target;
   request.params = { ...params, tab_id: target.tabId };
   // Navigation owns preparation: an inaccessible source document must still

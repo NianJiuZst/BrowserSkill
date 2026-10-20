@@ -120,6 +120,9 @@ methods! {
     ToolScreenshotRead => ("tool.screenshot_read", Extension, PassiveRead, ScreenshotReadParams, ScreenshotReadResult),
     ToolScreenshotRelease => ("tool.screenshot_release", Extension, ControlPlane, ScreenshotReleaseParams, ScreenshotReleaseResult),
     ToolConsole => ("tool.console", Extension, PassiveRead, ConsoleParams, ConsoleResult),
+    ToolExtract => ("tool.extract", Extension, PassiveRead, ExtractParams, ExtractResult),
+    ToolWaitForElement => ("tool.wait_for_element", Extension, PassiveRead, WaitForElementParams, WaitForElementResult),
+    ToolVideo => ("tool.video", Extension, ControlPlane, VideoParams, VideoResult),
     ToolDebug => ("tool.debug", Extension, ControlPlane, DebugParams, DebugResult),
     ToolNetwork => ("tool.network", Extension, PassiveRead, NetworkParams, NetworkResult),
     ToolEvaluate => ("tool.evaluate", Extension, BrowserMutation, EvaluateParams, EvaluateResult),
@@ -151,10 +154,12 @@ impl Method {
         } else {
             self.effect()
         };
-        matches!(
-            effect,
-            MethodEffect::BrowserMutation | MethodEffect::TransientInput
-        )
+        (matches!(self, Method::ToolVideo)
+            && params.get("action").and_then(|value| value.as_str()) == Some("start"))
+            || matches!(
+                effect,
+                MethodEffect::BrowserMutation | MethodEffect::TransientInput
+            )
     }
 
     /// Whether this RPC drives browser/page state in the traditional sense.
@@ -176,6 +181,28 @@ mod tests {
     use super::*;
     use crate::{CancelParams, CancelResult};
     use serde_json::json;
+
+    #[test]
+    fn video_start_respects_interrupts_but_teardown_and_artifact_reads_remain_available() {
+        assert!(
+            super::Method::ToolVideo
+                .requires_interrupt_gate_with_params(&serde_json::json!({"action":"start"}))
+        );
+        for action in [
+            "capabilities",
+            "list",
+            "status",
+            "stop",
+            "read",
+            "exported",
+            "discard",
+        ] {
+            assert!(
+                !super::Method::ToolVideo
+                    .requires_interrupt_gate_with_params(&serde_json::json!({"action": action}))
+            );
+        }
+    }
 
     #[test]
     fn cancel_method_round_trips() {
@@ -258,10 +285,13 @@ mod tests {
         assert!(!Method::ToolHover.is_mutating());
         assert!(!Method::ToolObserve.is_mutating());
         assert!(!Method::ToolGetHtml.is_mutating());
+        assert_eq!(Method::ToolExtract.effect(), MethodEffect::PassiveRead);
+        assert!(!Method::ToolExtract.is_mutating());
         assert!(!Method::ToolScreenshot.is_mutating());
         assert!(!Method::ToolConsole.is_mutating());
         assert!(!Method::ToolNetwork.is_mutating());
         assert!(!Method::ToolWaitForNavigation.is_mutating());
+        assert!(!Method::ToolWaitForElement.is_mutating());
         assert!(!Method::ToolWaitMs.is_mutating());
     }
 

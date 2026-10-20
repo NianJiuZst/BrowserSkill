@@ -42,7 +42,8 @@ pub fn execution_policy(method: &Method) -> ExecutionPolicy {
         | ToolNavigateBack
         | ToolNavigateForward
         | ToolReload
-        | ToolWaitForNavigation => ExecutionPolicy {
+        | ToolWaitForNavigation
+        | ToolWaitForElement => ExecutionPolicy {
             response_grace: true,
             ..ORDINARY
         },
@@ -96,6 +97,8 @@ pub fn execution_policy(method: &Method) -> ExecutionPolicy {
         | ToolSnapshot
         | ToolObserve
         | ToolGetHtml
+        | ToolExtract
+        | ToolVideo
         | ToolScreenshot
         | ToolScreenshotRead
         | ToolScreenshotRelease

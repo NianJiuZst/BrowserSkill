@@ -267,6 +267,7 @@ pub fn full_handler(status: DaemonStatus, state: Arc<DaemonState>) -> RpcHandler
                 Method::TransferFinish => handle_transfer_finish(&state, params),
                 Method::TransferRead => handle_transfer_read(&state, params),
                 Method::TransferRelease => handle_transfer_release(&state, params),
+                Method::ToolVideo => handle_video(&state, rpc_id, params).await,
                 Method::ToolTabList
                 | Method::ToolTabCreate
                 | Method::ToolTabClose
@@ -285,6 +286,7 @@ pub fn full_handler(status: DaemonStatus, state: Arc<DaemonState>) -> RpcHandler
                 | Method::ToolSnapshot
                 | Method::ToolObserve
                 | Method::ToolGetHtml
+                | Method::ToolExtract
                 | Method::ToolNavigate
                 | Method::ToolNavigateBack
                 | Method::ToolNavigateForward
@@ -302,6 +304,7 @@ pub fn full_handler(status: DaemonStatus, state: Arc<DaemonState>) -> RpcHandler
                 | Method::ToolDownload
                 | Method::ToolEvaluate
                 | Method::ToolWaitForNavigation
+                | Method::ToolWaitForElement
                 | Method::ToolRequestHelp
                 | Method::ToolRecordStart
                 | Method::ToolRecordStop
@@ -322,6 +325,74 @@ pub fn full_handler(status: DaemonStatus, state: Arc<DaemonState>) -> RpcHandler
             body
         })
     })
+}
+
+/// Stored videos remain addressable after session teardown. Only start takes
+/// the session queue; status, stop and artifact transfer cannot wait behind a
+/// long page action. The extension validates connection ownership + capability.
+async fn handle_video(state: &Arc<DaemonState>, rpc_id: RpcId, params: Value) -> ResponseBody {
+    use super::browsers::SendError;
+    if let Err(error) = serde_json::from_value::<bsk_protocol::tools::VideoParams>(params.clone()) {
+        return ResponseBody::Err(invalid_params(error.to_string()));
+    }
+    let browser = if let Some(session_id) = params.get("session_id").and_then(Value::as_str) {
+        let Some(session) = state.sessions.get(&SessionId(session_id.into())) else {
+            return ResponseBody::Err(invalid_params("Video task session is no longer active"));
+        };
+        state.browsers.get(&session.browser_id)
+    } else {
+        match state
+            .browsers
+            .select(params.get("browser").and_then(Value::as_str))
+        {
+            Ok(browser) => Some(browser),
+            Err(error) => {
+                return ResponseBody::Err(invalid_params(format!(
+                    "Select a connected browser with --browser: {error:?}"
+                )));
+            }
+        }
+    };
+    let Some(browser) = browser else {
+        return ResponseBody::Err(invalid_params(
+            "Recording browser is disconnected; reconnect it to retrieve the video",
+        ));
+    };
+    let mut result = if params.get("action").and_then(Value::as_str) == Some("start") {
+        handle_tool_dispatch(state, rpc_id, Method::ToolVideo, params).await
+    } else {
+        let id = format!("video-{}", uuid::Uuid::new_v4().simple());
+        let receiver = match browser.dispatch(bsk_protocol::RequestFrame {
+            id: id.clone(),
+            method: Method::ToolVideo,
+            params: Some(params),
+        }) {
+            Ok(receiver) => receiver,
+            Err(SendError::Terminated(error)) => return ResponseBody::Err(error),
+            Err(SendError::SinkClosed) => {
+                return ResponseBody::Err(invalid_params("Recording browser disconnected"));
+            }
+        };
+        let reply = tokio::time::timeout(Duration::from_secs(32), receiver).await;
+        browser
+            .pending
+            .lock()
+            .expect("browser pending poisoned")
+            .cancel(&id);
+        match reply {
+            Ok(Ok(frame)) => frame.body,
+            Ok(Err(_)) => ResponseBody::Err(invalid_params("Recording browser disconnected")),
+            Err(_) => ResponseBody::Err(RpcError {
+                code: ErrorCode::Timeout,
+                message: "Video service timed out; use video list/status before retrying".into(),
+                data: None,
+            }),
+        }
+    };
+    if let ResponseBody::Ok(value) = &mut result {
+        value["browser"] = Value::String(browser.id.0.clone());
+    }
+    result
 }
 
 /// IPC entry point for `tool.*` RPCs (M6+). Looks up the per-session
@@ -868,6 +939,8 @@ fn tool_dispatch_transport_timeout(method: &Method, params: &Value) -> Result<Du
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CliSessionStartParams {
     #[serde(default)]
+    pub incognito: bool,
+    #[serde(default)]
     pub browser_instance_id: Option<String>,
     #[serde(default)]
     pub width: Option<u32>,
@@ -985,6 +1058,7 @@ pub(super) async fn handle_session_start(
     let cancel = abort_guard.token().clone();
     let params: CliSessionStartParams = if params.is_null() {
         CliSessionStartParams {
+            incognito: false,
             browser_instance_id: None,
             width: None,
             height: None,
@@ -1016,6 +1090,7 @@ pub(super) async fn handle_session_start(
         &state.tool_queues,
         params.browser_instance_id.as_deref(),
         AgentWindowOptions {
+            incognito: params.incognito,
             size: window_size,
             focused: params.focused,
         },
@@ -1051,7 +1126,7 @@ fn map_start_error(err: StartSessionError) -> RpcError {
     let code = match &err {
         StartSessionError::NoBrowserConnected => ErrorCode::NoBrowserConnected,
         StartSessionError::MultipleBrowsersOnline { .. } => ErrorCode::MultipleBrowsersOnline,
-        StartSessionError::BrowserNotFound => ErrorCode::NotFound,
+        StartSessionError::BrowserNotFound { .. } => ErrorCode::NotFound,
         StartSessionError::AmbiguousBrowserLabel { .. } => ErrorCode::InvalidParams,
         StartSessionError::IdExhausted => ErrorCode::ProtocolError,
         StartSessionError::Timeout => ErrorCode::Timeout,
@@ -1064,6 +1139,14 @@ fn map_start_error(err: StartSessionError) -> RpcError {
     let message = err.to_string();
     let data = match &err {
         StartSessionError::MultipleBrowsersOnline { browsers } => {
+            Some(serde_json::json!({ "browsers": browsers }))
+        }
+        // A selector miss lists the candidates it could have meant, so
+        // the caller can pick a connected instance or label instead of
+        // probing every browser in turn. Emitted only when at least one
+        // browser is online, so a miss against an empty registry keeps
+        // the historical `code` + `message`-only payload.
+        StartSessionError::BrowserNotFound { browsers } if !browsers.is_empty() => {
             Some(serde_json::json!({ "browsers": browsers }))
         }
         StartSessionError::AmbiguousBrowserLabel {
@@ -2123,5 +2206,164 @@ mod tests {
         drop(reader);
         let _ = tx.send(());
         let _ = server.await;
+    }
+}
+
+/// Platform-neutral coverage for the `session.start` selector-miss
+/// payload. Kept out of the `#[cfg(all(test, unix))]` IPC transport
+/// module above so it also runs on Windows.
+#[cfg(test)]
+mod selector_miss_payload_tests {
+    use super::*;
+    use crate::daemon::browsers::{
+        BrowserClient, BrowserId, BrowserRegistry, BrowserSink, Liveness, Pending,
+        next_browser_generation,
+    };
+    use crate::daemon::queue::ToolQueueRegistry;
+    use crate::daemon::sessions::{SessionRegistry, start_session_recoverable};
+    use std::sync::Mutex;
+
+    fn status_entry(instance_id: &str, label: &str) -> BrowserStatusEntry {
+        BrowserStatusEntry {
+            instance_id: instance_id.into(),
+            browser_name: "chrome".into(),
+            browser_version: "131".into(),
+            extension_version: "0.1.0-dev.0".into(),
+            label: label.into(),
+            session_count: 0,
+            connected_at_ms: 1,
+            version_skew: false,
+            extension_protocol_version: String::new(),
+            unresponsive: false,
+        }
+    }
+
+    /// A selector miss must hand the caller the connected candidates so
+    /// it can pick a real instance id or label in one round trip,
+    /// instead of enumerating `bsk browsers` and retrying instances one
+    /// after another.
+    #[test]
+    fn browser_selector_miss_lists_connected_candidates() {
+        let err = map_start_error(StartSessionError::BrowserNotFound {
+            browsers: vec![status_entry("alpha", "Personal"), status_entry("beta", "")],
+        });
+        assert_eq!(err.code, ErrorCode::NotFound);
+        // The human-readable message is unchanged (existing callers and
+        // the `details:` line depend on it).
+        assert_eq!(err.message, "requested browser is not connected");
+        let data = err.data.expect("selector miss must carry candidates");
+        let browsers = data["browsers"].as_array().expect("browsers array");
+        assert_eq!(browsers.len(), 2);
+        assert_eq!(browsers[0]["instance_id"], "alpha");
+        assert_eq!(browsers[0]["label"], "Personal");
+        assert_eq!(browsers[1]["instance_id"], "beta");
+    }
+
+    /// Backward compatibility: with nothing connected there is nothing
+    /// to suggest, so the error keeps its previous message-only shape.
+    #[test]
+    fn browser_selector_miss_without_browsers_keeps_message_only_payload() {
+        let err = map_start_error(StartSessionError::BrowserNotFound { browsers: vec![] });
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert_eq!(err.message, "requested browser is not connected");
+        assert!(
+            err.data.is_none(),
+            "an empty registry must not invent a `browsers` payload"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Integration: the real start path, not the pieces
+    // -----------------------------------------------------------------
+
+    /// A registered browser, built in-process. `BrowserClient`'s fields
+    /// are public, so this registers candidates through the same
+    /// `BrowserRegistry` the daemon fills from the extension handshake —
+    /// no transport, no extension, no model.
+    fn connected_browser(instance_id: &str, label: &str) -> Arc<BrowserClient> {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Arc::new(BrowserClient {
+            id: BrowserId(instance_id.into()),
+            browser_name: "chrome".into(),
+            browser_version: "131".into(),
+            extension_version: "0.1.0-dev.0".into(),
+            extension_protocol_version: "1.0".into(),
+            label: label.into(),
+            sink: BrowserSink { tx },
+            pending: Mutex::new(Pending::default()),
+            generation: next_browser_generation(),
+            connected_at_ms: 0,
+            version_skew: false,
+            liveness: Liveness::default(),
+        })
+    }
+
+    /// Drives the function the daemon actually calls for
+    /// `session.start` against a populated registry. The two tests above
+    /// cover the error mapping and the CLI rendering in isolation; this
+    /// one pins both halves of the review ask on a single run:
+    ///
+    /// 1. the candidate list reaches the caller in the wire shape, and
+    /// 2. a failed selection creates **no** session.
+    ///
+    /// (2) is structural today — the selection `?` returns before any id
+    /// is reserved — and this test is what keeps it that way.
+    #[tokio::test]
+    async fn selector_miss_reaches_caller_and_creates_no_session() {
+        let registry = Arc::new(BrowserRegistry::new());
+        registry.insert(connected_browser("alpha", "Personal"));
+        registry.insert(connected_browser("beta", ""));
+        let sessions = Arc::new(SessionRegistry::new());
+        let queues = Arc::new(ToolQueueRegistry::new(registry.clone(), sessions.clone()));
+
+        assert!(sessions.is_empty(), "fixture must start with no sessions");
+
+        // A selector that matches nothing, with two browsers online:
+        // this must fail immediately and start nothing.
+        let error = start_session_recoverable(
+            &registry,
+            &sessions,
+            &queues,
+            Some("no-such-browser"),
+            AgentWindowOptions::default(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            None,
+            false,
+        )
+        .await
+        .expect_err("a selector that matches nothing must not start a session");
+
+        // (2) no session was reserved, so the caller can retry with a
+        // real instance id from the list below.
+        assert!(
+            sessions.is_empty(),
+            "a selector miss must not leave a session behind"
+        );
+
+        // (1) the candidates reach the caller through the daemon's own
+        // error mapping.
+        let rpc = map_start_error(error);
+        assert_eq!(rpc.code, ErrorCode::NotFound);
+        let data = rpc
+            .data
+            .expect("a miss with browsers online must carry candidates");
+        let browsers = data["browsers"].as_array().expect("browsers array");
+        let seen: Vec<(&str, &str)> = browsers
+            .iter()
+            .map(|b| {
+                (
+                    b["instance_id"].as_str().expect("instance_id"),
+                    b["label"].as_str().expect("label"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen.len(),
+            2,
+            "both connected browsers must be listed, got {seen:?}"
+        );
+        assert!(seen.contains(&("alpha", "Personal")), "got {seen:?}");
+        assert!(seen.contains(&("beta", "")), "got {seen:?}");
     }
 }

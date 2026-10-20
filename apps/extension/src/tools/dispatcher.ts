@@ -16,6 +16,8 @@ import {
 import type { Transport } from "@/transport/transport";
 import type { HoverResult, ProtocolFrame, ResponseFrame, RpcError } from "@/transport/types";
 import { isRequestFrame } from "@/transport/types";
+import { videoError } from "@/video/errors";
+import type { VideoManager } from "@/video/manager";
 import { auditContext } from "./audit-context";
 import { prepareBackgroundExecution } from "./background-execution";
 import { handleConsole } from "./console";
@@ -24,6 +26,7 @@ import { handleDownload } from "./download";
 import { type EmulateCdpRunner, handleEmulate } from "./emulate";
 import { classifyCdpError } from "./errors";
 import { handleEvaluate } from "./evaluate";
+import { handleExtract } from "./extract";
 import { handleRequestHelp } from "./human-loop";
 import {
   handleBlur,
@@ -72,7 +75,7 @@ import {
   handleTabSelect,
 } from "./tabs";
 import { handleUpload } from "./upload";
-import { handleWaitForNavigation } from "./waits";
+import { handleWaitForElement, handleWaitForNavigation } from "./waits";
 import { handleWheel } from "./wheel";
 import { handleWindowResize } from "./window";
 
@@ -95,6 +98,7 @@ interface HoverLatchScope {
 }
 
 export interface DispatcherDeps {
+  video?: VideoManager;
   debug?: DebugManager;
   transport: Transport;
   sessions: SessionManager;
@@ -135,6 +139,7 @@ export interface DispatcherDeps {
  * takes the fast path.
  */
 export class ToolDispatcher {
+  private readonly video?: VideoManager;
   private readonly debug?: DebugManager;
   private readonly transport: Transport;
   private readonly sessions: SessionManager;
@@ -161,6 +166,7 @@ export class ToolDispatcher {
   readonly inflightAbortControllers = new Map<string, AbortController>();
 
   constructor(deps: DispatcherDeps) {
+    this.video = deps.video;
     this.debug = deps.debug;
     this.transport = deps.transport;
     this.sessions = deps.sessions;
@@ -320,7 +326,8 @@ export class ToolDispatcher {
         : await this.invoke(req, ac.signal);
       if (!isRpcError(result)) {
         const invalid = validateToolResult(req.method, result);
-        if (invalid && startsSession) await this.sessions.stop(req.params.session_id);
+        if (invalid && startsSession && "session_id" in req.params && req.params.session_id)
+          await this.sessions.stop(req.params.session_id);
         result = invalid ?? result;
       }
       this.debug?.after(debugTicket, isRpcError(result) ? result.message : undefined);
@@ -330,7 +337,7 @@ export class ToolDispatcher {
       } else {
         body = { id: req.id, result };
         if (req.method === "tool.session_start") {
-          startedSession = req.params.session_id;
+          startedSession = "session_id" in req.params ? (req.params.session_id ?? null) : null;
         }
       }
     } catch (err) {
@@ -392,6 +399,28 @@ export class ToolDispatcher {
   }
 
   private readonly handlers: ToolHandlerMap = {
+    "tool.video": async (params, signal) => {
+      if (!this.video)
+        return { code: "unsupported", message: "Video recording requires a compatible extension" };
+      try {
+        return await this.video.rpc(params, signal);
+      } catch (error) {
+        return videoError(error, signal?.aborted ? "cancelled" : "cdp_failed");
+      }
+    },
+    "tool.extract": async (params, signal) =>
+      handleExtract(
+        this.sessions,
+        params,
+        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi } : undefined,
+        signal,
+      ),
+    "tool.wait_for_element": async (params, signal) =>
+      handleWaitForElement(
+        this.sessions,
+        params,
+        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+      ),
     "tool.debug": async (params, signal, onInputSent) => {
       if (!this.debug)
         return {
@@ -407,6 +436,10 @@ export class ToolDispatcher {
       });
     },
     "tool.session_stop": async (params, signal, onInputSent) => {
+      if (this.video)
+        await this.video
+          .stopSession(params.session_id)
+          .catch((error) => console.warn("Video finalization failed during task cleanup", error));
       this.debug?.releaseSession(params.session_id);
       await this.screenshotExports.releaseSession(params.session_id);
       await this.releaseHoverLatch(params.session_id);
@@ -991,7 +1024,9 @@ function recordingRuntimeUnavailable(): RpcError {
 }
 
 function sessionIdForBrowserControlMethod(req: ToolRequest): string | null {
-  return resumesBrowserControl(req.method, req.params) ? req.params.session_id : null;
+  return resumesBrowserControl(req.method, req.params) && "session_id" in req.params
+    ? (req.params.session_id ?? null)
+    : null;
 }
 
 async function bypassOverlay(tabId: number, enabled: boolean): Promise<void> {

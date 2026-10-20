@@ -221,6 +221,43 @@ describe("ToolDispatcher", () => {
     expect(create).toHaveBeenCalledWith("about:blank", { focused: false });
   });
 
+  it("starts an incognito session through the normal dispatcher", async () => {
+    const { transport, sent, deliver } = fakeTransport();
+    const create = vi.fn(async () => ({ windowId: 4242, initialTabIds: [1], incognito: true }));
+    const sessions = new SessionManager({
+      agentWindow: { create, remove: vi.fn(), ensureActiveTab: vi.fn(async () => 1) },
+    });
+    const dispatcher = new ToolDispatcher({ transport, sessions });
+    dispatcher.start();
+    deliver(makeRequest("tool.session_start", { session_id: "private", incognito: true }));
+    await flushMicrotasks();
+    expect(create).toHaveBeenCalledWith("about:blank", { incognito: true });
+    expect(sessions.get("private")?.incognito).toBe(true);
+    expect(sent[0]).toMatchObject({ result: { agent_window_id: 4242 } });
+    dispatcher.stop();
+  });
+
+  it.each([
+    "true",
+    1,
+    null,
+  ])("rejects invalid incognito input %s before creating a window", async (incognito) => {
+    const { transport, sent, deliver } = fakeTransport();
+    const create = vi.fn();
+    const sessions = new SessionManager({
+      agentWindow: { create, remove: vi.fn(), ensureActiveTab: vi.fn() },
+    });
+    const dispatcher = new ToolDispatcher({ transport, sessions });
+    dispatcher.start();
+    deliver(makeRequest("tool.session_start", { session_id: "private", incognito }));
+    await flushMicrotasks();
+    expect(sent[0]).toMatchObject({
+      error: { code: "invalid_params", message: "tool.session_start: /incognito must be boolean" },
+    });
+    expect(create).not.toHaveBeenCalled();
+    dispatcher.stop();
+  });
+
   it("routes tool.session_stop and replies with empty result", async () => {
     const { transport, sent, deliver } = fakeTransport();
     const sessions = new SessionManager({
@@ -239,6 +276,65 @@ describe("ToolDispatcher", () => {
     expect(sessions.has("aa11")).toBe(false);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toEqual({ id: "r-1", result: {} });
+  });
+
+  it.each([
+    "not_found",
+    "permission_denied",
+    "timeout",
+    "unsupported",
+    "cdp_failed",
+  ] as const)("preserves video %s errors and their diagnostic data", async (code) => {
+    const { transport, sent, deliver } = fakeTransport();
+    const error = { code, message: "original failure", data: { phase: "video" } };
+    const video = {
+      rpc: vi.fn(async () => {
+        throw error;
+      }),
+    } as unknown as NonNullable<ConstructorParameters<typeof ToolDispatcher>[0]["video"]>;
+    const dispatcher = new ToolDispatcher({ transport, sessions: new SessionManager(), video });
+    dispatcher.start();
+    try {
+      deliver(
+        makeRequest("tool.video", {
+          action: "status",
+          browser: "chrome",
+          recording_id: "video",
+          capability: "test",
+        }),
+      );
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      expect(sent[0]).toEqual({ id: "r-1", error });
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  it("still cleans up a task when video finalization fails", async () => {
+    const { transport, sent, deliver } = fakeTransport();
+    const sessions = new SessionManager({
+      agentWindow: {
+        create: vi.fn(async () => ({ windowId: 4242, initialTabIds: [] })),
+        remove: vi.fn(async () => {}),
+        ensureActiveTab: vi.fn(async () => 1),
+      },
+    });
+    await sessions.start("video-task");
+    const video = {
+      stopSession: vi.fn(async () => {
+        throw new Error("encoder unavailable");
+      }),
+    } as unknown as NonNullable<ConstructorParameters<typeof ToolDispatcher>[0]["video"]>;
+    const dispatcher = new ToolDispatcher({ transport, sessions, video });
+    dispatcher.start();
+    try {
+      deliver(makeRequest("tool.session_stop", { session_id: "video-task" }));
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      expect(sessions.has("video-task")).toBe(false);
+      expect(sent[0]).toEqual({ id: "r-1", result: {} });
+    } finally {
+      dispatcher.stop();
+    }
   });
 
   it("uses the persistent background lease before dispatching a click", async () => {

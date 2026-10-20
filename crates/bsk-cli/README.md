@@ -11,6 +11,18 @@ export PATH="${BSK_INSTALL_DIR:-$HOME/.local/bin}:$PATH"
 
 Documentation: [../../README.md](../../README.md) · [../../docs/architecture.md](../../docs/architecture.md)
 
+## Structured extraction
+
+```sh
+bsk extract discover --session <id>
+bsk extract table --session <id> --selector '#orders'
+bsk extract table --session <id> --target <target_id> --format csv --out orders.csv
+```
+
+Returns columns, rows, sources and coverage for loaded DOM data. CSV files include a
+metadata sidecar. See [structured extraction](../../docs/structured-extraction.md)
+for list field schemas, frame/shadow targets, limits and CSV options.
+
 ## Screenshots
 
 ```sh
@@ -40,3 +52,12 @@ restart an existing daemon with `bsk daemon restart`. It does not automate Chrom
 internal pages, the Web Store, nested scrolling panels or virtualized lists. It follows
 the page's document scroll; endlessly growing pages can reach the chosen timeout.
 See [long screenshot behavior and implementation](../../docs/long-screenshot.md).
+
+## Element waits
+
+Use `bsk wait-for-element <selector-or-ref> --state visible|hidden|attached|detached
+--session <id> --json` after a triggering action. `hidden` means absent or not
+visible; `detached` requires absence. Both include initial absence. `visible` does
+not imply enabled, unobstructed or application-ready. Timeout returns `satisfied: false` with exit
+code 0: inspect the JSON result before continuing, then `observe` for fresh refs.
+See [the complete wait/check/observe example](../../docs/wait-for-element.md).

@@ -15,7 +15,7 @@ fn parse(args: &[&str]) -> Cli {
 }
 
 #[test]
-fn parses_unattended_session_without_changing_normal_defaults() {
+fn parses_background_sessions_and_legacy_no_focus() {
     for unattended in [false, true] {
         let mut argv = vec!["bsk", "session", "start"];
         if unattended {
@@ -29,7 +29,20 @@ fn parses_unattended_session_without_changing_normal_defaults() {
         };
         assert_eq!(args.unattended, unattended);
         assert_eq!(args.no_focus, unattended);
+        assert!(!args.focus);
     }
+}
+
+#[test]
+fn parses_explicit_foreground_session_and_rejects_conflicting_focus_flags() {
+    let Command::Session(SessionCmd {
+        sub: SessionSub::Start(args),
+    }) = parse(&["bsk", "session", "start", "--focus"]).command
+    else {
+        panic!("expected session start");
+    };
+    assert!(args.focus);
+    assert!(Cli::try_parse_from(["bsk", "session", "start", "--focus", "--no-focus"]).is_err());
 }
 
 #[test]

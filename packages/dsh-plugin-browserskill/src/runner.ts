@@ -370,11 +370,45 @@ export function bskInstallMessage(bskPath: string): string {
 }
 
 /**
+ * Options for interpreting a finished `bsk` run.
+ *
+ * `allowNavigationTimeout`: when the CLI prints a success-shaped navigation
+ * payload with `reached: "timeout"` and then exits 4 (RenderedExit), return
+ * that payload instead of throwing. Exit 4 alone is not enough — session-busy
+ * and other failures also use 4 — so the payload must explicitly say
+ * `reached: "timeout"`.
+ */
+export interface ParseBskJsonOptions {
+  allowNavigationTimeout?: boolean;
+}
+
+/**
+ * True when stdout is a navigation/history payload whose lifecycle wait
+ * expired (`reached: "timeout"`). Used to distinguish that soft timeout from
+ * other exit-4 failures (e.g. session_busy).
+ */
+export function isNavigationLifecycleTimeoutPayload(value: unknown): value is {
+  reached: "timeout";
+  [key: string]: unknown;
+} {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { reached?: unknown }).reached === "timeout"
+  );
+}
+
+/**
  * Interpret one finished run: throw `BskError` on timeout / non-zero exit
  * (parsing the CLI's JSON error envelope when present), otherwise parse and
  * return the stdout JSON payload.
  */
-export function parseBskJson(result: BskRunResult, commandLabel: string): unknown {
+export function parseBskJson(
+  result: BskRunResult,
+  commandLabel: string,
+  options: ParseBskJsonOptions = {},
+): unknown {
   if (result.timedOut) {
     throw new BskError(`bsk ${commandLabel} timed out`, { timedOut: true });
   }
@@ -385,6 +419,20 @@ export function parseBskJson(result: BskRunResult, commandLabel: string): unknow
     throw new BskError(`bsk ${commandLabel} was interrupted (process killed)`);
   }
   if (result.code !== 0) {
+    // Navigate / back / forward / reload print the success-shaped body then
+    // exit 4 on lifecycle wait expiry. Callers that opt in (combined session
+    // start-with-URL) can keep the session and surface the timeout instead of
+    // treating it as a hard failure.
+    if (options.allowNavigationTimeout === true && result.code === 4) {
+      try {
+        const payload: unknown = JSON.parse(body);
+        if (isNavigationLifecycleTimeoutPayload(payload)) {
+          return payload;
+        }
+      } catch {
+        // Fall through to the normal error path.
+      }
+    }
     let parsed: BskErrorBody | undefined;
     try {
       parsed = JSON.parse(body) as BskErrorBody;

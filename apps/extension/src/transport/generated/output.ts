@@ -122,6 +122,21 @@ export type DebugRuleState = "enabled" | "disabled" | "exhausted" | "removed" | 
  */
 export type DebugRunState = "capturing" | "stopped";
 /**
+ * Which state the caller is waiting for.
+ *
+ * `Visible` / `Hidden` ask about **visibility**; `Attached` /
+ * `Detached` ask about **presence in the DOM**.
+ *
+ * `Hidden` is the opposite of `Visible`: absent or attached but not visible,
+ * including an element absent at the first probe. `Detached` requires absence.
+ * The result's `attached` field distinguishes removal from a hidden node.
+ * Invalid refs and inspection failures remain errors for every state.
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ElementState".
+ */
+export type ElementState = "visible" | "hidden" | "attached" | "detached";
+/**
  * Stable daemon/extension error codes (§4.5).
  *
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -141,6 +156,41 @@ export type ErrorCode =
   | "version_too_old"
   | "multiple_browsers_online"
   | "no_browser_connected";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractAction".
+ */
+export type ExtractAction = "discover" | "table" | "list";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractNameSource".
+ */
+export type ExtractNameSource = "header" | "generated" | "field";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractCompleteness".
+ */
+export type ExtractCompleteness = "unknown" | "incomplete";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractScope".
+ */
+export type ExtractScope = "loaded_dom";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractRead".
+ */
+export type ExtractRead = "text" | "href" | "attribute";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractRowKind".
+ */
+export type ExtractRowKind = "data" | "footer";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractTargetKind".
+ */
+export type ExtractTargetKind = "table" | "list";
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "FillCommit".
@@ -390,6 +440,101 @@ export type TabScope = "user" | "agent" | "all";
 export type UploadMode = "input" | "drop";
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoCompleteness".
+ */
+export type VideoCompleteness = "complete" | "partial";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoQuality".
+ */
+export type VideoQuality = "standard" | "clear";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoState".
+ */
+export type VideoState = "starting" | "recording" | "finalizing" | "ready" | "failed";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoParams".
+ */
+export type VideoParams =
+  | {
+      action: "start";
+      max_duration_ms: number;
+      quality: VideoQuality;
+      request_id: string;
+      session_id: string;
+      tab_id?: number;
+    }
+  | {
+      action: "capabilities";
+      browser?: string;
+      session_id?: string;
+    }
+  | {
+      action: "list";
+      browser?: string;
+    }
+  | {
+      action: "status";
+      browser: string;
+      capability: string;
+      recording_id: string;
+    }
+  | {
+      action: "stop";
+      browser: string;
+      capability: string;
+      recording_id: string;
+    }
+  | {
+      action: "read";
+      browser: string;
+      capability: string;
+      offset: number;
+      recording_id: string;
+    }
+  | {
+      action: "discard";
+      browser: string;
+      capability: string;
+      recording_id: string;
+    }
+  | {
+      action: "exported";
+      browser: string;
+      capability: string;
+      recording_id: string;
+    };
+/**
+ * Action-dependent wire replies from the extension's video service.
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoResult".
+ */
+export type VideoResult =
+  | VideoGrant
+  | {
+      audio: boolean;
+      format: string;
+      max_duration_ms: number;
+      version: number;
+    }
+  | {
+      recordings: VideoGrant[];
+    }
+  | {
+      recording: VideoRecording;
+    }
+  | VideoReadResult
+  | {
+      discarded: boolean;
+    }
+  | {
+      exported: boolean;
+    };
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "WaitForNavigationReached".
  */
 export type WaitForNavigationReached =
@@ -455,6 +600,7 @@ export interface ProtocolTypes {
   DebugVisibility: DebugVisibility;
   DownloadParams: DownloadParams;
   DownloadResult: DownloadResult;
+  ElementState: ElementState;
   EmulateOverrides: EmulateOverrides;
   EmulateParams: EmulateParams;
   EmulateResult: EmulateResult;
@@ -462,6 +608,22 @@ export interface ProtocolTypes {
   EvaluateError: EvaluateError;
   EvaluateParams: EvaluateParams;
   EvaluateResult: EvaluateResult;
+  ExtractAction: ExtractAction;
+  ExtractColumn: ExtractColumn;
+  ExtractCompleteness: ExtractCompleteness;
+  ExtractCoverage: ExtractCoverage;
+  ExtractField: ExtractField;
+  ExtractNameSource: ExtractNameSource;
+  ExtractParams: ExtractParams;
+  ExtractRead: ExtractRead;
+  ExtractResult: ExtractResult;
+  ExtractRowKind: ExtractRowKind;
+  ExtractRowSource: ExtractRowSource;
+  ExtractScope: ExtractScope;
+  ExtractSource: ExtractSource;
+  ExtractSpan: ExtractSpan;
+  ExtractTarget: ExtractTarget;
+  ExtractTargetKind: ExtractTargetKind;
   FillCommit: FillCommit;
   FillParams: FillParams;
   FillResult: FillResult;
@@ -579,6 +741,16 @@ export interface ProtocolTypes {
   UserAgentBrandVersion: UserAgentBrandVersion;
   UserAgentMetadata: UserAgentMetadata;
   VersionSkewEntry: VersionSkewEntry;
+  VideoCompleteness: VideoCompleteness;
+  VideoGrant: VideoGrant;
+  VideoParams: VideoParams;
+  VideoQuality: VideoQuality;
+  VideoReadResult: VideoReadResult;
+  VideoRecording: VideoRecording;
+  VideoResult: VideoResult;
+  VideoState: VideoState;
+  WaitForElementParams: WaitForElementParams;
+  WaitForElementResult: WaitForElementResult;
   WaitForNavigationParams: WaitForNavigationParams;
   WaitForNavigationReached: WaitForNavigationReached;
   WaitForNavigationResult: WaitForNavigationResult;
@@ -1609,6 +1781,125 @@ export interface EvaluateResult {
   ok: boolean;
   tab_id: number;
   value?: unknown;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractColumn".
+ */
+export interface ExtractColumn {
+  header_path: string[];
+  key: string;
+  name: string;
+  name_source: ExtractNameSource;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractCoverage".
+ */
+export interface ExtractCoverage {
+  dataset_complete: ExtractCompleteness;
+  declared_columns?: number;
+  declared_rows?: number;
+  rows_returned: number;
+  scope: ExtractScope;
+  stop_reason?: string;
+  truncated: boolean;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractField".
+ */
+export interface ExtractField {
+  attribute?: string;
+  key: string;
+  name?: string;
+  read: ExtractRead;
+  selector: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractParams".
+ */
+export interface ExtractParams {
+  action: ExtractAction;
+  fields?: ExtractField[];
+  item_selector?: string;
+  max_bytes?: number;
+  max_columns?: number;
+  max_rows?: number;
+  ref?: string;
+  selector?: string;
+  session_id: string;
+  tab_id?: number;
+  target_id?: string;
+  timeout_ms?: number;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractResult".
+ */
+export interface ExtractResult {
+  columns: ExtractColumn[];
+  coverage: ExtractCoverage;
+  kind: ExtractAction;
+  row_sources: ExtractRowSource[];
+  /**
+   * Each row's keys follow `columns` order.
+   */
+  rows: {
+    [k: string]: string | null;
+  }[];
+  schema_version: number;
+  source: ExtractSource;
+  spans: ExtractSpan[];
+  tab_id: number;
+  targets?: ExtractTarget[];
+  warnings: string[];
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractRowSource".
+ */
+export interface ExtractRowSource {
+  locator: string;
+  row: number;
+  row_kind: ExtractRowKind;
+  source_row: number;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractSource".
+ */
+export interface ExtractSource {
+  captured_at: string;
+  frame_id: string;
+  frame_url: string;
+  page_url: string;
+  selector?: string;
+  target_id?: string;
+  title: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractSpan".
+ */
+export interface ExtractSpan {
+  column: string;
+  column_span: number;
+  row: number;
+  row_span: number;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "ExtractTarget".
+ */
+export interface ExtractTarget {
+  columns: string[];
+  frame_id: string;
+  frame_url: string;
+  kind: ExtractTargetKind;
+  name: string;
+  target_id: string;
 }
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
@@ -2720,13 +3011,17 @@ export interface SessionStartParams {
   browser_instance_id?: string;
   /**
    * Whether the new Agent Window should take focus. Omitted means the
-   * extension's default (`true`) for compatibility with older clients.
+   * extension's default (`false`).
    */
   focused?: boolean;
   /**
    * Optional Agent Window outer height in CSS pixels (100..=7680).
    */
   height?: number;
+  /**
+   * Use Chrome's shared incognito browsing session. Omitted means normal.
+   */
+  incognito?: boolean;
   session_id: string;
   /**
    * Optional Agent Window outer width in CSS pixels (100..=7680).
@@ -3119,6 +3414,112 @@ export interface UploadResult {
   tab_id: number;
   used_ref?: string;
   used_selector?: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoGrant".
+ */
+export interface VideoGrant {
+  capability: string;
+  recording: VideoRecording;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoRecording".
+ */
+export interface VideoRecording {
+  byte_size: number;
+  completeness?: VideoCompleteness;
+  created_at: number;
+  dropped_frames: number;
+  duration_ms: number;
+  error?: string;
+  expires_at: number;
+  exported: boolean;
+  frames: number;
+  height: number;
+  max_duration_ms: number;
+  quality: VideoQuality;
+  recording_id: string;
+  session_id: string;
+  started_at?: number;
+  state: VideoState;
+  stop_reason?: string;
+  tab_id: number;
+  title: string;
+  width: number;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "VideoReadResult".
+ */
+export interface VideoReadResult {
+  byte_size: number;
+  data_base64: string;
+  next_offset: number;
+  offset: number;
+  recording_id: string;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "WaitForElementParams".
+ */
+export interface WaitForElementParams {
+  /**
+   * Polling interval, shortened near the deadline to allow a final probe.
+   * Defaults to 100ms; values outside 16..=2000ms are rejected.
+   */
+  poll_ms?: number;
+  /**
+   * Optional `@e<N>` ref from the latest snapshot or observe.
+   * Mutually exclusive with `selector`.
+   */
+  ref?: string;
+  selector?: string;
+  session_id: string;
+  /**
+   * State to wait for.
+   */
+  state: "visible" | "hidden" | "attached" | "detached";
+  /**
+   * Target tab. Defaults to the Agent Window's active tab.
+   */
+  tab_id?: number;
+  /**
+   * Element inspection budget, including probes. Defaults to 10s (1..=300000ms).
+   */
+  timeout_ms?: number;
+}
+/**
+ * Outcome of a `wait_for_element`. A timeout returns `satisfied: false` and
+ * CLI exit code 0; callers must inspect the result before continuing.
+ * `attached` / `visible` describe the last probe completed before the deadline,
+ * not a new observation at return time. Both are null if no probe completed.
+ *
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "WaitForElementResult".
+ */
+export interface WaitForElementResult {
+  /**
+   * DOM attachment at the last completed probe; null if unobserved.
+   */
+  attached: boolean | null;
+  dialogs?: JavaScriptDialogInfo[];
+  /**
+   * Monotonic elapsed time spent inspecting and waiting, including probes.
+   */
+  elapsed_ms: number;
+  /**
+   * Whether the requested state was reached before the deadline.
+   */
+  satisfied: boolean;
+  tab_id: number;
+  used_ref?: string;
+  used_selector?: string;
+  /**
+   * Visibility at the last completed probe; false if detached, null if unobserved.
+   */
+  visible: boolean | null;
 }
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema

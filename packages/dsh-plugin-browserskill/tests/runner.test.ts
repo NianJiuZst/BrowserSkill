@@ -9,6 +9,7 @@ import {
   type BskRunResult,
   createBskRunner,
   isCommandNotFound,
+  isNavigationLifecycleTimeoutPayload,
   isSessionBusyResult,
   parseBskJson,
   runWithSessionBusyRetry,
@@ -534,6 +535,41 @@ describe("parseBskJson", () => {
     expect(() => parseBskJson({ ...base, stdout: "not json" }, "x")).toThrow(
       /did not produce JSON/,
     );
+  });
+
+  it("returns navigation lifecycle timeout payloads when opted in", () => {
+    const payload = {
+      tab_id: 1,
+      url: "https://slow.example/",
+      final_url: "https://slow.example/",
+      reached: "timeout",
+      error_text: "timed out waiting for load",
+    };
+    const result = parseBskJson({ ...base, code: 4, stdout: JSON.stringify(payload) }, "navigate", {
+      allowNavigationTimeout: true,
+    });
+    expect(result).toEqual(payload);
+    expect(isNavigationLifecycleTimeoutPayload(result)).toBe(true);
+  });
+
+  it("still throws exit 4 without reached: timeout even when opted in", () => {
+    const busy = {
+      code: "timeout",
+      message: "session already has an unfinished command",
+      data: { reason: "session_busy" },
+    };
+    expect(() =>
+      parseBskJson({ ...base, code: 4, stdout: JSON.stringify(busy) }, "navigate", {
+        allowNavigationTimeout: true,
+      }),
+    ).toThrow(/session already has an unfinished command/);
+  });
+
+  it("throws navigation timeout payloads by default (no opt-in)", () => {
+    const payload = { tab_id: 1, url: "https://x/", reached: "timeout" };
+    expect(() =>
+      parseBskJson({ ...base, code: 4, stdout: JSON.stringify(payload) }, "navigate"),
+    ).toThrow(/failed/);
   });
 });
 

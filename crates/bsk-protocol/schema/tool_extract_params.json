@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ExtractAction": {
+      "enum": [
+        "discover",
+        "table",
+        "list"
+      ],
+      "type": "string"
+    },
+    "ExtractField": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read": {
+          "$ref": "#/definitions/ExtractRead"
+        },
+        "selector": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "selector",
+        "read"
+      ],
+      "type": "object"
+    },
+    "ExtractRead": {
+      "enum": [
+        "text",
+        "href",
+        "attribute"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "action": {
+      "$ref": "#/definitions/ExtractAction"
+    },
+    "fields": {
+      "items": {
+        "$ref": "#/definitions/ExtractField"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "item_selector": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_bytes": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_columns": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_rows": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selector": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "tab_id": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "target_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "timeout_ms": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "session_id",
+    "action"
+  ],
+  "title": "ExtractParams",
+  "type": "object"
+}

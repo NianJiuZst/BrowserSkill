@@ -104,6 +104,9 @@ fn main() {
     // Stable file aliases for reusable CLI/documentation schemas. Their shapes
     // still come from the catalog; this list cannot hide a method from generation.
     for (name, file) in [
+        ("VideoRecording", "video_recording"),
+        ("VideoGrant", "video_grant"),
+        ("VideoReadResult", "tool_video_read_result"),
         ("EmulateOverrides", "tool_emulate_overrides"),
         ("UserAgentMetadata", "tool_emulate_user_agent_metadata"),
         ("ConsoleEntry", "tool_console_entry"),

@@ -10,7 +10,7 @@ process arguments do not prove the profile.
 Use the verified ID (or verified unique BrowserSkill label) on every new session:
 
 ```text
-browser_session({ action: "start", browser: "<verified-instance-id>" })
+bsk_session({ action: "start", browser: "<verified-instance-id>" })
 ```
 
 For copied command-line examples, use the instance ID in
@@ -21,7 +21,7 @@ target unavailable, stop and ask the user to confirm/reconnect. Never omit
 
 ## Borrowing and settings
 
-Use `browser_tabs` to list IDs before acting. Borrow for the immediate step and
+Use `bsk_tabs` to list IDs before acting. Borrow for the immediate step and
 return promptly. Browser Automation settings
 govern confirmation and help; never change them to bypass a prompt or repeat
 pending/denied/expired borrows. Inspect unknown outcomes; follow version-error hints.

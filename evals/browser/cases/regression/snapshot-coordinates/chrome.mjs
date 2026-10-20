@@ -13,8 +13,11 @@ export async function withChrome(
     extensionPath,
     headless = true,
     softwareRendering = false,
+    disableGpu = true,
     startupTimeout = 15_000,
     onEvent,
+    extraArgs = [],
+    localState,
   },
   run,
 ) {
@@ -23,6 +26,7 @@ export async function withChrome(
   let socket;
   const pending = new Map();
   try {
+    if (localState) await writeFile(join(profile, "Local State"), JSON.stringify(localState));
     await mkdir(join(profile, "Default"));
     await writeFile(
       join(profile, "Default", "Preferences"),
@@ -40,7 +44,9 @@ export async function withChrome(
           ? [
               ...(softwareRendering
                 ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
-                : ["--disable-gpu"]),
+                : disableGpu
+                  ? ["--disable-gpu"]
+                  : []),
               `--disable-extensions-except=${extensionPath}`,
               `--load-extension=${extensionPath}`,
             ]
@@ -50,6 +56,7 @@ export async function withChrome(
         "--window-size=1600,1200",
         `--force-device-scale-factor=${deviceScale}`,
         `--user-data-dir=${profile}`,
+        ...extraArgs,
         "about:blank",
       ],
       { stdio: ["ignore", "ignore", "pipe"] },
@@ -104,7 +111,7 @@ export async function withChrome(
         pending.set(id, { resolve, reject, timeout });
         socket.send(JSON.stringify({ id, method, params, sessionId }));
       });
-    await run(send);
+    await run(send, { profile });
   } finally {
     for (const request of pending.values()) {
       clearTimeout(request.timeout);

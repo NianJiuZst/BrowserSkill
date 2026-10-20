@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "byte_size": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "data_base64": {
+      "type": "string"
+    },
+    "next_offset": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "offset": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "recording_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "recording_id",
+    "offset",
+    "byte_size",
+    "next_offset",
+    "data_base64"
+  ],
+  "title": "VideoReadResult",
+  "type": "object"
+}

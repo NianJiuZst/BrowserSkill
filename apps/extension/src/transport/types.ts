@@ -19,6 +19,14 @@ export type TabScopeFilter = TabScope;
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "version_skew";
 
 export type RpcErrorReason =
+  | "extract_params_invalid"
+  | "extract_target_stale"
+  | "extract_target_ambiguous"
+  | "extract_target_hidden"
+  | "extract_selector_invalid"
+  | "extract_structure_invalid"
+  | "extract_field_ambiguous"
+  | "extract_limit"
   | "ui_lookup_failed"
   | "task_unavailable"
   | "target_unavailable"
@@ -52,6 +60,7 @@ export type RpcErrorReason =
   | "restricted_tab_url"
   | "cdp_extension_access_denied"
   | "borrow_conflict"
+  | "incognito_borrow_disabled"
   | "borrow_in_progress"
   | "user_denied"
   | "confirmation_timeout"
@@ -72,6 +81,7 @@ export type RpcErrorReason =
   | "file_drop_target_unavailable"
   | "file_drop_failed"
   | "download_capture_failed"
+  | "download_path_mismatch"
   | "transfer_outcome_unknown"
   | "transfer_timeout"
   | "cleanup_failed";

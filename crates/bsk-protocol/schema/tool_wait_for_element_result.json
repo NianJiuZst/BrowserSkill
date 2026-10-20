@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "JavaScriptDialogHandledAction": {
+      "description": "How the extension resolved the dialog so CDP could continue.",
+      "enum": [
+        "accepted",
+        "dismissed"
+      ],
+      "type": "string"
+    },
+    "JavaScriptDialogInfo": {
+      "description": "One observed + handled JavaScript dialog during a tool call.",
+      "properties": {
+        "default_prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handled": {
+          "$ref": "#/definitions/JavaScriptDialogHandledAction"
+        },
+        "has_browser_handler": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Monotonic per-tab sequence for ordering within a session.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tab_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "type": {
+          "$ref": "#/definitions/JavaScriptDialogType"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "tab_id",
+        "type",
+        "message",
+        "handled",
+        "sequence"
+      ],
+      "type": "object"
+    },
+    "JavaScriptDialogType": {
+      "description": "Native JS dialog kind reported by CDP.",
+      "enum": [
+        "alert",
+        "confirm",
+        "prompt",
+        "beforeunload"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "Outcome of a `wait_for_element`. A timeout returns `satisfied: false` and\nCLI exit code 0; callers must inspect the result before continuing.\n`attached` / `visible` describe the last probe completed before the deadline,\nnot a new observation at return time. Both are null if no probe completed.",
+  "properties": {
+    "attached": {
+      "description": "DOM attachment at the last completed probe; null if unobserved.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "dialogs": {
+      "items": {
+        "$ref": "#/definitions/JavaScriptDialogInfo"
+      },
+      "type": "array"
+    },
+    "elapsed_ms": {
+      "description": "Monotonic elapsed time spent inspecting and waiting, including probes.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "satisfied": {
+      "description": "Whether the requested state was reached before the deadline.",
+      "type": "boolean"
+    },
+    "tab_id": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "used_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "used_selector": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "visible": {
+      "description": "Visibility at the last completed probe; false if detached, null if unobserved.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "tab_id",
+    "satisfied",
+    "elapsed_ms"
+  ],
+  "title": "WaitForElementResult",
+  "type": "object"
+}

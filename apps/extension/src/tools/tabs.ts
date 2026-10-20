@@ -48,6 +48,8 @@ import {
   type SessionContext,
   type SessionManager,
 } from "@/session-manager/manager";
+import { beginTabCreation } from "@/session-manager/tab-creation";
+import { detectBrowserMeta } from "@/transport/handshake";
 import type { RpcError } from "@/transport/types";
 import { rpcError } from "./errors";
 import { type CdpRunner, cdpBlockedUrlReason, isRpcError, lookupSession } from "./shared";
@@ -227,6 +229,8 @@ export async function handleTabList(
 
 export interface TabManagementDeps {
   tabs?: TabMutationApi;
+  /** Read-only window membership checks before closing a tab. */
+  tabsQuery?: ChromeTabsApi;
   windows?: ChromeWindowsApi;
   /** Abort hook (M10 will wire the full chain). */
   signal?: AbortSignal;
@@ -320,6 +324,19 @@ function buildCreateProps(
  * Returns the created tab on success, or an `RpcError` on failure.
  */
 async function createTabAndCleanup(
+  ctx: SessionContext,
+  deps: TabManagementDeps,
+  createProps: chrome.tabs.CreateProperties,
+): Promise<CreatedChromeTab | RpcError> {
+  const finishCreation = beginTabCreation(ctx);
+  try {
+    return await createAndClaimTab(ctx, deps, createProps);
+  } finally {
+    finishCreation();
+  }
+}
+
+async function createAndClaimTab(
   ctx: SessionContext,
   deps: TabManagementDeps,
   createProps: chrome.tabs.CreateProperties,
@@ -537,7 +554,21 @@ export async function handleTabClose(
     return { code: "cancelled", message: "tab_close aborted" };
   }
   try {
-    await getTabsApi(deps).remove(params.tab_id);
+    let closeWindow = false;
+    if (detectBrowserMeta().name === "yandex") {
+      const tabs = await (deps.tabsQuery ?? chromeTabsApi).query({ windowId: ctx.agentWindowId });
+      if (aborted(deps.signal, "tab_close")) {
+        return { code: "cancelled", message: "tab_close aborted" };
+      }
+      closeWindow = tabs.length === 1 && tabs[0]?.id === params.tab_id;
+    }
+    if (closeWindow) {
+      // Yandex cancels later debugger attachments if tabs.remove closes a
+      // window's final tab (issue #272). Keep the normal onRemoved lifecycle.
+      await getWindowsApi(deps).remove(ctx.agentWindowId);
+    } else {
+      await getTabsApi(deps).remove(params.tab_id);
+    }
     // Keep the tracking set accurate so session_stop won't try to close a
     // tab that's already gone (design §3.1).
     ctx.agentCreatedTabs.delete(params.tab_id);
@@ -642,6 +673,13 @@ async function validateBorrowTarget(
   }
   if (typeof tab.id !== "number" || typeof tab.windowId !== "number") {
     return { code: "not_found", message: `tab ${tabId} not found` };
+  }
+  if (tab.incognito) {
+    return rpcError(
+      "permission_denied",
+      "incognito_borrow_disabled",
+      "Incognito tabs cannot be borrowed. Create a new tab in the session instead.",
+    );
   }
   const owner = manager.findControllingSession(tabId);
   if (owner)
@@ -797,6 +835,13 @@ export async function handleTabBorrow(
   const ctxOrErr = lookupSession(manager, params, "tab_borrow");
   if (isRpcError(ctxOrErr)) return ctxOrErr;
   const ctx = ctxOrErr;
+  if (ctx.incognito) {
+    return rpcError(
+      "permission_denied",
+      "incognito_borrow_disabled",
+      "Incognito sessions cannot borrow tabs. Create a new tab in the session instead.",
+    );
+  }
   const bad = validatePositiveInt("tab_id", params.tab_id);
   if (bad) return bad;
   if (aborted(deps.signal, "tab_borrow")) {
@@ -977,7 +1022,14 @@ async function chooseFallbackWindow(
     // returned tab in another session's Agent Window would let that
     // session write to it and, worse, see it destroyed when that session
     // stops and closes its window.
-    if (lastId !== null && lastId !== ctx.agentWindowId && !isAgentWindowId(lastId)) {
+    // Incognito windows also have type "normal", but cannot receive the
+    // non-incognito tabs accepted by tab_borrow.
+    if (
+      lastId !== null &&
+      !last.incognito &&
+      lastId !== ctx.agentWindowId &&
+      !isAgentWindowId(lastId)
+    ) {
       return { windowId: lastId, index: -1, created: false };
     }
   } catch (err) {
@@ -991,6 +1043,7 @@ async function chooseFallbackWindow(
     const created = await windowsApi.create({
       url: NEW_TAB_DEFAULT_URL,
       focused: false,
+      incognito: false,
     });
     if (typeof created?.id !== "number") {
       return {

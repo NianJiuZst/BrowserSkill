@@ -207,6 +207,24 @@ export const TOOL_POLICIES = {
     opensTabs: false,
     remoteAllowed: true,
   },
+  "tool.extract": {
+    background: "accessible",
+    resumeControl: "effect",
+    opensTabs: false,
+    remoteAllowed: true,
+  },
+  "tool.wait_for_element": {
+    background: "controlled",
+    resumeControl: "effect",
+    opensTabs: false,
+    remoteAllowed: true,
+  },
+  "tool.video": {
+    background: "none",
+    resumeControl: "effect",
+    opensTabs: false,
+    remoteAllowed: true,
+  },
   "tool.debug": {
     background: "none",
     resumeControl: "effect",
@@ -266,6 +284,8 @@ export function toolPolicy(method: string): ToolPolicy | undefined {
 const effects = new Map(methods.map((method) => [method.method, method.effect]));
 
 export function resumesBrowserControl(method: ExtensionToolMethod, params: unknown): boolean {
+  if (method === "tool.video")
+    return (params as { action?: unknown } | undefined)?.action === "start";
   if (method !== "tool.debug") {
     const effect = effects.get(method);
     return (

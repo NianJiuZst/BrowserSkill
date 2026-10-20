@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::{ErrorCode, Method, RpcError, method::MethodEffect};
 
-pub const PROTOCOL_VERSION: &str = "1.3";
+pub const PROTOCOL_VERSION: &str = "1.4";
 pub const MIN_COMPATIBLE_PROTOCOL: &str = "1.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

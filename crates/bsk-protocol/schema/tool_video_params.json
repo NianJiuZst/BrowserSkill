@@ -1,0 +1,220 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "VideoQuality": {
+      "enum": [
+        "standard",
+        "clear"
+      ],
+      "type": "string"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "action": {
+          "const": "start",
+          "type": "string"
+        },
+        "max_duration_ms": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "quality": {
+          "$ref": "#/definitions/VideoQuality"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "tab_id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "session_id",
+        "max_duration_ms",
+        "quality",
+        "request_id"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": {
+          "const": "capabilities",
+          "type": "string"
+        },
+        "browser": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": {
+          "const": "list",
+          "type": "string"
+        },
+        "browser": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": {
+          "const": "status",
+          "type": "string"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "browser",
+        "recording_id",
+        "capability"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": {
+          "const": "stop",
+          "type": "string"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "browser",
+        "recording_id",
+        "capability"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": {
+          "const": "read",
+          "type": "string"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "offset": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "browser",
+        "recording_id",
+        "capability",
+        "offset"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": {
+          "const": "discard",
+          "type": "string"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "browser",
+        "recording_id",
+        "capability"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": {
+          "const": "exported",
+          "type": "string"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "recording_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "browser",
+        "recording_id",
+        "capability"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "VideoParams"
+}
