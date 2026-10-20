@@ -847,12 +847,19 @@ export class ToolDispatcher {
       });
     },
     "tool.record_start": async (params, signal, onInputSent) => {
-      return this.recording
+      const release = this.video?.reserveActionRecording(params.session_id);
+      if (this.video && !release)
+        return {
+          code: "invalid_params",
+          message: "Stop video recording before starting action recording",
+        };
+      const started = this.recording
         ? handleRecordStart(this.sessions, params, {
             ...this.recording,
             signal,
           })
-        : recordingRuntimeUnavailable();
+        : Promise.resolve(recordingRuntimeUnavailable());
+      return release ? started.finally(release) : started;
     },
     "tool.record_stop": async (params, signal, onInputSent) => {
       return this.recording
