@@ -1,3 +1,4 @@
+import type { CooperationController } from "@/cooperation/controller";
 import type { DebugManager, DebugTicket } from "@/debug/manager";
 import type { InteractionPreferenceStore } from "@/lib/interaction-preferences";
 import { OVERLAY_AUTOMATION_BYPASS } from "@/lib/overlay-bridge";
@@ -85,6 +86,13 @@ type DispatcherCdpRunner = CdpRunner &
     detachSession(sessionId: string): Promise<void>;
   };
 
+interface ToolContext {
+  signal: AbortSignal;
+  completionSignal: AbortSignal;
+  cdp?: DispatcherCdpRunner;
+  onInputSent?: (tabId: number) => void;
+}
+
 interface HoverLatch {
   sessionId: string;
   tabId: number;
@@ -98,6 +106,7 @@ interface HoverLatchScope {
 }
 
 export interface DispatcherDeps {
+  cooperation?: CooperationController;
   video?: VideoManager;
   debug?: DebugManager;
   transport: Transport;
@@ -147,6 +156,7 @@ export class ToolDispatcher {
   private readonly cdp?: DispatcherCdpRunner;
   private readonly recording?: RecordRuntimeDeps;
   private readonly onSessionsChanged?: () => void;
+  private readonly cooperation?: CooperationController;
   private readonly onBrowserControlResumed?: (sessionId: string) => void;
   private readonly onAgentTabClaimed?: (tabId: number, windowId: number) => void;
   private readonly approveBorrow?: BorrowConfirmationApprover;
@@ -166,6 +176,7 @@ export class ToolDispatcher {
   readonly inflightAbortControllers = new Map<string, AbortController>();
 
   constructor(deps: DispatcherDeps) {
+    this.cooperation = deps.cooperation;
     this.video = deps.video;
     this.debug = deps.debug;
     this.transport = deps.transport;
@@ -398,8 +409,12 @@ export class ToolDispatcher {
     }
   }
 
-  private readonly handlers: ToolHandlerMap = {
-    "tool.video": async (params, signal) => {
+  private readonly handlers: ToolHandlerMap<ToolContext> = {
+    "tool.cooperate": async () => ({
+      code: "unsupported",
+      message: "Shared-tab cooperation requires a compatible extension runtime",
+    }),
+    "tool.video": async (params, { signal }) => {
       if (!this.video)
         return { code: "unsupported", message: "Video recording requires a compatible extension" };
       try {
@@ -408,34 +423,41 @@ export class ToolDispatcher {
         return videoError(error, signal?.aborted ? "cancelled" : "cdp_failed");
       }
     },
-    "tool.extract": async (params, signal) =>
+    "tool.extract": async (params, { signal, cdp }) =>
       handleExtract(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsApi } : undefined,
         signal,
       ),
-    "tool.wait_for_element": async (params, signal) =>
+    "tool.wait_for_element": async (params, { signal, cdp }) =>
       handleWaitForElement(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
       ),
-    "tool.debug": async (params, signal, onInputSent) => {
+    "tool.debug": async (params, { signal, cdp }) => {
       if (!this.debug)
         return {
           code: "unsupported",
           message: "Website debugging requires a compatible extension",
         };
-      return handleDebug(this.sessions, params, this.debug, chromeTabsApi, signal);
+      return handleDebug(
+        this.sessions,
+        params,
+        this.debug,
+        chromeTabsApi,
+        signal,
+        cdp?.runBrowserMutation,
+      );
     },
-    "tool.session_start": async (params, signal, onInputSent) => {
+    "tool.session_start": async (params, { signal }) => {
       return handleSessionStart(this.sessions, params, {
         signal,
         preferences: this.interactionPreferences,
       });
     },
-    "tool.session_stop": async (params, signal, onInputSent) => {
+    "tool.session_stop": async (params, { signal, cdp }) => {
       if (this.video)
         await this.video
           .stopSession(params.session_id)
@@ -443,54 +465,54 @@ export class ToolDispatcher {
       this.debug?.releaseSession(params.session_id);
       await this.screenshotExports.releaseSession(params.session_id);
       await this.releaseHoverLatch(params.session_id);
-      return handleSessionStop(this.sessions, params, {
-        cdp: this.cdp,
-        // Must be wired in production: the agent-tab cleanup and the
-        // window-release decision (issue #57) read these deps directly
-        // and silently no-op when they are absent.
-        tabManagement: { tabs: chromeTabMutationApi },
-        tabsQuery: chromeTabsApi,
+      const result = await handleSessionStop(this.sessions, params, {
+        cdp,
+        ...(typeof chrome === "undefined"
+          ? {}
+          : { tabManagement: { tabs: chromeTabMutationApi }, tabsQuery: chromeTabsApi }),
         signal,
       });
+      if (!this.sessions.has(params.session_id)) this.cooperation?.release(params.session_id);
+      return result;
     },
-    "tool.tab_list": async (params, signal, onInputSent) => {
+    "tool.tab_list": async (params, { signal }) => {
       return handleTabList(this.sessions, params, chromeTabsApi, signal);
     },
-    "tool.tab_create": async (params, signal, onInputSent) => {
+    "tool.tab_create": async (params, { signal, cdp }) => {
       const result = await handleTabCreate(this.sessions, params, {
         signal,
-        cdp: this.cdp,
+        cdp,
       });
       if (!isRpcError(result)) {
         this.onAgentTabClaimed?.(result.tab_id, result.window_id);
       }
       return result;
     },
-    "tool.tab_close": async (params, signal, onInputSent) => {
+    "tool.tab_close": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
-        () => handleTabClose(this.sessions, params, { signal }),
+        () => handleTabClose(this.sessions, params, { signal, cdp }),
         signal,
       );
     },
-    "tool.tab_select": async (params, signal, onInputSent) => {
-      return handleTabSelect(this.sessions, params, { signal });
+    "tool.tab_select": async (params, { signal, cdp }) => {
+      return handleTabSelect(this.sessions, params, { signal, cdp });
     },
-    "tool.tab_borrow": async (params, signal, onInputSent) => {
+    "tool.tab_borrow": async (params, { signal, cdp }) => {
       const result = await handleTabBorrow(this.sessions, params, {
         signal,
         approveBorrow: this.approveBorrow,
-        cdp: this.cdp,
+        cdp,
       });
       if (!isRpcError(result)) {
         this.onAgentTabClaimed?.(result.tab_id, result.agent_window_id);
       }
       return result;
     },
-    "tool.tab_return": async (params, signal, onInputSent) => {
+    "tool.tab_return": async (params, { signal, cdp }) => {
       return handleTabReturn(this.sessions, params, {
         signal,
-        cdp: this.cdp,
+        cdp,
         beforeReturn: async (sessionId, tabId) => {
           this.debug?.stopTab(tabId);
           if (this.sessions.get(sessionId)?.remote) clearRecordingForSession(sessionId);
@@ -498,76 +520,74 @@ export class ToolDispatcher {
         },
       });
     },
-    "tool.window_resize": async (params, signal, onInputSent) => {
+    "tool.window_resize": async (params, { signal }) => {
       return handleWindowResize(this.sessions, params, undefined, signal);
     },
-    "tool.emulate": async (params, signal, onInputSent) => {
+    "tool.emulate": async (params, { signal, cdp }) => {
       return handleEmulate(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
       );
     },
-    "tool.screenshot_full_page": async (params, signal, onInputSent) => {
-      if (!this.cdp) return { code: "unsupported", message: "Full-page screenshot requires CDP" };
+    "tool.screenshot_full_page": async (params, { signal, cdp }) => {
+      if (!cdp) return { code: "unsupported", message: "Full-page screenshot requires CDP" };
       return handleFullPageScreenshot(
         this.sessions,
         params,
         {
-          cdp: this.cdp,
+          cdp,
           tabsApi: chromeTabsApi,
           exports: this.screenshotExports,
         },
         signal,
       );
     },
-    "tool.screenshot_read": async (params, signal, onInputSent) => {
+    "tool.screenshot_read": async (params) => {
       return this.screenshotExports.read(params);
     },
-    "tool.screenshot_release": async (params, signal, onInputSent) => {
+    "tool.screenshot_release": async (params) => {
       return this.screenshotExports.release(params);
     },
-    "tool.screenshot": async (params, signal, onInputSent) => {
+    "tool.screenshot": async (params, { signal, cdp }) => {
       return handleScreenshot(
         this.sessions,
         params,
-        this.cdp
-          ? { cdp: this.cdp, tabsApi: chromeTabsCaptureApi, captureApi: chromeTabsCaptureApi }
-          : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsCaptureApi, captureApi: chromeTabsCaptureApi } : undefined,
         signal,
       );
     },
-    "tool.console": async (params, signal, onInputSent) => {
+    "tool.console": async (params, { signal, cdp }) => {
       return handleConsole(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsApi } : undefined,
         signal,
       );
     },
-    "tool.network": async (params, signal, onInputSent) => {
+    "tool.network": async (params, { signal, cdp }) => {
       return handleNetwork(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsApi } : undefined,
         signal,
       );
     },
-    "tool.snapshot": async (params, signal, onInputSent) => {
+    "tool.snapshot": async (params, { signal, cdp }) => {
       return this.withHoverReassert(
         params,
         () =>
           handleSnapshot(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsCaptureApi } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsCaptureApi } : undefined,
             signal,
           ),
         {},
         signal,
       );
     },
-    "tool.observe": async (params, signal, onInputSent) => {
+    "tool.observe": async (params, { signal, cdp }) => {
       const hoverScope = await this.resolveHoverLatchScope(params);
       throwIfDispatchAborted(signal);
       return this.withHoverReassert(
@@ -576,9 +596,9 @@ export class ToolDispatcher {
           handleObserve(
             this.sessions,
             params,
-            this.cdp
+            cdp
               ? {
-                  cdp: this.cdp,
+                  cdp,
                   tabsApi: chromeTabsCaptureApi,
                   // Active hover probing is opt-in. A held hover latch still
                   // suppresses it, because probing would move the cursor off
@@ -594,80 +614,72 @@ export class ToolDispatcher {
         signal,
       );
     },
-    "tool.get_html": async (params, signal, onInputSent) => {
+    "tool.get_html": async (params, { signal, cdp }) => {
       return handleGetHtml(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsCaptureApi } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsCaptureApi } : undefined,
         signal,
       );
     },
-    "tool.navigate": async (params, signal, onInputSent) => {
+    "tool.navigate": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleNavigate(
             this.sessions,
             params,
-            this.cdp
-              ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true }
-              : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true } : undefined,
           ),
         signal,
       );
     },
-    "tool.navigate_back": async (params, signal, onInputSent) => {
+    "tool.navigate_back": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleNavigateBack(
             this.sessions,
             params,
-            this.cdp
-              ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true }
-              : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true } : undefined,
           ),
         signal,
       );
     },
-    "tool.navigate_forward": async (params, signal, onInputSent) => {
+    "tool.navigate_forward": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleNavigateForward(
             this.sessions,
             params,
-            this.cdp
-              ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true }
-              : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true } : undefined,
           ),
         signal,
       );
     },
-    "tool.reload": async (params, signal, onInputSent) => {
+    "tool.reload": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleReload(
             this.sessions,
             params,
-            this.cdp
-              ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true }
-              : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal, backgroundExecution: true } : undefined,
           ),
         signal,
       );
     },
-    "tool.click": async (params, signal, onInputSent) => {
+    "tool.click": async (params, { signal, onInputSent, cdp }) => {
       return this.withHoverReassert(
         params,
         () =>
           handleClick(
             this.sessions,
             params,
-            this.cdp
+            cdp
               ? {
-                  cdp: this.cdp,
+                  cdp,
                   tabsApi: chromeTabsApi,
                   signal,
                   bypassOverlay,
@@ -679,13 +691,13 @@ export class ToolDispatcher {
         signal,
       );
     },
-    "tool.hover": async (params, signal, onInputSent) => {
+    "tool.hover": async (params, { signal, cdp }) => {
       const result = await handleHover(
         this.sessions,
         params,
-        this.cdp
+        cdp
           ? {
-              cdp: this.cdp,
+              cdp,
               tabsApi: chromeTabsApi,
               signal,
               bypassOverlay: (tabId, enabled) =>
@@ -696,98 +708,98 @@ export class ToolDispatcher {
       );
       return this.rememberHover(params.session_id, result);
     },
-    "tool.wheel": async (params, signal, onInputSent) => {
+    "tool.wheel": async (params, { signal, cdp }) => {
       return this.withHoverReassert(
         params,
         () =>
           handleWheel(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal, bypassOverlay } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal, bypassOverlay } : undefined,
           ),
         { releaseAfter: true },
         signal,
       );
     },
-    "tool.scroll_to": async (params, signal, onInputSent) => {
+    "tool.scroll_to": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleScrollTo(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
           ),
         signal,
       );
     },
-    "tool.focus": async (params, signal, onInputSent) => {
+    "tool.focus": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleFocus(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
           ),
         signal,
       );
     },
-    "tool.blur": async (params, signal, onInputSent) => {
+    "tool.blur": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleBlur(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
           ),
         signal,
       );
     },
-    "tool.fill": async (params, signal, onInputSent) => {
+    "tool.fill": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleFill(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
           ),
         signal,
       );
     },
-    "tool.press": async (params, signal, onInputSent) => {
+    "tool.press": async (params, { signal, onInputSent, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handlePress(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal, onInputSent } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal, onInputSent } : undefined,
           ),
         signal,
       );
     },
-    "tool.select": async (params, signal, onInputSent) => {
+    "tool.select": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
           handleSelect(
             this.sessions,
             params,
-            this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+            cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
           ),
         signal,
       );
     },
-    "tool.upload": async (params, signal, onInputSent) => {
+    "tool.upload": async (params, { signal, cdp }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
-          this.cdp
+          cdp
             ? handleUpload(this.sessions, params, {
-                cdp: this.cdp,
+                cdp,
                 tabsApi: chromeTabsApi,
                 signal,
                 bypassOverlay,
@@ -799,15 +811,16 @@ export class ToolDispatcher {
         signal,
       );
     },
-    "tool.download": async (params, signal, onInputSent) => {
+    "tool.download": async (params, { signal, cdp, completionSignal }) => {
       return this.withHoverReleaseForRequest(
         params,
         () =>
-          this.cdp
+          cdp
             ? handleDownload(this.sessions, params, {
-                cdp: this.cdp,
+                cdp,
                 tabsApi: chromeTabsApi,
                 signal,
+                completionSignal,
                 bypassOverlay,
               })
             : Promise.resolve({
@@ -817,21 +830,21 @@ export class ToolDispatcher {
         signal,
       );
     },
-    "tool.evaluate": async (params, signal, onInputSent) => {
+    "tool.evaluate": async (params, { signal, cdp }) => {
       return handleEvaluate(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
       );
     },
-    "tool.wait_for_navigation": async (params, signal, onInputSent) => {
+    "tool.wait_for_navigation": async (params, { signal, cdp }) => {
       return handleWaitForNavigation(
         this.sessions,
         params,
-        this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+        cdp ? { cdp, tabsApi: chromeTabsApi, signal } : undefined,
       );
     },
-    "tool.request_help": async (params, signal, onInputSent) => {
+    "tool.request_help": async (params, { signal, cdp }) => {
       return handleRequestHelp(this.sessions, params, {
         preferences: this.interactionPreferences,
         tabsApi: chromeTabsApi,
@@ -840,13 +853,13 @@ export class ToolDispatcher {
           await chrome.tabs.update(tabId, { active: true });
         },
         sendToTab: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg),
-        ...(this.cdp ? { cdp: this.cdp } : {}),
+        ...(cdp ? { cdp } : {}),
         notifications: makeHelpNotifications(),
         notificationCopy: this.helpNotificationCopy?.(),
         signal,
       });
     },
-    "tool.record_start": async (params, signal, onInputSent) => {
+    "tool.record_start": async (params, { signal }) => {
       const release = this.video?.reserveActionRecording(params.session_id);
       if (this.video && !release)
         return {
@@ -861,7 +874,7 @@ export class ToolDispatcher {
         : Promise.resolve(recordingRuntimeUnavailable());
       return release ? started.finally(release) : started;
     },
-    "tool.record_stop": async (params, signal, onInputSent) => {
+    "tool.record_stop": async (params, { signal }) => {
       return this.recording
         ? handleRecordStop(this.sessions, params, {
             ...this.recording,
@@ -869,7 +882,7 @@ export class ToolDispatcher {
           })
         : recordingRuntimeUnavailable();
     },
-    "tool.record_await": async (params, signal, onInputSent) => {
+    "tool.record_await": async (params, { signal }) => {
       return this.recording
         ? handleRecordAwait(this.sessions, params, {
             ...this.recording,
@@ -879,21 +892,50 @@ export class ToolDispatcher {
     },
   };
 
-  private async invoke<M extends ExtensionToolMethod>(
+  private invoke(
+    req: ToolRequest,
+    signal: AbortSignal,
+    onInputSent?: (tabId: number) => void,
+  ): Promise<unknown> {
+    const run = (cdp = this.cdp, operationSignal = signal, completionSignal = operationSignal) =>
+      this.invokeTool(req, operationSignal, onInputSent, cdp, completionSignal);
+    if (req.method === "tool.cooperate" && this.cooperation && this.cdp) {
+      const cdp = this.cdp;
+      return this.releaseHoverLatch((req.params as { session_id: string }).session_id).then(() =>
+        this.cooperation!.run(req, cdp, signal, run),
+      );
+    }
+    return this.cooperation && this.cdp ? this.cooperation.run(req, this.cdp, signal, run) : run();
+  }
+
+  private async invokeTool<M extends ExtensionToolMethod>(
     req: ToolRequest<M>,
     signal: AbortSignal,
     onInputSent?: (tabId: number) => void,
+    cdp = this.cdp,
+    completionSignal = signal,
   ): Promise<ResultOf<M> | RpcError> {
+    const sessionId = (req.params as { session_id?: string }).session_id;
+    if (
+      sessionId &&
+      this.sessions.get(sessionId)?.remote &&
+      !TOOL_POLICIES[req.method].remoteAllowed
+    ) {
+      return {
+        code: "unsupported",
+        message: "Remote connections do not support upload or download",
+      };
+    }
     const preparationError = await prepareBackgroundExecution(
       this.sessions,
       req,
-      this.cdp,
+      cdp,
       chromeTabsApi,
       signal,
     );
     if (preparationError) return preparationError;
 
-    return this.handlers[req.method](req.params, signal, onInputSent);
+    return this.handlers[req.method](req.params, { signal, onInputSent, cdp, completionSignal });
   }
 
   private async setHoverBypass(sessionId: string, tabId: number, enabled: boolean): Promise<void> {
@@ -934,6 +976,7 @@ export class ToolDispatcher {
     throwIfDispatchAborted(signal);
     const scope = await this.resolveHoverLatchScope(params);
     throwIfDispatchAborted(signal);
+    if (scope.tab_id !== undefined && this.cooperation?.enabled(scope.tab_id)) return work();
     await this.reassertHover(scope);
     throwIfDispatchAborted(signal);
     try {

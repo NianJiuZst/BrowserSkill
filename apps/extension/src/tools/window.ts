@@ -8,7 +8,7 @@ export type { WindowResizeParams, WindowResizeResult } from "@/transport/types";
 import type { SessionManager } from "@/session-manager/manager";
 import type { RpcError } from "@/transport/types";
 import { validateWindowSize } from "./session";
-import { isRpcError, lookupSession } from "./shared";
+import { type CdpRunner, isRpcError, lookupSession } from "./shared";
 
 /**
  * Subset of `chrome.windows` we depend on, injectable so unit tests
@@ -36,6 +36,7 @@ export async function handleWindowResize(
   params: WindowResizeParams,
   api: WindowResizeApi = chromeWindowResizeApi,
   signal?: AbortSignal,
+  mutate?: CdpRunner["runBrowserMutation"],
 ): Promise<WindowResizeResult | RpcError> {
   if (signal?.aborted) return { code: "cancelled", message: "window_resize aborted" };
   const ctxOrErr = lookupSession(manager, params, "window_resize");
@@ -55,10 +56,12 @@ export async function handleWindowResize(
 
   try {
     if (signal?.aborted) return { code: "cancelled", message: "window_resize aborted" };
-    await api.update(ctx.agentWindowId, {
-      width: sizeOrErr.width,
-      height: sizeOrErr.height,
-    });
+    const resize = () =>
+      api.update(ctx.agentWindowId, {
+        width: sizeOrErr.width,
+        height: sizeOrErr.height,
+      });
+    await (mutate ? mutate(resize) : resize());
   } catch (err) {
     return {
       code: "protocol_error",

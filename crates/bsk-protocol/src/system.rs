@@ -173,7 +173,7 @@ const MAX_PROTOCOL_MAJOR: u64 = (1u64 << 53) - 1;
 /// matches the TS side's `!Number.isSafeInteger(n)` reject so the
 /// `MAX_SAFE_INTEGER < n <= u64::MAX` band (which `u64::from_str`
 /// would otherwise happily accept) is rejected on both peers.
-fn parse_major(value: &str) -> Option<u64> {
+pub(crate) fn parse_major(value: &str) -> Option<u64> {
     let head = value.split('.').next()?;
     if head.is_empty() || !head.bytes().all(|b| b.is_ascii_digit()) {
         return None;

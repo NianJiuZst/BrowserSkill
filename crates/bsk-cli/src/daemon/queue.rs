@@ -1015,7 +1015,10 @@ fn not_dispatched_error(
     dispatched: Option<Result<oneshot::Receiver<ResponseFrame>, super::browsers::SendError>>,
 ) -> RpcError {
     match dispatched {
-        Some(Err(super::browsers::SendError::Terminated(cause))) => cause,
+        Some(Err(
+            super::browsers::SendError::Terminated(cause)
+            | super::browsers::SendError::UnsupportedFeature(cause),
+        )) => cause,
         _ => RpcError {
             code: ErrorCode::ProtocolError,
             message: "browser sink closed before request was queued".into(),

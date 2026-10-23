@@ -9,6 +9,12 @@ export interface ToolPolicy {
 
 // Every extension method must deliberately select each local execution policy.
 export const TOOL_POLICIES = {
+  "tool.cooperate": {
+    background: "none",
+    resumeControl: "effect",
+    opensTabs: false,
+    remoteAllowed: true,
+  },
   "tool.session_start": {
     background: "none",
     resumeControl: "effect",

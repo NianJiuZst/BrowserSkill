@@ -74,8 +74,8 @@ return result;
 
 function normalize_6(value: unknown): unknown {
 let result = value;
-if (validators.branch_137(value)) result = normalize_7(result);
-else if (validators.branch_138(value)) result = normalize_8(result);
+if (validators.branch_140(value)) result = normalize_7(result);
+else if (validators.branch_141(value)) result = normalize_8(result);
 return result;
 }
 
@@ -219,13 +219,13 @@ result = object;
 return result;
 }
 
-function normalize_DebugAction(value: unknown): unknown {
+function normalize_CooperateAction(value: unknown): unknown {
 let result = value;
 return result;
 }
 
 function normalize_26(value: unknown): unknown {
-return normalize_DebugAction(value);
+return normalize_CooperateAction(value);
 }
 
 function normalize_27(value: unknown): unknown {
@@ -238,20 +238,40 @@ let result = value;
 return result;
 }
 
+function normalize_29(value: unknown): unknown {
+let result = value;
+return result;
+}
+
 function normalize_30(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_29(value: unknown): unknown {
+function normalize_CooperateParams(value: unknown): unknown {
 let result = value;
-if (Array.isArray(result)) result = result.map(normalize_30);
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "action")) object["action"] = normalize_26(object["action"]);
+if (object["max_tokens"] === null) delete object["max_tokens"];
+if (Object.hasOwn(object, "max_tokens")) object["max_tokens"] = normalize_27(object["max_tokens"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_28(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_29(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_30(object["timeout_ms"]);
+result = object;
+}
+return result;
+}
+
+function normalize_DebugAction(value: unknown): unknown {
+let result = value;
 return result;
 }
 
 function normalize_31(value: unknown): unknown {
-let result = value;
-return result;
+return normalize_DebugAction(value);
 }
 
 function normalize_32(value: unknown): unknown {
@@ -264,13 +284,14 @@ let result = value;
 return result;
 }
 
-function normalize_34(value: unknown): unknown {
+function normalize_35(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_35(value: unknown): unknown {
+function normalize_34(value: unknown): unknown {
 let result = value;
+if (Array.isArray(result)) result = result.map(normalize_35);
 return result;
 }
 
@@ -299,7 +320,22 @@ let result = value;
 return result;
 }
 
+function normalize_41(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_42(value: unknown): unknown {
+let result = value;
+return result;
+}
+
 function normalize_43(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_44(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -309,27 +345,37 @@ let result = value;
 return result;
 }
 
-function normalize_44(value: unknown): unknown {
+function normalize_48(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_50(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_49(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_45(object[key]); }
+for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_50(object[key]); }
 result = object;
 }
 return result;
 }
 
-function normalize_46(value: unknown): unknown {
+function normalize_51(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_47(value: unknown): unknown {
+function normalize_52(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_48(value: unknown): unknown {
+function normalize_53(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -339,37 +385,32 @@ let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
 if (object["body"] === null) delete object["body"];
-if (Object.hasOwn(object, "body")) object["body"] = normalize_43(object["body"]);
+if (Object.hasOwn(object, "body")) object["body"] = normalize_48(object["body"]);
 if (object["headers"] === null) delete object["headers"];
-if (Object.hasOwn(object, "headers")) object["headers"] = normalize_44(object["headers"]);
-if (Object.hasOwn(object, "key")) object["key"] = normalize_46(object["key"]);
+if (Object.hasOwn(object, "headers")) object["headers"] = normalize_49(object["headers"]);
+if (Object.hasOwn(object, "key")) object["key"] = normalize_51(object["key"]);
 if (object["method"] === null) delete object["method"];
-if (Object.hasOwn(object, "method")) object["method"] = normalize_47(object["method"]);
+if (Object.hasOwn(object, "method")) object["method"] = normalize_52(object["method"]);
 if (object["url"] === null) delete object["url"];
-if (Object.hasOwn(object, "url")) object["url"] = normalize_48(object["url"]);
+if (Object.hasOwn(object, "url")) object["url"] = normalize_53(object["url"]);
 result = object;
 }
 return result;
 }
 
-function normalize_42(value: unknown): unknown {
+function normalize_47(value: unknown): unknown {
 return normalize_DebugReplaySpec(value);
 }
 
-function normalize_49(value: unknown): unknown {
+function normalize_54(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_41(value: unknown): unknown {
+function normalize_46(value: unknown): unknown {
 let result = value;
-if (validators.branch_139(value)) result = normalize_42(result);
-else if (validators.branch_140(value)) result = normalize_49(result);
-return result;
-}
-
-function normalize_50(value: unknown): unknown {
-let result = value;
+if (validators.branch_142(value)) result = normalize_47(result);
+else if (validators.branch_143(value)) result = normalize_54(result);
 return result;
 }
 
@@ -378,63 +419,68 @@ let result = value;
 return result;
 }
 
-function normalize_54(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "type")) object["type"] = normalize_55(object["type"]);
-result = object;
-}
-return result;
-}
-
-function normalize_57(value: unknown): unknown {
+function normalize_60(value: unknown): unknown {
 let result = value;
 return result;
 }
 
 function normalize_59(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_58(value: unknown): unknown {
-let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_59(object[key]); }
+if (Object.hasOwn(object, "type")) object["type"] = normalize_60(object["type"]);
 result = object;
 }
 return result;
 }
 
-function normalize_63(value: unknown): unknown {
-let result = value;
-return result;
-}
-
 function normalize_62(value: unknown): unknown {
-let result = value;
-if (Array.isArray(result)) result = result.map(normalize_63);
-return result;
-}
-
-function normalize_65(value: unknown): unknown {
 let result = value;
 return result;
 }
 
 function normalize_64(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_63(value: unknown): unknown {
+let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_65(object[key]); }
+for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_64(object[key]); }
 result = object;
 }
 return result;
 }
 
-function normalize_66(value: unknown): unknown {
+function normalize_68(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_67(value: unknown): unknown {
+let result = value;
+if (Array.isArray(result)) result = result.map(normalize_68);
+return result;
+}
+
+function normalize_70(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_69(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_70(object[key]); }
+result = object;
+}
+return result;
+}
+
+function normalize_71(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
@@ -448,65 +494,18 @@ let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
 if (object["remove"] === null) delete object["remove"];
-if (Object.hasOwn(object, "remove")) object["remove"] = normalize_62(object["remove"]);
+if (Object.hasOwn(object, "remove")) object["remove"] = normalize_67(object["remove"]);
 if (object["rename"] === null) delete object["rename"];
-if (Object.hasOwn(object, "rename")) object["rename"] = normalize_64(object["rename"]);
+if (Object.hasOwn(object, "rename")) object["rename"] = normalize_69(object["rename"]);
 if (object["set"] === null) delete object["set"];
-if (Object.hasOwn(object, "set")) object["set"] = normalize_66(object["set"]);
+if (Object.hasOwn(object, "set")) object["set"] = normalize_71(object["set"]);
 result = object;
 }
 return result;
 }
 
-function normalize_61(value: unknown): unknown {
+function normalize_66(value: unknown): unknown {
 return normalize_DebugJsonEdit(value);
-}
-
-function normalize_67(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_60(value: unknown): unknown {
-let result = value;
-if (validators.branch_144(value)) result = normalize_61(result);
-else if (validators.branch_145(value)) result = normalize_67(result);
-return result;
-}
-
-function normalize_68(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_69(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_70(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_56(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["body"] === null) delete object["body"];
-if (Object.hasOwn(object, "body")) object["body"] = normalize_57(object["body"]);
-if (object["headers"] === null) delete object["headers"];
-if (Object.hasOwn(object, "headers")) object["headers"] = normalize_58(object["headers"]);
-if (object["json"] === null) delete object["json"];
-if (Object.hasOwn(object, "json")) object["json"] = normalize_60(object["json"]);
-if (object["method"] === null) delete object["method"];
-if (Object.hasOwn(object, "method")) object["method"] = normalize_68(object["method"]);
-if (Object.hasOwn(object, "type")) object["type"] = normalize_69(object["type"]);
-if (object["url"] === null) delete object["url"];
-if (Object.hasOwn(object, "url")) object["url"] = normalize_70(object["url"]);
-result = object;
-}
-return result;
 }
 
 function normalize_72(value: unknown): unknown {
@@ -514,7 +513,19 @@ let result = value;
 return result;
 }
 
+function normalize_65(value: unknown): unknown {
+let result = value;
+if (validators.branch_147(value)) result = normalize_66(result);
+else if (validators.branch_148(value)) result = normalize_72(result);
+return result;
+}
+
 function normalize_73(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_74(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -524,18 +535,23 @@ let result = value;
 return result;
 }
 
-function normalize_74(value: unknown): unknown {
+function normalize_61(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_75(object[key]); }
+if (object["body"] === null) delete object["body"];
+if (Object.hasOwn(object, "body")) object["body"] = normalize_62(object["body"]);
+if (object["headers"] === null) delete object["headers"];
+if (Object.hasOwn(object, "headers")) object["headers"] = normalize_63(object["headers"]);
+if (object["json"] === null) delete object["json"];
+if (Object.hasOwn(object, "json")) object["json"] = normalize_65(object["json"]);
+if (object["method"] === null) delete object["method"];
+if (Object.hasOwn(object, "method")) object["method"] = normalize_73(object["method"]);
+if (Object.hasOwn(object, "type")) object["type"] = normalize_74(object["type"]);
+if (object["url"] === null) delete object["url"];
+if (Object.hasOwn(object, "url")) object["url"] = normalize_75(object["url"]);
 result = object;
 }
-return result;
-}
-
-function normalize_76(value: unknown): unknown {
-let result = value;
 return result;
 }
 
@@ -544,35 +560,7 @@ let result = value;
 return result;
 }
 
-function normalize_71(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "body")) object["body"] = normalize_72(object["body"]);
-if (object["delay_ms"] === null) delete object["delay_ms"];
-if (Object.hasOwn(object, "delay_ms")) object["delay_ms"] = normalize_73(object["delay_ms"]);
-if (object["headers"] === null) delete object["headers"];
-if (Object.hasOwn(object, "headers")) object["headers"] = normalize_74(object["headers"]);
-if (Object.hasOwn(object, "status")) object["status"] = normalize_76(object["status"]);
-if (Object.hasOwn(object, "type")) object["type"] = normalize_77(object["type"]);
-result = object;
-}
-return result;
-}
-
-function normalize_DebugRuleEffect(value: unknown): unknown {
-let result = value;
-if (validators.branch_142(value)) result = normalize_54(result);
-else if (validators.branch_143(value)) result = normalize_56(result);
-else if (validators.branch_146(value)) result = normalize_71(result);
-return result;
-}
-
-function normalize_53(value: unknown): unknown {
-return normalize_DebugRuleEffect(value);
-}
-
-function normalize_79(value: unknown): unknown {
+function normalize_78(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -582,27 +570,19 @@ let result = value;
 return result;
 }
 
-function normalize_81(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_DebugRuleMatch(value: unknown): unknown {
+function normalize_79(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["method"] === null) delete object["method"];
-if (Object.hasOwn(object, "method")) object["method"] = normalize_79(object["method"]);
-if (object["resource_type"] === null) delete object["resource_type"];
-if (Object.hasOwn(object, "resource_type")) object["resource_type"] = normalize_80(object["resource_type"]);
-if (Object.hasOwn(object, "url")) object["url"] = normalize_81(object["url"]);
+for (const key of Object.keys(object)) { if (!new Set<string>([]).has(key)) object[key] = normalize_80(object[key]); }
 result = object;
 }
 return result;
 }
 
-function normalize_78(value: unknown): unknown {
-return normalize_DebugRuleMatch(value);
+function normalize_81(value: unknown): unknown {
+let result = value;
+return result;
 }
 
 function normalize_82(value: unknown): unknown {
@@ -610,39 +590,36 @@ let result = value;
 return result;
 }
 
-function normalize_83(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_DebugRuleSpec(value: unknown): unknown {
+function normalize_76(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "effect")) object["effect"] = normalize_53(object["effect"]);
-if (Object.hasOwn(object, "match")) object["match"] = normalize_78(object["match"]);
-if (object["name"] === null) delete object["name"];
-if (Object.hasOwn(object, "name")) object["name"] = normalize_82(object["name"]);
-if (object["times"] === null) delete object["times"];
-if (Object.hasOwn(object, "times")) object["times"] = normalize_83(object["times"]);
+if (Object.hasOwn(object, "body")) object["body"] = normalize_77(object["body"]);
+if (object["delay_ms"] === null) delete object["delay_ms"];
+if (Object.hasOwn(object, "delay_ms")) object["delay_ms"] = normalize_78(object["delay_ms"]);
+if (object["headers"] === null) delete object["headers"];
+if (Object.hasOwn(object, "headers")) object["headers"] = normalize_79(object["headers"]);
+if (Object.hasOwn(object, "status")) object["status"] = normalize_81(object["status"]);
+if (Object.hasOwn(object, "type")) object["type"] = normalize_82(object["type"]);
 result = object;
 }
 return result;
 }
 
-function normalize_52(value: unknown): unknown {
-return normalize_DebugRuleSpec(value);
+function normalize_DebugRuleEffect(value: unknown): unknown {
+let result = value;
+if (validators.branch_145(value)) result = normalize_59(result);
+else if (validators.branch_146(value)) result = normalize_61(result);
+else if (validators.branch_149(value)) result = normalize_76(result);
+return result;
+}
+
+function normalize_58(value: unknown): unknown {
+return normalize_DebugRuleEffect(value);
 }
 
 function normalize_84(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_51(value: unknown): unknown {
-let result = value;
-if (validators.branch_141(value)) result = normalize_52(result);
-else if (validators.branch_147(value)) result = normalize_84(result);
 return result;
 }
 
@@ -656,6 +633,24 @@ let result = value;
 return result;
 }
 
+function normalize_DebugRuleMatch(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["method"] === null) delete object["method"];
+if (Object.hasOwn(object, "method")) object["method"] = normalize_84(object["method"]);
+if (object["resource_type"] === null) delete object["resource_type"];
+if (Object.hasOwn(object, "resource_type")) object["resource_type"] = normalize_85(object["resource_type"]);
+if (Object.hasOwn(object, "url")) object["url"] = normalize_86(object["url"]);
+result = object;
+}
+return result;
+}
+
+function normalize_83(value: unknown): unknown {
+return normalize_DebugRuleMatch(value);
+}
+
 function normalize_87(value: unknown): unknown {
 let result = value;
 return result;
@@ -666,8 +661,34 @@ let result = value;
 return result;
 }
 
+function normalize_DebugRuleSpec(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "effect")) object["effect"] = normalize_58(object["effect"]);
+if (Object.hasOwn(object, "match")) object["match"] = normalize_83(object["match"]);
+if (object["name"] === null) delete object["name"];
+if (Object.hasOwn(object, "name")) object["name"] = normalize_87(object["name"]);
+if (object["times"] === null) delete object["times"];
+if (Object.hasOwn(object, "times")) object["times"] = normalize_88(object["times"]);
+result = object;
+}
+return result;
+}
+
+function normalize_57(value: unknown): unknown {
+return normalize_DebugRuleSpec(value);
+}
+
 function normalize_89(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_56(value: unknown): unknown {
+let result = value;
+if (validators.branch_144(value)) result = normalize_57(result);
+else if (validators.branch_150(value)) result = normalize_89(result);
 return result;
 }
 
@@ -696,67 +717,6 @@ let result = value;
 return result;
 }
 
-function normalize_DebugParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "action")) object["action"] = normalize_26(object["action"]);
-if (object["budget"] === null) delete object["budget"];
-if (Object.hasOwn(object, "budget")) object["budget"] = normalize_27(object["budget"]);
-if (object["command_id"] === null) delete object["command_id"];
-if (Object.hasOwn(object, "command_id")) object["command_id"] = normalize_28(object["command_id"]);
-if (object["fields"] === null) delete object["fields"];
-if (Object.hasOwn(object, "fields")) object["fields"] = normalize_29(object["fields"]);
-if (object["id"] === null) delete object["id"];
-if (Object.hasOwn(object, "id")) object["id"] = normalize_31(object["id"]);
-if (object["include_controlled"] === null) delete object["include_controlled"];
-if (Object.hasOwn(object, "include_controlled")) object["include_controlled"] = normalize_32(object["include_controlled"]);
-if (object["kind"] === null) delete object["kind"];
-if (Object.hasOwn(object, "kind")) object["kind"] = normalize_33(object["kind"]);
-if (object["limit"] === null) delete object["limit"];
-if (Object.hasOwn(object, "limit")) object["limit"] = normalize_34(object["limit"]);
-if (object["max_chars"] === null) delete object["max_chars"];
-if (Object.hasOwn(object, "max_chars")) object["max_chars"] = normalize_35(object["max_chars"]);
-if (object["method"] === null) delete object["method"];
-if (Object.hasOwn(object, "method")) object["method"] = normalize_36(object["method"]);
-if (object["name"] === null) delete object["name"];
-if (Object.hasOwn(object, "name")) object["name"] = normalize_37(object["name"]);
-if (object["offset"] === null) delete object["offset"];
-if (Object.hasOwn(object, "offset")) object["offset"] = normalize_38(object["offset"]);
-if (object["part"] === null) delete object["part"];
-if (Object.hasOwn(object, "part")) object["part"] = normalize_39(object["part"]);
-if (object["pointer"] === null) delete object["pointer"];
-if (Object.hasOwn(object, "pointer")) object["pointer"] = normalize_40(object["pointer"]);
-if (object["replay"] === null) delete object["replay"];
-if (Object.hasOwn(object, "replay")) object["replay"] = normalize_41(object["replay"]);
-if (object["resource_type"] === null) delete object["resource_type"];
-if (Object.hasOwn(object, "resource_type")) object["resource_type"] = normalize_50(object["resource_type"]);
-if (object["rule"] === null) delete object["rule"];
-if (Object.hasOwn(object, "rule")) object["rule"] = normalize_51(object["rule"]);
-if (object["run_id"] === null) delete object["run_id"];
-if (Object.hasOwn(object, "run_id")) object["run_id"] = normalize_85(object["run_id"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_86(object["session_id"]);
-if (object["since"] === null) delete object["since"];
-if (Object.hasOwn(object, "since")) object["since"] = normalize_87(object["since"]);
-if (object["slow_ms"] === null) delete object["slow_ms"];
-if (Object.hasOwn(object, "slow_ms")) object["slow_ms"] = normalize_88(object["slow_ms"]);
-if (object["state"] === null) delete object["state"];
-if (Object.hasOwn(object, "state")) object["state"] = normalize_89(object["state"]);
-if (object["status"] === null) delete object["status"];
-if (Object.hasOwn(object, "status")) object["status"] = normalize_90(object["status"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_91(object["tab_id"]);
-if (object["url"] === null) delete object["url"];
-if (Object.hasOwn(object, "url")) object["url"] = normalize_92(object["url"]);
-if (object["wait_ms"] === null) delete object["wait_ms"];
-if (Object.hasOwn(object, "wait_ms")) object["wait_ms"] = normalize_93(object["wait_ms"]);
-if (object["window_ms"] === null) delete object["window_ms"];
-if (Object.hasOwn(object, "window_ms")) object["window_ms"] = normalize_94(object["window_ms"]);
-result = object;
-}
-return result;
-}
-
 function normalize_95(value: unknown): unknown {
 let result = value;
 return result;
@@ -782,6 +742,67 @@ let result = value;
 return result;
 }
 
+function normalize_DebugParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "action")) object["action"] = normalize_31(object["action"]);
+if (object["budget"] === null) delete object["budget"];
+if (Object.hasOwn(object, "budget")) object["budget"] = normalize_32(object["budget"]);
+if (object["command_id"] === null) delete object["command_id"];
+if (Object.hasOwn(object, "command_id")) object["command_id"] = normalize_33(object["command_id"]);
+if (object["fields"] === null) delete object["fields"];
+if (Object.hasOwn(object, "fields")) object["fields"] = normalize_34(object["fields"]);
+if (object["id"] === null) delete object["id"];
+if (Object.hasOwn(object, "id")) object["id"] = normalize_36(object["id"]);
+if (object["include_controlled"] === null) delete object["include_controlled"];
+if (Object.hasOwn(object, "include_controlled")) object["include_controlled"] = normalize_37(object["include_controlled"]);
+if (object["kind"] === null) delete object["kind"];
+if (Object.hasOwn(object, "kind")) object["kind"] = normalize_38(object["kind"]);
+if (object["limit"] === null) delete object["limit"];
+if (Object.hasOwn(object, "limit")) object["limit"] = normalize_39(object["limit"]);
+if (object["max_chars"] === null) delete object["max_chars"];
+if (Object.hasOwn(object, "max_chars")) object["max_chars"] = normalize_40(object["max_chars"]);
+if (object["method"] === null) delete object["method"];
+if (Object.hasOwn(object, "method")) object["method"] = normalize_41(object["method"]);
+if (object["name"] === null) delete object["name"];
+if (Object.hasOwn(object, "name")) object["name"] = normalize_42(object["name"]);
+if (object["offset"] === null) delete object["offset"];
+if (Object.hasOwn(object, "offset")) object["offset"] = normalize_43(object["offset"]);
+if (object["part"] === null) delete object["part"];
+if (Object.hasOwn(object, "part")) object["part"] = normalize_44(object["part"]);
+if (object["pointer"] === null) delete object["pointer"];
+if (Object.hasOwn(object, "pointer")) object["pointer"] = normalize_45(object["pointer"]);
+if (object["replay"] === null) delete object["replay"];
+if (Object.hasOwn(object, "replay")) object["replay"] = normalize_46(object["replay"]);
+if (object["resource_type"] === null) delete object["resource_type"];
+if (Object.hasOwn(object, "resource_type")) object["resource_type"] = normalize_55(object["resource_type"]);
+if (object["rule"] === null) delete object["rule"];
+if (Object.hasOwn(object, "rule")) object["rule"] = normalize_56(object["rule"]);
+if (object["run_id"] === null) delete object["run_id"];
+if (Object.hasOwn(object, "run_id")) object["run_id"] = normalize_90(object["run_id"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_91(object["session_id"]);
+if (object["since"] === null) delete object["since"];
+if (Object.hasOwn(object, "since")) object["since"] = normalize_92(object["since"]);
+if (object["slow_ms"] === null) delete object["slow_ms"];
+if (Object.hasOwn(object, "slow_ms")) object["slow_ms"] = normalize_93(object["slow_ms"]);
+if (object["state"] === null) delete object["state"];
+if (Object.hasOwn(object, "state")) object["state"] = normalize_94(object["state"]);
+if (object["status"] === null) delete object["status"];
+if (Object.hasOwn(object, "status")) object["status"] = normalize_95(object["status"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_96(object["tab_id"]);
+if (object["url"] === null) delete object["url"];
+if (Object.hasOwn(object, "url")) object["url"] = normalize_97(object["url"]);
+if (object["wait_ms"] === null) delete object["wait_ms"];
+if (Object.hasOwn(object, "wait_ms")) object["wait_ms"] = normalize_98(object["wait_ms"]);
+if (object["window_ms"] === null) delete object["window_ms"];
+if (Object.hasOwn(object, "window_ms")) object["window_ms"] = normalize_99(object["window_ms"]);
+result = object;
+}
+return result;
+}
+
 function normalize_100(value: unknown): unknown {
 let result = value;
 return result;
@@ -792,29 +813,17 @@ let result = value;
 return result;
 }
 
-function normalize_DownloadParams(value: unknown): unknown {
+function normalize_102(value: unknown): unknown {
 let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["browser_relative_dir"] === null) delete object["browser_relative_dir"];
-if (Object.hasOwn(object, "browser_relative_dir")) object["browser_relative_dir"] = normalize_95(object["browser_relative_dir"]);
-if (object["max_byte_size"] === null) delete object["max_byte_size"];
-if (Object.hasOwn(object, "max_byte_size")) object["max_byte_size"] = normalize_96(object["max_byte_size"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_97(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_98(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_99(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_100(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_101(object["timeout_ms"]);
-result = object;
-}
 return result;
 }
 
-function normalize_102(value: unknown): unknown {
+function normalize_103(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_104(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -829,17 +838,29 @@ let result = value;
 return result;
 }
 
+function normalize_DownloadParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["browser_relative_dir"] === null) delete object["browser_relative_dir"];
+if (Object.hasOwn(object, "browser_relative_dir")) object["browser_relative_dir"] = normalize_100(object["browser_relative_dir"]);
+if (object["max_byte_size"] === null) delete object["max_byte_size"];
+if (Object.hasOwn(object, "max_byte_size")) object["max_byte_size"] = normalize_101(object["max_byte_size"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_102(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_103(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_104(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_105(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_106(object["timeout_ms"]);
+result = object;
+}
+return result;
+}
+
 function normalize_107(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_108(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_109(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -854,53 +875,32 @@ let result = value;
 return result;
 }
 
+function normalize_112(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_113(value: unknown): unknown {
+let result = value;
+return result;
+}
+
 function normalize_114(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_117(value: unknown): unknown {
+function normalize_115(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_118(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_UserAgentBrandVersion(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "brand")) object["brand"] = normalize_117(object["brand"]);
-if (Object.hasOwn(object, "version")) object["version"] = normalize_118(object["version"]);
-result = object;
-}
 return result;
 }
 
 function normalize_116(value: unknown): unknown {
-return normalize_UserAgentBrandVersion(value);
-}
-
-function normalize_115(value: unknown): unknown {
 let result = value;
-if (Array.isArray(result)) result = result.map(normalize_116);
 return result;
 }
 
 function normalize_119(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_120(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_121(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -915,42 +915,29 @@ let result = value;
 return result;
 }
 
-function normalize_UserAgentMetadata(value: unknown): unknown {
+function normalize_UserAgentBrandVersion(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["architecture"] === null) delete object["architecture"];
-if (Object.hasOwn(object, "architecture")) object["architecture"] = normalize_114(object["architecture"]);
-if (object["brands"] === null) delete object["brands"];
-if (Object.hasOwn(object, "brands")) object["brands"] = normalize_115(object["brands"]);
-if (object["full_version"] === null) delete object["full_version"];
-if (Object.hasOwn(object, "full_version")) object["full_version"] = normalize_119(object["full_version"]);
-if (object["mobile"] === null) delete object["mobile"];
-if (Object.hasOwn(object, "mobile")) object["mobile"] = normalize_120(object["mobile"]);
-if (object["model"] === null) delete object["model"];
-if (Object.hasOwn(object, "model")) object["model"] = normalize_121(object["model"]);
-if (object["platform"] === null) delete object["platform"];
-if (Object.hasOwn(object, "platform")) object["platform"] = normalize_122(object["platform"]);
-if (object["platform_version"] === null) delete object["platform_version"];
-if (Object.hasOwn(object, "platform_version")) object["platform_version"] = normalize_123(object["platform_version"]);
+if (Object.hasOwn(object, "brand")) object["brand"] = normalize_122(object["brand"]);
+if (Object.hasOwn(object, "version")) object["version"] = normalize_123(object["version"]);
 result = object;
 }
 return result;
 }
 
-function normalize_113(value: unknown): unknown {
-return normalize_UserAgentMetadata(value);
+function normalize_121(value: unknown): unknown {
+return normalize_UserAgentBrandVersion(value);
+}
+
+function normalize_120(value: unknown): unknown {
+let result = value;
+if (Array.isArray(result)) result = result.map(normalize_121);
+return result;
 }
 
 function normalize_124(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_112(value: unknown): unknown {
-let result = value;
-if (validators.branch_149(value)) result = normalize_113(result);
-else if (validators.branch_150(value)) result = normalize_124(result);
 return result;
 }
 
@@ -959,46 +946,8 @@ let result = value;
 return result;
 }
 
-function normalize_EmulateOverrides(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["accept_language"] === null) delete object["accept_language"];
-if (Object.hasOwn(object, "accept_language")) object["accept_language"] = normalize_105(object["accept_language"]);
-if (object["device_scale_factor"] === null) delete object["device_scale_factor"];
-if (Object.hasOwn(object, "device_scale_factor")) object["device_scale_factor"] = normalize_106(object["device_scale_factor"]);
-if (object["height"] === null) delete object["height"];
-if (Object.hasOwn(object, "height")) object["height"] = normalize_107(object["height"]);
-if (object["max_touch_points"] === null) delete object["max_touch_points"];
-if (Object.hasOwn(object, "max_touch_points")) object["max_touch_points"] = normalize_108(object["max_touch_points"]);
-if (object["mobile"] === null) delete object["mobile"];
-if (Object.hasOwn(object, "mobile")) object["mobile"] = normalize_109(object["mobile"]);
-if (object["touch"] === null) delete object["touch"];
-if (Object.hasOwn(object, "touch")) object["touch"] = normalize_110(object["touch"]);
-if (object["user_agent"] === null) delete object["user_agent"];
-if (Object.hasOwn(object, "user_agent")) object["user_agent"] = normalize_111(object["user_agent"]);
-if (object["user_agent_metadata"] === null) delete object["user_agent_metadata"];
-if (Object.hasOwn(object, "user_agent_metadata")) object["user_agent_metadata"] = normalize_112(object["user_agent_metadata"]);
-if (object["width"] === null) delete object["width"];
-if (Object.hasOwn(object, "width")) object["width"] = normalize_125(object["width"]);
-result = object;
-}
-return result;
-}
-
-function normalize_104(value: unknown): unknown {
-return normalize_EmulateOverrides(value);
-}
-
 function normalize_126(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_103(value: unknown): unknown {
-let result = value;
-if (validators.branch_148(value)) result = normalize_104(result);
-else if (validators.branch_151(value)) result = normalize_126(result);
 return result;
 }
 
@@ -1012,24 +961,42 @@ let result = value;
 return result;
 }
 
-function normalize_EmulateParams(value: unknown): unknown {
+function normalize_UserAgentMetadata(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["off"] === null) delete object["off"];
-if (Object.hasOwn(object, "off")) object["off"] = normalize_102(object["off"]);
-if (object["overrides"] === null) delete object["overrides"];
-if (Object.hasOwn(object, "overrides")) object["overrides"] = normalize_103(object["overrides"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_127(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_128(object["tab_id"]);
+if (object["architecture"] === null) delete object["architecture"];
+if (Object.hasOwn(object, "architecture")) object["architecture"] = normalize_119(object["architecture"]);
+if (object["brands"] === null) delete object["brands"];
+if (Object.hasOwn(object, "brands")) object["brands"] = normalize_120(object["brands"]);
+if (object["full_version"] === null) delete object["full_version"];
+if (Object.hasOwn(object, "full_version")) object["full_version"] = normalize_124(object["full_version"]);
+if (object["mobile"] === null) delete object["mobile"];
+if (Object.hasOwn(object, "mobile")) object["mobile"] = normalize_125(object["mobile"]);
+if (object["model"] === null) delete object["model"];
+if (Object.hasOwn(object, "model")) object["model"] = normalize_126(object["model"]);
+if (object["platform"] === null) delete object["platform"];
+if (Object.hasOwn(object, "platform")) object["platform"] = normalize_127(object["platform"]);
+if (object["platform_version"] === null) delete object["platform_version"];
+if (Object.hasOwn(object, "platform_version")) object["platform_version"] = normalize_128(object["platform_version"]);
 result = object;
 }
 return result;
 }
 
+function normalize_118(value: unknown): unknown {
+return normalize_UserAgentMetadata(value);
+}
+
 function normalize_129(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_117(value: unknown): unknown {
+let result = value;
+if (validators.branch_152(value)) result = normalize_118(result);
+else if (validators.branch_153(value)) result = normalize_129(result);
 return result;
 }
 
@@ -1038,8 +1005,46 @@ let result = value;
 return result;
 }
 
+function normalize_EmulateOverrides(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["accept_language"] === null) delete object["accept_language"];
+if (Object.hasOwn(object, "accept_language")) object["accept_language"] = normalize_110(object["accept_language"]);
+if (object["device_scale_factor"] === null) delete object["device_scale_factor"];
+if (Object.hasOwn(object, "device_scale_factor")) object["device_scale_factor"] = normalize_111(object["device_scale_factor"]);
+if (object["height"] === null) delete object["height"];
+if (Object.hasOwn(object, "height")) object["height"] = normalize_112(object["height"]);
+if (object["max_touch_points"] === null) delete object["max_touch_points"];
+if (Object.hasOwn(object, "max_touch_points")) object["max_touch_points"] = normalize_113(object["max_touch_points"]);
+if (object["mobile"] === null) delete object["mobile"];
+if (Object.hasOwn(object, "mobile")) object["mobile"] = normalize_114(object["mobile"]);
+if (object["touch"] === null) delete object["touch"];
+if (Object.hasOwn(object, "touch")) object["touch"] = normalize_115(object["touch"]);
+if (object["user_agent"] === null) delete object["user_agent"];
+if (Object.hasOwn(object, "user_agent")) object["user_agent"] = normalize_116(object["user_agent"]);
+if (object["user_agent_metadata"] === null) delete object["user_agent_metadata"];
+if (Object.hasOwn(object, "user_agent_metadata")) object["user_agent_metadata"] = normalize_117(object["user_agent_metadata"]);
+if (object["width"] === null) delete object["width"];
+if (Object.hasOwn(object, "width")) object["width"] = normalize_130(object["width"]);
+result = object;
+}
+return result;
+}
+
+function normalize_109(value: unknown): unknown {
+return normalize_EmulateOverrides(value);
+}
+
 function normalize_131(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_108(value: unknown): unknown {
+let result = value;
+if (validators.branch_151(value)) result = normalize_109(result);
+else if (validators.branch_154(value)) result = normalize_131(result);
 return result;
 }
 
@@ -1053,37 +1058,40 @@ let result = value;
 return result;
 }
 
-function normalize_134(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_EvaluateParams(value: unknown): unknown {
+function normalize_EmulateParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["await_promise"] === null) delete object["await_promise"];
-if (Object.hasOwn(object, "await_promise")) object["await_promise"] = normalize_129(object["await_promise"]);
-if (Object.hasOwn(object, "expression")) object["expression"] = normalize_130(object["expression"]);
-if (object["return_by_value"] === null) delete object["return_by_value"];
-if (Object.hasOwn(object, "return_by_value")) object["return_by_value"] = normalize_131(object["return_by_value"]);
+if (object["off"] === null) delete object["off"];
+if (Object.hasOwn(object, "off")) object["off"] = normalize_107(object["off"]);
+if (object["overrides"] === null) delete object["overrides"];
+if (Object.hasOwn(object, "overrides")) object["overrides"] = normalize_108(object["overrides"]);
 if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_132(object["session_id"]);
 if (object["tab_id"] === null) delete object["tab_id"];
 if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_133(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_134(object["timeout_ms"]);
 result = object;
 }
 return result;
 }
 
-function normalize_ExtractAction(value: unknown): unknown {
+function normalize_134(value: unknown): unknown {
 let result = value;
 return result;
 }
 
 function normalize_135(value: unknown): unknown {
-return normalize_ExtractAction(value);
+let result = value;
+return result;
+}
+
+function normalize_136(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_137(value: unknown): unknown {
+let result = value;
+return result;
 }
 
 function normalize_138(value: unknown): unknown {
@@ -1096,49 +1104,32 @@ let result = value;
 return result;
 }
 
-function normalize_140(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_ExtractRead(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_141(value: unknown): unknown {
-return normalize_ExtractRead(value);
-}
-
-function normalize_142(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_ExtractField(value: unknown): unknown {
+function normalize_EvaluateParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["attribute"] === null) delete object["attribute"];
-if (Object.hasOwn(object, "attribute")) object["attribute"] = normalize_138(object["attribute"]);
-if (Object.hasOwn(object, "key")) object["key"] = normalize_139(object["key"]);
-if (object["name"] === null) delete object["name"];
-if (Object.hasOwn(object, "name")) object["name"] = normalize_140(object["name"]);
-if (Object.hasOwn(object, "read")) object["read"] = normalize_141(object["read"]);
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_142(object["selector"]);
+if (object["await_promise"] === null) delete object["await_promise"];
+if (Object.hasOwn(object, "await_promise")) object["await_promise"] = normalize_134(object["await_promise"]);
+if (Object.hasOwn(object, "expression")) object["expression"] = normalize_135(object["expression"]);
+if (object["return_by_value"] === null) delete object["return_by_value"];
+if (Object.hasOwn(object, "return_by_value")) object["return_by_value"] = normalize_136(object["return_by_value"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_137(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_138(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_139(object["timeout_ms"]);
 result = object;
 }
 return result;
 }
 
-function normalize_137(value: unknown): unknown {
-return normalize_ExtractField(value);
+function normalize_ExtractAction(value: unknown): unknown {
+let result = value;
+return result;
 }
 
-function normalize_136(value: unknown): unknown {
-let result = value;
-if (Array.isArray(result)) result = result.map(normalize_137);
-return result;
+function normalize_140(value: unknown): unknown {
+return normalize_ExtractAction(value);
 }
 
 function normalize_143(value: unknown): unknown {
@@ -1156,13 +1147,43 @@ let result = value;
 return result;
 }
 
-function normalize_146(value: unknown): unknown {
+function normalize_ExtractRead(value: unknown): unknown {
 let result = value;
 return result;
 }
 
+function normalize_146(value: unknown): unknown {
+return normalize_ExtractRead(value);
+}
+
 function normalize_147(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_ExtractField(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["attribute"] === null) delete object["attribute"];
+if (Object.hasOwn(object, "attribute")) object["attribute"] = normalize_143(object["attribute"]);
+if (Object.hasOwn(object, "key")) object["key"] = normalize_144(object["key"]);
+if (object["name"] === null) delete object["name"];
+if (Object.hasOwn(object, "name")) object["name"] = normalize_145(object["name"]);
+if (Object.hasOwn(object, "read")) object["read"] = normalize_146(object["read"]);
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_147(object["selector"]);
+result = object;
+}
+return result;
+}
+
+function normalize_142(value: unknown): unknown {
+return normalize_ExtractField(value);
+}
+
+function normalize_141(value: unknown): unknown {
+let result = value;
+if (Array.isArray(result)) result = result.map(normalize_142);
 return result;
 }
 
@@ -1191,37 +1212,6 @@ let result = value;
 return result;
 }
 
-function normalize_ExtractParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "action")) object["action"] = normalize_135(object["action"]);
-if (object["fields"] === null) delete object["fields"];
-if (Object.hasOwn(object, "fields")) object["fields"] = normalize_136(object["fields"]);
-if (object["item_selector"] === null) delete object["item_selector"];
-if (Object.hasOwn(object, "item_selector")) object["item_selector"] = normalize_143(object["item_selector"]);
-if (object["max_bytes"] === null) delete object["max_bytes"];
-if (Object.hasOwn(object, "max_bytes")) object["max_bytes"] = normalize_144(object["max_bytes"]);
-if (object["max_columns"] === null) delete object["max_columns"];
-if (Object.hasOwn(object, "max_columns")) object["max_columns"] = normalize_145(object["max_columns"]);
-if (object["max_rows"] === null) delete object["max_rows"];
-if (Object.hasOwn(object, "max_rows")) object["max_rows"] = normalize_146(object["max_rows"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_147(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_148(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_149(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_150(object["tab_id"]);
-if (object["target_id"] === null) delete object["target_id"];
-if (Object.hasOwn(object, "target_id")) object["target_id"] = normalize_151(object["target_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_152(object["timeout_ms"]);
-result = object;
-}
-return result;
-}
-
 function normalize_153(value: unknown): unknown {
 let result = value;
 return result;
@@ -1247,6 +1237,37 @@ let result = value;
 return result;
 }
 
+function normalize_ExtractParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "action")) object["action"] = normalize_140(object["action"]);
+if (object["fields"] === null) delete object["fields"];
+if (Object.hasOwn(object, "fields")) object["fields"] = normalize_141(object["fields"]);
+if (object["item_selector"] === null) delete object["item_selector"];
+if (Object.hasOwn(object, "item_selector")) object["item_selector"] = normalize_148(object["item_selector"]);
+if (object["max_bytes"] === null) delete object["max_bytes"];
+if (Object.hasOwn(object, "max_bytes")) object["max_bytes"] = normalize_149(object["max_bytes"]);
+if (object["max_columns"] === null) delete object["max_columns"];
+if (Object.hasOwn(object, "max_columns")) object["max_columns"] = normalize_150(object["max_columns"]);
+if (object["max_rows"] === null) delete object["max_rows"];
+if (Object.hasOwn(object, "max_rows")) object["max_rows"] = normalize_151(object["max_rows"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_152(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_153(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_154(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_155(object["tab_id"]);
+if (object["target_id"] === null) delete object["target_id"];
+if (Object.hasOwn(object, "target_id")) object["target_id"] = normalize_156(object["target_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_157(object["timeout_ms"]);
+result = object;
+}
+return result;
+}
+
 function normalize_158(value: unknown): unknown {
 let result = value;
 return result;
@@ -1254,27 +1275,6 @@ return result;
 
 function normalize_159(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_FillParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["clear_before"] === null) delete object["clear_before"];
-if (Object.hasOwn(object, "clear_before")) object["clear_before"] = normalize_153(object["clear_before"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_154(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_155(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_156(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_157(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_158(object["timeout_ms"]);
-if (Object.hasOwn(object, "value")) object["value"] = normalize_159(object["value"]);
-result = object;
-}
 return result;
 }
 
@@ -1303,19 +1303,22 @@ let result = value;
 return result;
 }
 
-function normalize_FocusParams(value: unknown): unknown {
+function normalize_FillParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
+if (object["clear_before"] === null) delete object["clear_before"];
+if (Object.hasOwn(object, "clear_before")) object["clear_before"] = normalize_158(object["clear_before"]);
 if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_160(object["ref"]);
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_159(object["ref"]);
 if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_161(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_162(object["session_id"]);
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_160(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_161(object["session_id"]);
 if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_163(object["tab_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_162(object["tab_id"]);
 if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_164(object["timeout_ms"]);
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_163(object["timeout_ms"]);
+if (Object.hasOwn(object, "value")) object["value"] = normalize_164(object["value"]);
 result = object;
 }
 return result;
@@ -1341,24 +1344,26 @@ let result = value;
 return result;
 }
 
-function normalize_GetHtmlParams(value: unknown): unknown {
+function normalize_169(value: unknown): unknown {
 let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["max_bytes"] === null) delete object["max_bytes"];
-if (Object.hasOwn(object, "max_bytes")) object["max_bytes"] = normalize_165(object["max_bytes"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_166(object["ref"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_167(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_168(object["tab_id"]);
-result = object;
-}
 return result;
 }
 
-function normalize_169(value: unknown): unknown {
+function normalize_FocusParams(value: unknown): unknown {
 let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_165(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_166(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_167(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_168(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_169(object["timeout_ms"]);
+result = object;
+}
 return result;
 }
 
@@ -1382,6 +1387,22 @@ let result = value;
 return result;
 }
 
+function normalize_GetHtmlParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["max_bytes"] === null) delete object["max_bytes"];
+if (Object.hasOwn(object, "max_bytes")) object["max_bytes"] = normalize_170(object["max_bytes"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_171(object["ref"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_172(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_173(object["tab_id"]);
+result = object;
+}
+return result;
+}
+
 function normalize_174(value: unknown): unknown {
 let result = value;
 return result;
@@ -1392,33 +1413,13 @@ let result = value;
 return result;
 }
 
-function normalize_HandshakeResponse(value: unknown): unknown {
+function normalize_176(value: unknown): unknown {
 let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["audit_ready"] === null) delete object["audit_ready"];
-if (Object.hasOwn(object, "audit_ready")) object["audit_ready"] = normalize_169(object["audit_ready"]);
-if (object["audit_version"] === null) delete object["audit_version"];
-if (Object.hasOwn(object, "audit_version")) object["audit_version"] = normalize_170(object["audit_version"]);
-if (object["min_compatible_peer"] === null) delete object["min_compatible_peer"];
-if (Object.hasOwn(object, "min_compatible_peer")) object["min_compatible_peer"] = normalize_171(object["min_compatible_peer"]);
-if (object["min_compatible_protocol"] === null) delete object["min_compatible_protocol"];
-if (Object.hasOwn(object, "min_compatible_protocol")) object["min_compatible_protocol"] = normalize_172(object["min_compatible_protocol"]);
-if (Object.hasOwn(object, "protocol_version")) object["protocol_version"] = normalize_173(object["protocol_version"]);
-if (Object.hasOwn(object, "server")) object["server"] = normalize_174(object["server"]);
-if (Object.hasOwn(object, "version")) object["version"] = normalize_175(object["version"]);
-result = object;
-}
 return result;
 }
 
 function normalize_177(value: unknown): unknown {
-return normalize_KeyModifier(value);
-}
-
-function normalize_176(value: unknown): unknown {
 let result = value;
-if (Array.isArray(result)) result = result.map(normalize_177);
 return result;
 }
 
@@ -1437,40 +1438,38 @@ let result = value;
 return result;
 }
 
-function normalize_181(value: unknown): unknown {
+function normalize_HandshakeResponse(value: unknown): unknown {
 let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["audit_ready"] === null) delete object["audit_ready"];
+if (Object.hasOwn(object, "audit_ready")) object["audit_ready"] = normalize_174(object["audit_ready"]);
+if (object["audit_version"] === null) delete object["audit_version"];
+if (Object.hasOwn(object, "audit_version")) object["audit_version"] = normalize_175(object["audit_version"]);
+if (object["min_compatible_peer"] === null) delete object["min_compatible_peer"];
+if (Object.hasOwn(object, "min_compatible_peer")) object["min_compatible_peer"] = normalize_176(object["min_compatible_peer"]);
+if (object["min_compatible_protocol"] === null) delete object["min_compatible_protocol"];
+if (Object.hasOwn(object, "min_compatible_protocol")) object["min_compatible_protocol"] = normalize_177(object["min_compatible_protocol"]);
+if (Object.hasOwn(object, "protocol_version")) object["protocol_version"] = normalize_178(object["protocol_version"]);
+if (Object.hasOwn(object, "server")) object["server"] = normalize_179(object["server"]);
+if (Object.hasOwn(object, "version")) object["version"] = normalize_180(object["version"]);
+result = object;
+}
 return result;
 }
 
 function normalize_182(value: unknown): unknown {
+return normalize_KeyModifier(value);
+}
+
+function normalize_181(value: unknown): unknown {
 let result = value;
+if (Array.isArray(result)) result = result.map(normalize_182);
 return result;
 }
 
 function normalize_183(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_HoverParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["modifiers"] === null) delete object["modifiers"];
-if (Object.hasOwn(object, "modifiers")) object["modifiers"] = normalize_176(object["modifiers"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_178(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_179(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_180(object["session_id"]);
-if (object["settle_ms"] === null) delete object["settle_ms"];
-if (Object.hasOwn(object, "settle_ms")) object["settle_ms"] = normalize_181(object["settle_ms"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_182(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_183(object["timeout_ms"]);
-result = object;
-}
 return result;
 }
 
@@ -1489,40 +1488,40 @@ let result = value;
 return result;
 }
 
-function normalize_WaitUntil(value: unknown): unknown {
+function normalize_187(value: unknown): unknown {
 let result = value;
 return result;
 }
 
 function normalize_188(value: unknown): unknown {
-return normalize_WaitUntil(value);
+let result = value;
+return result;
+}
+
+function normalize_HoverParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["modifiers"] === null) delete object["modifiers"];
+if (Object.hasOwn(object, "modifiers")) object["modifiers"] = normalize_181(object["modifiers"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_183(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_184(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_185(object["session_id"]);
+if (object["settle_ms"] === null) delete object["settle_ms"];
+if (Object.hasOwn(object, "settle_ms")) object["settle_ms"] = normalize_186(object["settle_ms"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_187(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_188(object["timeout_ms"]);
+result = object;
+}
+return result;
 }
 
 function normalize_189(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_187(value: unknown): unknown {
-let result = value;
-if (validators.branch_152(value)) result = normalize_188(result);
-else if (validators.branch_153(value)) result = normalize_189(result);
-return result;
-}
-
-function normalize_NavigateBackParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_184(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_185(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_186(object["timeout_ms"]);
-if (object["wait_until"] === null) delete object["wait_until"];
-if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_187(object["wait_until"]);
-result = object;
-}
 return result;
 }
 
@@ -1536,40 +1535,45 @@ let result = value;
 return result;
 }
 
-function normalize_192(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_194(value: unknown): unknown {
-return normalize_WaitUntil(value);
-}
-
-function normalize_195(value: unknown): unknown {
+function normalize_WaitUntil(value: unknown): unknown {
 let result = value;
 return result;
 }
 
 function normalize_193(value: unknown): unknown {
+return normalize_WaitUntil(value);
+}
+
+function normalize_194(value: unknown): unknown {
 let result = value;
-if (validators.branch_154(value)) result = normalize_194(result);
-else if (validators.branch_155(value)) result = normalize_195(result);
 return result;
 }
 
-function normalize_NavigateForwardParams(value: unknown): unknown {
+function normalize_192(value: unknown): unknown {
+let result = value;
+if (validators.branch_155(value)) result = normalize_193(result);
+else if (validators.branch_156(value)) result = normalize_194(result);
+return result;
+}
+
+function normalize_NavigateBackParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_190(object["session_id"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_189(object["session_id"]);
 if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_191(object["tab_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_190(object["tab_id"]);
 if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_192(object["timeout_ms"]);
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_191(object["timeout_ms"]);
 if (object["wait_until"] === null) delete object["wait_until"];
-if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_193(object["wait_until"]);
+if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_192(object["wait_until"]);
 result = object;
 }
+return result;
+}
+
+function normalize_195(value: unknown): unknown {
+let result = value;
 return result;
 }
 
@@ -1583,46 +1587,45 @@ let result = value;
 return result;
 }
 
-function normalize_198(value: unknown): unknown {
-let result = value;
-return result;
-}
-
 function normalize_199(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_201(value: unknown): unknown {
 return normalize_WaitUntil(value);
-}
-
-function normalize_202(value: unknown): unknown {
-let result = value;
-return result;
 }
 
 function normalize_200(value: unknown): unknown {
 let result = value;
-if (validators.branch_156(value)) result = normalize_201(result);
-else if (validators.branch_157(value)) result = normalize_202(result);
 return result;
 }
 
-function normalize_NavigateParams(value: unknown): unknown {
+function normalize_198(value: unknown): unknown {
+let result = value;
+if (validators.branch_157(value)) result = normalize_199(result);
+else if (validators.branch_158(value)) result = normalize_200(result);
+return result;
+}
+
+function normalize_NavigateForwardParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_196(object["session_id"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_195(object["session_id"]);
 if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_197(object["tab_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_196(object["tab_id"]);
 if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_198(object["timeout_ms"]);
-if (Object.hasOwn(object, "url")) object["url"] = normalize_199(object["url"]);
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_197(object["timeout_ms"]);
 if (object["wait_until"] === null) delete object["wait_until"];
-if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_200(object["wait_until"]);
+if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_198(object["wait_until"]);
 result = object;
 }
+return result;
+}
+
+function normalize_201(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_202(value: unknown): unknown {
+let result = value;
 return result;
 }
 
@@ -1636,14 +1639,8 @@ let result = value;
 return result;
 }
 
-function normalize_205(value: unknown): unknown {
-let result = value;
-return result;
-}
-
 function normalize_206(value: unknown): unknown {
-let result = value;
-return result;
+return normalize_WaitUntil(value);
 }
 
 function normalize_207(value: unknown): unknown {
@@ -1651,19 +1648,25 @@ let result = value;
 return result;
 }
 
-function normalize_NetworkParams(value: unknown): unknown {
+function normalize_205(value: unknown): unknown {
+let result = value;
+if (validators.branch_159(value)) result = normalize_206(result);
+else if (validators.branch_160(value)) result = normalize_207(result);
+return result;
+}
+
+function normalize_NavigateParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["limit"] === null) delete object["limit"];
-if (Object.hasOwn(object, "limit")) object["limit"] = normalize_203(object["limit"]);
-if (object["max_text_chars"] === null) delete object["max_text_chars"];
-if (Object.hasOwn(object, "max_text_chars")) object["max_text_chars"] = normalize_204(object["max_text_chars"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_205(object["session_id"]);
-if (object["since"] === null) delete object["since"];
-if (Object.hasOwn(object, "since")) object["since"] = normalize_206(object["since"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_201(object["session_id"]);
 if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_207(object["tab_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_202(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_203(object["timeout_ms"]);
+if (Object.hasOwn(object, "url")) object["url"] = normalize_204(object["url"]);
+if (object["wait_until"] === null) delete object["wait_until"];
+if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_205(object["wait_until"]);
 result = object;
 }
 return result;
@@ -1694,6 +1697,24 @@ let result = value;
 return result;
 }
 
+function normalize_NetworkParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["limit"] === null) delete object["limit"];
+if (Object.hasOwn(object, "limit")) object["limit"] = normalize_208(object["limit"]);
+if (object["max_text_chars"] === null) delete object["max_text_chars"];
+if (Object.hasOwn(object, "max_text_chars")) object["max_text_chars"] = normalize_209(object["max_text_chars"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_210(object["session_id"]);
+if (object["since"] === null) delete object["since"];
+if (Object.hasOwn(object, "since")) object["since"] = normalize_211(object["since"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_212(object["tab_id"]);
+result = object;
+}
+return result;
+}
+
 function normalize_213(value: unknown): unknown {
 let result = value;
 return result;
@@ -1701,26 +1722,6 @@ return result;
 
 function normalize_214(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_ObserveParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["cursor"] === null) delete object["cursor"];
-if (Object.hasOwn(object, "cursor")) object["cursor"] = normalize_208(object["cursor"]);
-if (Object.hasOwn(object, "debug_surfaces")) object["debug_surfaces"] = normalize_209(object["debug_surfaces"]);
-if (object["max_depth"] === null) delete object["max_depth"];
-if (Object.hasOwn(object, "max_depth")) object["max_depth"] = normalize_210(object["max_depth"]);
-if (object["max_tokens"] === null) delete object["max_tokens"];
-if (Object.hasOwn(object, "max_tokens")) object["max_tokens"] = normalize_211(object["max_tokens"]);
-if (Object.hasOwn(object, "probe_hover")) object["probe_hover"] = normalize_212(object["probe_hover"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_213(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_214(object["tab_id"]);
-result = object;
-}
 return result;
 }
 
@@ -1734,18 +1735,38 @@ let result = value;
 return result;
 }
 
-function normalize_218(value: unknown): unknown {
-return normalize_KeyModifier(value);
-}
-
 function normalize_217(value: unknown): unknown {
 let result = value;
-if (Array.isArray(result)) result = result.map(normalize_218);
+return result;
+}
+
+function normalize_218(value: unknown): unknown {
+let result = value;
 return result;
 }
 
 function normalize_219(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_ObserveParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["cursor"] === null) delete object["cursor"];
+if (Object.hasOwn(object, "cursor")) object["cursor"] = normalize_213(object["cursor"]);
+if (Object.hasOwn(object, "debug_surfaces")) object["debug_surfaces"] = normalize_214(object["debug_surfaces"]);
+if (object["max_depth"] === null) delete object["max_depth"];
+if (Object.hasOwn(object, "max_depth")) object["max_depth"] = normalize_215(object["max_depth"]);
+if (object["max_tokens"] === null) delete object["max_tokens"];
+if (Object.hasOwn(object, "max_tokens")) object["max_tokens"] = normalize_216(object["max_tokens"]);
+if (Object.hasOwn(object, "probe_hover")) object["probe_hover"] = normalize_217(object["probe_hover"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_218(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_219(object["tab_id"]);
+result = object;
+}
 return result;
 }
 
@@ -1759,36 +1780,13 @@ let result = value;
 return result;
 }
 
+function normalize_223(value: unknown): unknown {
+return normalize_KeyModifier(value);
+}
+
 function normalize_222(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_223(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_PressParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["hold_ms"] === null) delete object["hold_ms"];
-if (Object.hasOwn(object, "hold_ms")) object["hold_ms"] = normalize_215(object["hold_ms"]);
-if (Object.hasOwn(object, "key")) object["key"] = normalize_216(object["key"]);
-if (object["modifiers"] === null) delete object["modifiers"];
-if (Object.hasOwn(object, "modifiers")) object["modifiers"] = normalize_217(object["modifiers"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_219(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_220(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_221(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_222(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_223(object["timeout_ms"]);
-result = object;
-}
+if (Array.isArray(result)) result = result.map(normalize_223);
 return result;
 }
 
@@ -1799,18 +1797,6 @@ return result;
 
 function normalize_225(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_RecordAwaitParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_224(object["session_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_225(object["timeout_ms"]);
-result = object;
-}
 return result;
 }
 
@@ -1829,6 +1815,29 @@ let result = value;
 return result;
 }
 
+function normalize_PressParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["hold_ms"] === null) delete object["hold_ms"];
+if (Object.hasOwn(object, "hold_ms")) object["hold_ms"] = normalize_220(object["hold_ms"]);
+if (Object.hasOwn(object, "key")) object["key"] = normalize_221(object["key"]);
+if (object["modifiers"] === null) delete object["modifiers"];
+if (Object.hasOwn(object, "modifiers")) object["modifiers"] = normalize_222(object["modifiers"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_224(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_225(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_226(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_227(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_228(object["timeout_ms"]);
+result = object;
+}
+return result;
+}
+
 function normalize_229(value: unknown): unknown {
 let result = value;
 return result;
@@ -1836,6 +1845,18 @@ return result;
 
 function normalize_230(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_RecordAwaitParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_229(object["session_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_230(object["timeout_ms"]);
+result = object;
+}
 return result;
 }
 
@@ -1854,42 +1875,8 @@ let result = value;
 return result;
 }
 
-function normalize_RecordStartParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["max_page_tokens"] === null) delete object["max_page_tokens"];
-if (Object.hasOwn(object, "max_page_tokens")) object["max_page_tokens"] = normalize_226(object["max_page_tokens"]);
-if (object["purpose"] === null) delete object["purpose"];
-if (Object.hasOwn(object, "purpose")) object["purpose"] = normalize_227(object["purpose"]);
-if (object["redact_values"] === null) delete object["redact_values"];
-if (Object.hasOwn(object, "redact_values")) object["redact_values"] = normalize_228(object["redact_values"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_229(object["session_id"]);
-if (object["supports_tab_switch_steps"] === null) delete object["supports_tab_switch_steps"];
-if (Object.hasOwn(object, "supports_tab_switch_steps")) object["supports_tab_switch_steps"] = normalize_230(object["supports_tab_switch_steps"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_231(object["tab_id"]);
-if (object["trace_version"] === null) delete object["trace_version"];
-if (Object.hasOwn(object, "trace_version")) object["trace_version"] = normalize_232(object["trace_version"]);
-if (object["url"] === null) delete object["url"];
-if (Object.hasOwn(object, "url")) object["url"] = normalize_233(object["url"]);
-result = object;
-}
-return result;
-}
-
 function normalize_234(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_RecordStopParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_234(object["session_id"]);
-result = object;
-}
 return result;
 }
 
@@ -1913,8 +1900,48 @@ let result = value;
 return result;
 }
 
+function normalize_RecordStartParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["max_page_tokens"] === null) delete object["max_page_tokens"];
+if (Object.hasOwn(object, "max_page_tokens")) object["max_page_tokens"] = normalize_231(object["max_page_tokens"]);
+if (object["purpose"] === null) delete object["purpose"];
+if (Object.hasOwn(object, "purpose")) object["purpose"] = normalize_232(object["purpose"]);
+if (object["redact_values"] === null) delete object["redact_values"];
+if (Object.hasOwn(object, "redact_values")) object["redact_values"] = normalize_233(object["redact_values"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_234(object["session_id"]);
+if (object["supports_tab_switch_steps"] === null) delete object["supports_tab_switch_steps"];
+if (Object.hasOwn(object, "supports_tab_switch_steps")) object["supports_tab_switch_steps"] = normalize_235(object["supports_tab_switch_steps"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_236(object["tab_id"]);
+if (object["trace_version"] === null) delete object["trace_version"];
+if (Object.hasOwn(object, "trace_version")) object["trace_version"] = normalize_237(object["trace_version"]);
+if (object["url"] === null) delete object["url"];
+if (Object.hasOwn(object, "url")) object["url"] = normalize_238(object["url"]);
+result = object;
+}
+return result;
+}
+
+function normalize_239(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_RecordStopParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_239(object["session_id"]);
+result = object;
+}
+return result;
+}
+
 function normalize_240(value: unknown): unknown {
-return normalize_WaitUntil(value);
+let result = value;
+return result;
 }
 
 function normalize_241(value: unknown): unknown {
@@ -1922,10 +1949,29 @@ let result = value;
 return result;
 }
 
-function normalize_239(value: unknown): unknown {
+function normalize_242(value: unknown): unknown {
 let result = value;
-if (validators.branch_158(value)) result = normalize_240(result);
-else if (validators.branch_159(value)) result = normalize_241(result);
+return result;
+}
+
+function normalize_243(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_245(value: unknown): unknown {
+return normalize_WaitUntil(value);
+}
+
+function normalize_246(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_244(value: unknown): unknown {
+let result = value;
+if (validators.branch_161(value)) result = normalize_245(result);
+else if (validators.branch_162(value)) result = normalize_246(result);
 return result;
 }
 
@@ -1934,45 +1980,45 @@ let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
 if (object["hard"] === null) delete object["hard"];
-if (Object.hasOwn(object, "hard")) object["hard"] = normalize_235(object["hard"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_236(object["session_id"]);
+if (Object.hasOwn(object, "hard")) object["hard"] = normalize_240(object["hard"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_241(object["session_id"]);
 if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_237(object["tab_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_242(object["tab_id"]);
 if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_238(object["timeout_ms"]);
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_243(object["timeout_ms"]);
 if (object["wait_until"] === null) delete object["wait_until"];
-if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_239(object["wait_until"]);
+if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_244(object["wait_until"]);
 result = object;
 }
 return result;
 }
 
-function normalize_246(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_247(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_248(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_249(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_250(value: unknown): unknown {
-let result = value;
-return result;
-}
-
 function normalize_251(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_252(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_253(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_254(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_255(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_256(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -1982,43 +2028,43 @@ let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
 if (object["selector_exists"] === null) delete object["selector_exists"];
-if (Object.hasOwn(object, "selector_exists")) object["selector_exists"] = normalize_246(object["selector_exists"]);
+if (Object.hasOwn(object, "selector_exists")) object["selector_exists"] = normalize_251(object["selector_exists"]);
 if (object["selector_missing"] === null) delete object["selector_missing"];
-if (Object.hasOwn(object, "selector_missing")) object["selector_missing"] = normalize_247(object["selector_missing"]);
+if (Object.hasOwn(object, "selector_missing")) object["selector_missing"] = normalize_252(object["selector_missing"]);
 if (object["text_exists"] === null) delete object["text_exists"];
-if (Object.hasOwn(object, "text_exists")) object["text_exists"] = normalize_248(object["text_exists"]);
+if (Object.hasOwn(object, "text_exists")) object["text_exists"] = normalize_253(object["text_exists"]);
 if (object["text_missing"] === null) delete object["text_missing"];
-if (Object.hasOwn(object, "text_missing")) object["text_missing"] = normalize_249(object["text_missing"]);
+if (Object.hasOwn(object, "text_missing")) object["text_missing"] = normalize_254(object["text_missing"]);
 if (object["url_contains"] === null) delete object["url_contains"];
-if (Object.hasOwn(object, "url_contains")) object["url_contains"] = normalize_250(object["url_contains"]);
+if (Object.hasOwn(object, "url_contains")) object["url_contains"] = normalize_255(object["url_contains"]);
 if (object["url_matches"] === null) delete object["url_matches"];
-if (Object.hasOwn(object, "url_matches")) object["url_matches"] = normalize_251(object["url_matches"]);
+if (Object.hasOwn(object, "url_matches")) object["url_matches"] = normalize_256(object["url_matches"]);
 result = object;
 }
 return result;
 }
 
-function normalize_245(value: unknown): unknown {
+function normalize_250(value: unknown): unknown {
 return normalize_HelpCompletionCondition(value);
 }
 
-function normalize_244(value: unknown): unknown {
+function normalize_249(value: unknown): unknown {
 let result = value;
-if (Array.isArray(result)) result = result.map(normalize_245);
+if (Array.isArray(result)) result = result.map(normalize_250);
 return result;
 }
 
-function normalize_253(value: unknown): unknown {
+function normalize_258(value: unknown): unknown {
 return normalize_HelpCompletionCondition(value);
 }
 
-function normalize_252(value: unknown): unknown {
+function normalize_257(value: unknown): unknown {
 let result = value;
-if (Array.isArray(result)) result = result.map(normalize_253);
+if (Array.isArray(result)) result = result.map(normalize_258);
 return result;
 }
 
-function normalize_254(value: unknown): unknown {
+function normalize_259(value: unknown): unknown {
 let result = value;
 return result;
 }
@@ -2028,44 +2074,29 @@ let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
 if (object["all"] === null) delete object["all"];
-if (Object.hasOwn(object, "all")) object["all"] = normalize_244(object["all"]);
+if (Object.hasOwn(object, "all")) object["all"] = normalize_249(object["all"]);
 if (object["any"] === null) delete object["any"];
-if (Object.hasOwn(object, "any")) object["any"] = normalize_252(object["any"]);
+if (Object.hasOwn(object, "any")) object["any"] = normalize_257(object["any"]);
 if (object["stable_for_ms"] === null) delete object["stable_for_ms"];
-if (Object.hasOwn(object, "stable_for_ms")) object["stable_for_ms"] = normalize_254(object["stable_for_ms"]);
+if (Object.hasOwn(object, "stable_for_ms")) object["stable_for_ms"] = normalize_259(object["stable_for_ms"]);
 result = object;
 }
 return result;
 }
 
-function normalize_243(value: unknown): unknown {
+function normalize_248(value: unknown): unknown {
 return normalize_HelpCompletionCriteria(value);
 }
 
-function normalize_255(value: unknown): unknown {
+function normalize_260(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_242(value: unknown): unknown {
+function normalize_247(value: unknown): unknown {
 let result = value;
-if (validators.branch_160(value)) result = normalize_243(result);
-else if (validators.branch_161(value)) result = normalize_255(result);
-return result;
-}
-
-function normalize_256(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_257(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_258(value: unknown): unknown {
-let result = value;
+if (validators.branch_163(value)) result = normalize_248(result);
+else if (validators.branch_164(value)) result = normalize_260(result);
 return result;
 }
 
@@ -2079,67 +2110,14 @@ let result = value;
 return result;
 }
 
-function normalize_HelpTarget(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_261(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_262(object["selector"]);
-result = object;
-}
-return result;
-}
-
-function normalize_260(value: unknown): unknown {
-return normalize_HelpTarget(value);
-}
-
-function normalize_259(value: unknown): unknown {
-let result = value;
-if (Array.isArray(result)) result = result.map(normalize_260);
-return result;
-}
-
 function normalize_263(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_264(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_RequestHelpParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["completion_criteria"] === null) delete object["completion_criteria"];
-if (Object.hasOwn(object, "completion_criteria")) object["completion_criteria"] = normalize_242(object["completion_criteria"]);
-if (Object.hasOwn(object, "prompt")) object["prompt"] = normalize_256(object["prompt"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_257(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_258(object["tab_id"]);
-if (object["targets"] === null) delete object["targets"];
-if (Object.hasOwn(object, "targets")) object["targets"] = normalize_259(object["targets"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_263(object["timeout_ms"]);
-if (object["title"] === null) delete object["title"];
-if (Object.hasOwn(object, "title")) object["title"] = normalize_264(object["title"]);
-result = object;
-}
-return result;
-}
-
-function normalize_ScreenshotScope(value: unknown): unknown {
-let result = value;
-return result;
-}
-
 function normalize_266(value: unknown): unknown {
-return normalize_ScreenshotScope(value);
+let result = value;
+return result;
 }
 
 function normalize_267(value: unknown): unknown {
@@ -2147,10 +2125,26 @@ let result = value;
 return result;
 }
 
-function normalize_265(value: unknown): unknown {
+function normalize_HelpTarget(value: unknown): unknown {
 let result = value;
-if (validators.branch_162(value)) result = normalize_266(result);
-else if (validators.branch_163(value)) result = normalize_267(result);
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_266(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_267(object["selector"]);
+result = object;
+}
+return result;
+}
+
+function normalize_265(value: unknown): unknown {
+return normalize_HelpTarget(value);
+}
+
+function normalize_264(value: unknown): unknown {
+let result = value;
+if (Array.isArray(result)) result = result.map(normalize_265);
 return result;
 }
 
@@ -2164,30 +2158,34 @@ let result = value;
 return result;
 }
 
-function normalize_270(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_ScreenshotFullPageParams(value: unknown): unknown {
+function normalize_RequestHelpParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["scope"] === null) delete object["scope"];
-if (Object.hasOwn(object, "scope")) object["scope"] = normalize_265(object["scope"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_268(object["session_id"]);
+if (object["completion_criteria"] === null) delete object["completion_criteria"];
+if (Object.hasOwn(object, "completion_criteria")) object["completion_criteria"] = normalize_247(object["completion_criteria"]);
+if (Object.hasOwn(object, "prompt")) object["prompt"] = normalize_261(object["prompt"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_262(object["session_id"]);
 if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_269(object["tab_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_263(object["tab_id"]);
+if (object["targets"] === null) delete object["targets"];
+if (Object.hasOwn(object, "targets")) object["targets"] = normalize_264(object["targets"]);
 if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_270(object["timeout_ms"]);
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_268(object["timeout_ms"]);
+if (object["title"] === null) delete object["title"];
+if (Object.hasOwn(object, "title")) object["title"] = normalize_269(object["title"]);
 result = object;
 }
 return result;
 }
 
-function normalize_271(value: unknown): unknown {
+function normalize_ScreenshotScope(value: unknown): unknown {
 let result = value;
 return result;
+}
+
+function normalize_271(value: unknown): unknown {
+return normalize_ScreenshotScope(value);
 }
 
 function normalize_272(value: unknown): unknown {
@@ -2195,22 +2193,15 @@ let result = value;
 return result;
 }
 
-function normalize_273(value: unknown): unknown {
+function normalize_270(value: unknown): unknown {
 let result = value;
+if (validators.branch_165(value)) result = normalize_271(result);
+else if (validators.branch_166(value)) result = normalize_272(result);
 return result;
 }
 
-function normalize_ScreenshotParams(value: unknown): unknown {
+function normalize_273(value: unknown): unknown {
 let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_271(object["ref"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_272(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_273(object["tab_id"]);
-result = object;
-}
 return result;
 }
 
@@ -2224,20 +2215,24 @@ let result = value;
 return result;
 }
 
-function normalize_276(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_ScreenshotReadParams(value: unknown): unknown {
+function normalize_ScreenshotFullPageParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "capture_id")) object["capture_id"] = normalize_274(object["capture_id"]);
-if (Object.hasOwn(object, "offset")) object["offset"] = normalize_275(object["offset"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_276(object["session_id"]);
+if (object["scope"] === null) delete object["scope"];
+if (Object.hasOwn(object, "scope")) object["scope"] = normalize_270(object["scope"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_273(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_274(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_275(object["timeout_ms"]);
 result = object;
 }
+return result;
+}
+
+function normalize_276(value: unknown): unknown {
+let result = value;
 return result;
 }
 
@@ -2251,12 +2246,15 @@ let result = value;
 return result;
 }
 
-function normalize_ScreenshotReleaseParams(value: unknown): unknown {
+function normalize_ScreenshotParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "capture_id")) object["capture_id"] = normalize_277(object["capture_id"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_278(object["session_id"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_276(object["ref"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_277(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_278(object["tab_id"]);
 result = object;
 }
 return result;
@@ -2277,6 +2275,18 @@ let result = value;
 return result;
 }
 
+function normalize_ScreenshotReadParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "capture_id")) object["capture_id"] = normalize_279(object["capture_id"]);
+if (Object.hasOwn(object, "offset")) object["offset"] = normalize_280(object["offset"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_281(object["session_id"]);
+result = object;
+}
+return result;
+}
+
 function normalize_282(value: unknown): unknown {
 let result = value;
 return result;
@@ -2287,19 +2297,12 @@ let result = value;
 return result;
 }
 
-function normalize_ScrollToParams(value: unknown): unknown {
+function normalize_ScreenshotReleaseParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_279(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_280(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_281(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_282(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_283(object["timeout_ms"]);
+if (Object.hasOwn(object, "capture_id")) object["capture_id"] = normalize_282(object["capture_id"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_283(object["session_id"]);
 result = object;
 }
 return result;
@@ -2330,18 +2333,7 @@ let result = value;
 return result;
 }
 
-function normalize_290(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_289(value: unknown): unknown {
-let result = value;
-if (Array.isArray(result)) result = result.map(normalize_290);
-return result;
-}
-
-function normalize_SelectParams(value: unknown): unknown {
+function normalize_ScrollToParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
@@ -2354,9 +2346,18 @@ if (object["tab_id"] === null) delete object["tab_id"];
 if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_287(object["tab_id"]);
 if (object["timeout_ms"] === null) delete object["timeout_ms"];
 if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_288(object["timeout_ms"]);
-if (Object.hasOwn(object, "values")) object["values"] = normalize_289(object["values"]);
 result = object;
 }
+return result;
+}
+
+function normalize_289(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_290(value: unknown): unknown {
+let result = value;
 return result;
 }
 
@@ -2375,13 +2376,33 @@ let result = value;
 return result;
 }
 
-function normalize_294(value: unknown): unknown {
+function normalize_295(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_295(value: unknown): unknown {
+function normalize_294(value: unknown): unknown {
 let result = value;
+if (Array.isArray(result)) result = result.map(normalize_295);
+return result;
+}
+
+function normalize_SelectParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_289(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_290(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_291(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_292(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_293(object["timeout_ms"]);
+if (Object.hasOwn(object, "values")) object["values"] = normalize_294(object["values"]);
+result = object;
+}
 return result;
 }
 
@@ -2390,37 +2411,8 @@ let result = value;
 return result;
 }
 
-function normalize_SessionStartParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["browser_instance_id"] === null) delete object["browser_instance_id"];
-if (Object.hasOwn(object, "browser_instance_id")) object["browser_instance_id"] = normalize_291(object["browser_instance_id"]);
-if (object["focused"] === null) delete object["focused"];
-if (Object.hasOwn(object, "focused")) object["focused"] = normalize_292(object["focused"]);
-if (object["height"] === null) delete object["height"];
-if (Object.hasOwn(object, "height")) object["height"] = normalize_293(object["height"]);
-if (Object.hasOwn(object, "incognito")) object["incognito"] = normalize_294(object["incognito"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_295(object["session_id"]);
-if (object["width"] === null) delete object["width"];
-if (Object.hasOwn(object, "width")) object["width"] = normalize_296(object["width"]);
-result = object;
-}
-return result;
-}
-
 function normalize_297(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_SessionStopParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_297(object["session_id"]);
-result = object;
-}
 return result;
 }
 
@@ -2444,17 +2436,20 @@ let result = value;
 return result;
 }
 
-function normalize_SnapshotParams(value: unknown): unknown {
+function normalize_SessionStartParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["max_depth"] === null) delete object["max_depth"];
-if (Object.hasOwn(object, "max_depth")) object["max_depth"] = normalize_298(object["max_depth"]);
-if (object["max_tokens"] === null) delete object["max_tokens"];
-if (Object.hasOwn(object, "max_tokens")) object["max_tokens"] = normalize_299(object["max_tokens"]);
+if (object["browser_instance_id"] === null) delete object["browser_instance_id"];
+if (Object.hasOwn(object, "browser_instance_id")) object["browser_instance_id"] = normalize_296(object["browser_instance_id"]);
+if (object["focused"] === null) delete object["focused"];
+if (Object.hasOwn(object, "focused")) object["focused"] = normalize_297(object["focused"]);
+if (object["height"] === null) delete object["height"];
+if (Object.hasOwn(object, "height")) object["height"] = normalize_298(object["height"]);
+if (Object.hasOwn(object, "incognito")) object["incognito"] = normalize_299(object["incognito"]);
 if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_300(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_301(object["tab_id"]);
+if (object["width"] === null) delete object["width"];
+if (Object.hasOwn(object, "width")) object["width"] = normalize_301(object["width"]);
 result = object;
 }
 return result;
@@ -2462,6 +2457,16 @@ return result;
 
 function normalize_302(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_SessionStopParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_302(object["session_id"]);
+result = object;
+}
 return result;
 }
 
@@ -2480,39 +2485,29 @@ let result = value;
 return result;
 }
 
-function normalize_TabBorrowParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["confirm"] === null) delete object["confirm"];
-if (Object.hasOwn(object, "confirm")) object["confirm"] = normalize_302(object["confirm"]);
-if (object["confirmation_timeout_ms"] === null) delete object["confirmation_timeout_ms"];
-if (Object.hasOwn(object, "confirmation_timeout_ms")) object["confirmation_timeout_ms"] = normalize_303(object["confirmation_timeout_ms"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_304(object["session_id"]);
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_305(object["tab_id"]);
-result = object;
-}
-return result;
-}
-
 function normalize_306(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_307(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_TabCloseParams(value: unknown): unknown {
+function normalize_SnapshotParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_306(object["session_id"]);
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_307(object["tab_id"]);
+if (object["max_depth"] === null) delete object["max_depth"];
+if (Object.hasOwn(object, "max_depth")) object["max_depth"] = normalize_303(object["max_depth"]);
+if (object["max_tokens"] === null) delete object["max_tokens"];
+if (Object.hasOwn(object, "max_tokens")) object["max_tokens"] = normalize_304(object["max_tokens"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_305(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_306(object["tab_id"]);
 result = object;
 }
+return result;
+}
+
+function normalize_307(value: unknown): unknown {
+let result = value;
 return result;
 }
 
@@ -2531,49 +2526,44 @@ let result = value;
 return result;
 }
 
+function normalize_TabBorrowParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["confirm"] === null) delete object["confirm"];
+if (Object.hasOwn(object, "confirm")) object["confirm"] = normalize_307(object["confirm"]);
+if (object["confirmation_timeout_ms"] === null) delete object["confirmation_timeout_ms"];
+if (Object.hasOwn(object, "confirmation_timeout_ms")) object["confirmation_timeout_ms"] = normalize_308(object["confirmation_timeout_ms"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_309(object["session_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_310(object["tab_id"]);
+result = object;
+}
+return result;
+}
+
 function normalize_311(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_TabCreateParams(value: unknown): unknown {
+function normalize_312(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_TabCloseParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (object["active"] === null) delete object["active"];
-if (Object.hasOwn(object, "active")) object["active"] = normalize_308(object["active"]);
-if (object["index"] === null) delete object["index"];
-if (Object.hasOwn(object, "index")) object["index"] = normalize_309(object["index"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_310(object["session_id"]);
-if (object["url"] === null) delete object["url"];
-if (Object.hasOwn(object, "url")) object["url"] = normalize_311(object["url"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_311(object["session_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_312(object["tab_id"]);
 result = object;
 }
 return result;
-}
-
-function normalize_TabScope(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_312(value: unknown): unknown {
-return normalize_TabScope(value);
 }
 
 function normalize_313(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_TabListParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "scope")) object["scope"] = normalize_312(object["scope"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_313(object["session_id"]);
-result = object;
-}
 return result;
 }
 
@@ -2587,40 +2577,70 @@ let result = value;
 return result;
 }
 
-function normalize_TabReturnParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_314(object["session_id"]);
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_315(object["tab_id"]);
-result = object;
-}
-return result;
-}
-
 function normalize_316(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_317(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_TabSelectParams(value: unknown): unknown {
+function normalize_TabCreateParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_316(object["session_id"]);
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_317(object["tab_id"]);
+if (object["active"] === null) delete object["active"];
+if (Object.hasOwn(object, "active")) object["active"] = normalize_313(object["active"]);
+if (object["index"] === null) delete object["index"];
+if (Object.hasOwn(object, "index")) object["index"] = normalize_314(object["index"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_315(object["session_id"]);
+if (object["url"] === null) delete object["url"];
+if (Object.hasOwn(object, "url")) object["url"] = normalize_316(object["url"]);
 result = object;
 }
 return result;
 }
 
+function normalize_TabScope(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_317(value: unknown): unknown {
+return normalize_TabScope(value);
+}
+
+function normalize_318(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_TabListParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "scope")) object["scope"] = normalize_317(object["scope"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_318(object["session_id"]);
+result = object;
+}
+return result;
+}
+
+function normalize_319(value: unknown): unknown {
+let result = value;
+return result;
+}
+
 function normalize_320(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_TabReturnParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_319(object["session_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_320(object["tab_id"]);
+result = object;
+}
 return result;
 }
 
@@ -2634,40 +2654,14 @@ let result = value;
 return result;
 }
 
-function normalize_UploadFile(value: unknown): unknown {
+function normalize_TabSelectParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "name")) object["name"] = normalize_320(object["name"]);
-if (object["staged_path"] === null) delete object["staged_path"];
-if (Object.hasOwn(object, "staged_path")) object["staged_path"] = normalize_321(object["staged_path"]);
-if (Object.hasOwn(object, "transfer_id")) object["transfer_id"] = normalize_322(object["transfer_id"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_321(object["session_id"]);
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_322(object["tab_id"]);
 result = object;
 }
-return result;
-}
-
-function normalize_319(value: unknown): unknown {
-return normalize_UploadFile(value);
-}
-
-function normalize_318(value: unknown): unknown {
-let result = value;
-if (Array.isArray(result)) result = result.map(normalize_319);
-return result;
-}
-
-function normalize_UploadMode(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_323(value: unknown): unknown {
-return normalize_UploadMode(value);
-}
-
-function normalize_324(value: unknown): unknown {
-let result = value;
 return result;
 }
 
@@ -2686,28 +2680,40 @@ let result = value;
 return result;
 }
 
-function normalize_328(value: unknown): unknown {
+function normalize_UploadFile(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "name")) object["name"] = normalize_325(object["name"]);
+if (object["staged_path"] === null) delete object["staged_path"];
+if (Object.hasOwn(object, "staged_path")) object["staged_path"] = normalize_326(object["staged_path"]);
+if (Object.hasOwn(object, "transfer_id")) object["transfer_id"] = normalize_327(object["transfer_id"]);
+result = object;
+}
+return result;
+}
+
+function normalize_324(value: unknown): unknown {
+return normalize_UploadFile(value);
+}
+
+function normalize_323(value: unknown): unknown {
+let result = value;
+if (Array.isArray(result)) result = result.map(normalize_324);
+return result;
+}
+
+function normalize_UploadMode(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_UploadParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "files")) object["files"] = normalize_318(object["files"]);
-if (Object.hasOwn(object, "mode")) object["mode"] = normalize_323(object["mode"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_324(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_325(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_326(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_327(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_328(object["timeout_ms"]);
-result = object;
+function normalize_328(value: unknown): unknown {
+return normalize_UploadMode(value);
 }
+
+function normalize_329(value: unknown): unknown {
+let result = value;
 return result;
 }
 
@@ -2721,13 +2727,9 @@ let result = value;
 return result;
 }
 
-function normalize_VideoQuality(value: unknown): unknown {
+function normalize_332(value: unknown): unknown {
 let result = value;
 return result;
-}
-
-function normalize_332(value: unknown): unknown {
-return normalize_VideoQuality(value);
 }
 
 function normalize_333(value: unknown): unknown {
@@ -2735,8 +2737,23 @@ let result = value;
 return result;
 }
 
-function normalize_334(value: unknown): unknown {
+function normalize_UploadParams(value: unknown): unknown {
 let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "files")) object["files"] = normalize_323(object["files"]);
+if (Object.hasOwn(object, "mode")) object["mode"] = normalize_328(object["mode"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_329(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_330(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_331(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_332(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_333(object["timeout_ms"]);
+result = object;
+}
 return result;
 }
 
@@ -2745,25 +2762,18 @@ let result = value;
 return result;
 }
 
-function normalize_329(value: unknown): unknown {
+function normalize_336(value: unknown): unknown {
 let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "action")) object["action"] = normalize_330(object["action"]);
-if (Object.hasOwn(object, "max_duration_ms")) object["max_duration_ms"] = normalize_331(object["max_duration_ms"]);
-if (Object.hasOwn(object, "quality")) object["quality"] = normalize_332(object["quality"]);
-if (Object.hasOwn(object, "request_id")) object["request_id"] = normalize_333(object["request_id"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_334(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_335(object["tab_id"]);
-result = object;
+return result;
 }
+
+function normalize_VideoQuality(value: unknown): unknown {
+let result = value;
 return result;
 }
 
 function normalize_337(value: unknown): unknown {
-let result = value;
-return result;
+return normalize_VideoQuality(value);
 }
 
 function normalize_338(value: unknown): unknown {
@@ -2776,22 +2786,24 @@ let result = value;
 return result;
 }
 
-function normalize_336(value: unknown): unknown {
+function normalize_340(value: unknown): unknown {
 let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "action")) object["action"] = normalize_337(object["action"]);
-if (object["browser"] === null) delete object["browser"];
-if (Object.hasOwn(object, "browser")) object["browser"] = normalize_338(object["browser"]);
-if (object["session_id"] === null) delete object["session_id"];
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_339(object["session_id"]);
-result = object;
-}
 return result;
 }
 
-function normalize_341(value: unknown): unknown {
+function normalize_334(value: unknown): unknown {
 let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "action")) object["action"] = normalize_335(object["action"]);
+if (Object.hasOwn(object, "max_duration_ms")) object["max_duration_ms"] = normalize_336(object["max_duration_ms"]);
+if (Object.hasOwn(object, "quality")) object["quality"] = normalize_337(object["quality"]);
+if (Object.hasOwn(object, "request_id")) object["request_id"] = normalize_338(object["request_id"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_339(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_340(object["tab_id"]);
+result = object;
+}
 return result;
 }
 
@@ -2800,15 +2812,8 @@ let result = value;
 return result;
 }
 
-function normalize_340(value: unknown): unknown {
+function normalize_343(value: unknown): unknown {
 let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "action")) object["action"] = normalize_341(object["action"]);
-if (object["browser"] === null) delete object["browser"];
-if (Object.hasOwn(object, "browser")) object["browser"] = normalize_342(object["browser"]);
-result = object;
-}
 return result;
 }
 
@@ -2817,8 +2822,17 @@ let result = value;
 return result;
 }
 
-function normalize_345(value: unknown): unknown {
+function normalize_341(value: unknown): unknown {
 let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "action")) object["action"] = normalize_342(object["action"]);
+if (object["browser"] === null) delete object["browser"];
+if (Object.hasOwn(object, "browser")) object["browser"] = normalize_343(object["browser"]);
+if (object["session_id"] === null) delete object["session_id"];
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_344(object["session_id"]);
+result = object;
+}
 return result;
 }
 
@@ -2832,14 +2846,13 @@ let result = value;
 return result;
 }
 
-function normalize_343(value: unknown): unknown {
+function normalize_345(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "action")) object["action"] = normalize_344(object["action"]);
-if (Object.hasOwn(object, "browser")) object["browser"] = normalize_345(object["browser"]);
-if (Object.hasOwn(object, "capability")) object["capability"] = normalize_346(object["capability"]);
-if (Object.hasOwn(object, "recording_id")) object["recording_id"] = normalize_347(object["recording_id"]);
+if (Object.hasOwn(object, "action")) object["action"] = normalize_346(object["action"]);
+if (object["browser"] === null) delete object["browser"];
+if (Object.hasOwn(object, "browser")) object["browser"] = normalize_347(object["browser"]);
 result = object;
 }
 return result;
@@ -2898,11 +2911,6 @@ let result = value;
 return result;
 }
 
-function normalize_358(value: unknown): unknown {
-let result = value;
-return result;
-}
-
 function normalize_353(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
@@ -2910,10 +2918,14 @@ const object: Record<string, unknown> = { ...result };
 if (Object.hasOwn(object, "action")) object["action"] = normalize_354(object["action"]);
 if (Object.hasOwn(object, "browser")) object["browser"] = normalize_355(object["browser"]);
 if (Object.hasOwn(object, "capability")) object["capability"] = normalize_356(object["capability"]);
-if (Object.hasOwn(object, "offset")) object["offset"] = normalize_357(object["offset"]);
-if (Object.hasOwn(object, "recording_id")) object["recording_id"] = normalize_358(object["recording_id"]);
+if (Object.hasOwn(object, "recording_id")) object["recording_id"] = normalize_357(object["recording_id"]);
 result = object;
 }
+return result;
+}
+
+function normalize_359(value: unknown): unknown {
+let result = value;
 return result;
 }
 
@@ -2937,13 +2949,14 @@ let result = value;
 return result;
 }
 
-function normalize_359(value: unknown): unknown {
+function normalize_358(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "action")) object["action"] = normalize_360(object["action"]);
-if (Object.hasOwn(object, "browser")) object["browser"] = normalize_361(object["browser"]);
-if (Object.hasOwn(object, "capability")) object["capability"] = normalize_362(object["capability"]);
+if (Object.hasOwn(object, "action")) object["action"] = normalize_359(object["action"]);
+if (Object.hasOwn(object, "browser")) object["browser"] = normalize_360(object["browser"]);
+if (Object.hasOwn(object, "capability")) object["capability"] = normalize_361(object["capability"]);
+if (Object.hasOwn(object, "offset")) object["offset"] = normalize_362(object["offset"]);
 if (Object.hasOwn(object, "recording_id")) object["recording_id"] = normalize_363(object["recording_id"]);
 result = object;
 }
@@ -2983,24 +2996,6 @@ result = object;
 return result;
 }
 
-function normalize_VideoParams(value: unknown): unknown {
-let result = value;
-if (validators.branch_164(value)) result = normalize_329(result);
-else if (validators.branch_165(value)) result = normalize_336(result);
-else if (validators.branch_166(value)) result = normalize_340(result);
-else if (validators.branch_167(value)) result = normalize_343(result);
-else if (validators.branch_168(value)) result = normalize_348(result);
-else if (validators.branch_169(value)) result = normalize_353(result);
-else if (validators.branch_170(value)) result = normalize_359(result);
-else if (validators.branch_171(value)) result = normalize_364(result);
-return result;
-}
-
-function normalize_369(value: unknown): unknown {
-let result = value;
-return result;
-}
-
 function normalize_370(value: unknown): unknown {
 let result = value;
 return result;
@@ -3016,13 +3011,35 @@ let result = value;
 return result;
 }
 
-function normalize_ElementState(value: unknown): unknown {
+function normalize_373(value: unknown): unknown {
 let result = value;
 return result;
 }
 
-function normalize_373(value: unknown): unknown {
-return normalize_ElementState(value);
+function normalize_369(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "action")) object["action"] = normalize_370(object["action"]);
+if (Object.hasOwn(object, "browser")) object["browser"] = normalize_371(object["browser"]);
+if (Object.hasOwn(object, "capability")) object["capability"] = normalize_372(object["capability"]);
+if (Object.hasOwn(object, "recording_id")) object["recording_id"] = normalize_373(object["recording_id"]);
+result = object;
+}
+return result;
+}
+
+function normalize_VideoParams(value: unknown): unknown {
+let result = value;
+if (validators.branch_167(value)) result = normalize_334(result);
+else if (validators.branch_168(value)) result = normalize_341(result);
+else if (validators.branch_169(value)) result = normalize_345(result);
+else if (validators.branch_170(value)) result = normalize_348(result);
+else if (validators.branch_171(value)) result = normalize_353(result);
+else if (validators.branch_172(value)) result = normalize_358(result);
+else if (validators.branch_173(value)) result = normalize_364(result);
+else if (validators.branch_174(value)) result = normalize_369(result);
+return result;
 }
 
 function normalize_374(value: unknown): unknown {
@@ -3032,27 +3049,6 @@ return result;
 
 function normalize_375(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_WaitForElementParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (object["poll_ms"] === null) delete object["poll_ms"];
-if (Object.hasOwn(object, "poll_ms")) object["poll_ms"] = normalize_369(object["poll_ms"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_370(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_371(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_372(object["session_id"]);
-if (Object.hasOwn(object, "state")) object["state"] = normalize_373(object["state"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_374(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_375(object["timeout_ms"]);
-result = object;
-}
 return result;
 }
 
@@ -3066,40 +3062,48 @@ let result = value;
 return result;
 }
 
+function normalize_ElementState(value: unknown): unknown {
+let result = value;
+return result;
+}
+
 function normalize_378(value: unknown): unknown {
+return normalize_ElementState(value);
+}
+
+function normalize_379(value: unknown): unknown {
 let result = value;
 return result;
 }
 
 function normalize_380(value: unknown): unknown {
-return normalize_WaitUntil(value);
+let result = value;
+return result;
+}
+
+function normalize_WaitForElementParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (object["poll_ms"] === null) delete object["poll_ms"];
+if (Object.hasOwn(object, "poll_ms")) object["poll_ms"] = normalize_374(object["poll_ms"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_375(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_376(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_377(object["session_id"]);
+if (Object.hasOwn(object, "state")) object["state"] = normalize_378(object["state"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_379(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_380(object["timeout_ms"]);
+result = object;
+}
+return result;
 }
 
 function normalize_381(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_379(value: unknown): unknown {
-let result = value;
-if (validators.branch_172(value)) result = normalize_380(result);
-else if (validators.branch_173(value)) result = normalize_381(result);
-return result;
-}
-
-function normalize_WaitForNavigationParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_376(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_377(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_378(object["timeout_ms"]);
-if (object["wait_until"] === null) delete object["wait_until"];
-if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_379(object["wait_until"]);
-result = object;
-}
 return result;
 }
 
@@ -3114,17 +3118,34 @@ return result;
 }
 
 function normalize_385(value: unknown): unknown {
-return normalize_KeyModifier(value);
-}
-
-function normalize_384(value: unknown): unknown {
-let result = value;
-if (Array.isArray(result)) result = result.map(normalize_385);
-return result;
+return normalize_WaitUntil(value);
 }
 
 function normalize_386(value: unknown): unknown {
 let result = value;
+return result;
+}
+
+function normalize_384(value: unknown): unknown {
+let result = value;
+if (validators.branch_175(value)) result = normalize_385(result);
+else if (validators.branch_176(value)) result = normalize_386(result);
+return result;
+}
+
+function normalize_WaitForNavigationParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_381(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_382(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_383(object["timeout_ms"]);
+if (object["wait_until"] === null) delete object["wait_until"];
+if (Object.hasOwn(object, "wait_until")) object["wait_until"] = normalize_384(object["wait_until"]);
+result = object;
+}
 return result;
 }
 
@@ -3138,35 +3159,13 @@ let result = value;
 return result;
 }
 
+function normalize_390(value: unknown): unknown {
+return normalize_KeyModifier(value);
+}
+
 function normalize_389(value: unknown): unknown {
 let result = value;
-return result;
-}
-
-function normalize_390(value: unknown): unknown {
-let result = value;
-return result;
-}
-
-function normalize_WheelParams(value: unknown): unknown {
-let result = value;
-if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "delta_x")) object["delta_x"] = normalize_382(object["delta_x"]);
-if (Object.hasOwn(object, "delta_y")) object["delta_y"] = normalize_383(object["delta_y"]);
-if (object["modifiers"] === null) delete object["modifiers"];
-if (Object.hasOwn(object, "modifiers")) object["modifiers"] = normalize_384(object["modifiers"]);
-if (object["ref"] === null) delete object["ref"];
-if (Object.hasOwn(object, "ref")) object["ref"] = normalize_386(object["ref"]);
-if (object["selector"] === null) delete object["selector"];
-if (Object.hasOwn(object, "selector")) object["selector"] = normalize_387(object["selector"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_388(object["session_id"]);
-if (object["tab_id"] === null) delete object["tab_id"];
-if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_389(object["tab_id"]);
-if (object["timeout_ms"] === null) delete object["timeout_ms"];
-if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_390(object["timeout_ms"]);
-result = object;
-}
+if (Array.isArray(result)) result = result.map(normalize_390);
 return result;
 }
 
@@ -3185,15 +3184,62 @@ let result = value;
 return result;
 }
 
-function normalize_WindowResizeParams(value: unknown): unknown {
+function normalize_394(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_395(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_WheelParams(value: unknown): unknown {
 let result = value;
 if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
 const object: Record<string, unknown> = { ...result };
-if (Object.hasOwn(object, "height")) object["height"] = normalize_391(object["height"]);
-if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_392(object["session_id"]);
-if (Object.hasOwn(object, "width")) object["width"] = normalize_393(object["width"]);
+if (Object.hasOwn(object, "delta_x")) object["delta_x"] = normalize_387(object["delta_x"]);
+if (Object.hasOwn(object, "delta_y")) object["delta_y"] = normalize_388(object["delta_y"]);
+if (object["modifiers"] === null) delete object["modifiers"];
+if (Object.hasOwn(object, "modifiers")) object["modifiers"] = normalize_389(object["modifiers"]);
+if (object["ref"] === null) delete object["ref"];
+if (Object.hasOwn(object, "ref")) object["ref"] = normalize_391(object["ref"]);
+if (object["selector"] === null) delete object["selector"];
+if (Object.hasOwn(object, "selector")) object["selector"] = normalize_392(object["selector"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_393(object["session_id"]);
+if (object["tab_id"] === null) delete object["tab_id"];
+if (Object.hasOwn(object, "tab_id")) object["tab_id"] = normalize_394(object["tab_id"]);
+if (object["timeout_ms"] === null) delete object["timeout_ms"];
+if (Object.hasOwn(object, "timeout_ms")) object["timeout_ms"] = normalize_395(object["timeout_ms"]);
 result = object;
 }
 return result;
 }
-export const normalizers = { BlurParams: normalize_BlurParams, CancelParams: normalize_CancelParams, ClickParams: normalize_ClickParams, ConsoleParams: normalize_ConsoleParams, DebugParams: normalize_DebugParams, DownloadParams: normalize_DownloadParams, EmulateParams: normalize_EmulateParams, EvaluateParams: normalize_EvaluateParams, ExtractParams: normalize_ExtractParams, FillParams: normalize_FillParams, FocusParams: normalize_FocusParams, GetHtmlParams: normalize_GetHtmlParams, HandshakeResponse: normalize_HandshakeResponse, HoverParams: normalize_HoverParams, NavigateBackParams: normalize_NavigateBackParams, NavigateForwardParams: normalize_NavigateForwardParams, NavigateParams: normalize_NavigateParams, NetworkParams: normalize_NetworkParams, ObserveParams: normalize_ObserveParams, PressParams: normalize_PressParams, RecordAwaitParams: normalize_RecordAwaitParams, RecordStartParams: normalize_RecordStartParams, RecordStopParams: normalize_RecordStopParams, ReloadParams: normalize_ReloadParams, RequestHelpParams: normalize_RequestHelpParams, ScreenshotFullPageParams: normalize_ScreenshotFullPageParams, ScreenshotParams: normalize_ScreenshotParams, ScreenshotReadParams: normalize_ScreenshotReadParams, ScreenshotReleaseParams: normalize_ScreenshotReleaseParams, ScrollToParams: normalize_ScrollToParams, SelectParams: normalize_SelectParams, SessionStartParams: normalize_SessionStartParams, SessionStopParams: normalize_SessionStopParams, SnapshotParams: normalize_SnapshotParams, TabBorrowParams: normalize_TabBorrowParams, TabCloseParams: normalize_TabCloseParams, TabCreateParams: normalize_TabCreateParams, TabListParams: normalize_TabListParams, TabReturnParams: normalize_TabReturnParams, TabSelectParams: normalize_TabSelectParams, UploadParams: normalize_UploadParams, VideoParams: normalize_VideoParams, WaitForElementParams: normalize_WaitForElementParams, WaitForNavigationParams: normalize_WaitForNavigationParams, WheelParams: normalize_WheelParams, WindowResizeParams: normalize_WindowResizeParams } as const;
+
+function normalize_396(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_397(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_398(value: unknown): unknown {
+let result = value;
+return result;
+}
+
+function normalize_WindowResizeParams(value: unknown): unknown {
+let result = value;
+if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+const object: Record<string, unknown> = { ...result };
+if (Object.hasOwn(object, "height")) object["height"] = normalize_396(object["height"]);
+if (Object.hasOwn(object, "session_id")) object["session_id"] = normalize_397(object["session_id"]);
+if (Object.hasOwn(object, "width")) object["width"] = normalize_398(object["width"]);
+result = object;
+}
+return result;
+}
+export const normalizers = { BlurParams: normalize_BlurParams, CancelParams: normalize_CancelParams, ClickParams: normalize_ClickParams, ConsoleParams: normalize_ConsoleParams, CooperateParams: normalize_CooperateParams, DebugParams: normalize_DebugParams, DownloadParams: normalize_DownloadParams, EmulateParams: normalize_EmulateParams, EvaluateParams: normalize_EvaluateParams, ExtractParams: normalize_ExtractParams, FillParams: normalize_FillParams, FocusParams: normalize_FocusParams, GetHtmlParams: normalize_GetHtmlParams, HandshakeResponse: normalize_HandshakeResponse, HoverParams: normalize_HoverParams, NavigateBackParams: normalize_NavigateBackParams, NavigateForwardParams: normalize_NavigateForwardParams, NavigateParams: normalize_NavigateParams, NetworkParams: normalize_NetworkParams, ObserveParams: normalize_ObserveParams, PressParams: normalize_PressParams, RecordAwaitParams: normalize_RecordAwaitParams, RecordStartParams: normalize_RecordStartParams, RecordStopParams: normalize_RecordStopParams, ReloadParams: normalize_ReloadParams, RequestHelpParams: normalize_RequestHelpParams, ScreenshotFullPageParams: normalize_ScreenshotFullPageParams, ScreenshotParams: normalize_ScreenshotParams, ScreenshotReadParams: normalize_ScreenshotReadParams, ScreenshotReleaseParams: normalize_ScreenshotReleaseParams, ScrollToParams: normalize_ScrollToParams, SelectParams: normalize_SelectParams, SessionStartParams: normalize_SessionStartParams, SessionStopParams: normalize_SessionStopParams, SnapshotParams: normalize_SnapshotParams, TabBorrowParams: normalize_TabBorrowParams, TabCloseParams: normalize_TabCloseParams, TabCreateParams: normalize_TabCreateParams, TabListParams: normalize_TabListParams, TabReturnParams: normalize_TabReturnParams, TabSelectParams: normalize_TabSelectParams, UploadParams: normalize_UploadParams, VideoParams: normalize_VideoParams, WaitForElementParams: normalize_WaitForElementParams, WaitForNavigationParams: normalize_WaitForNavigationParams, WheelParams: normalize_WheelParams, WindowResizeParams: normalize_WindowResizeParams } as const;

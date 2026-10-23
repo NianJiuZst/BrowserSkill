@@ -15,6 +15,8 @@ export type { ConsoleEntryKind } from './output';
 export type { ConsoleParams } from './input';
 export type { ConsoleResult } from './output';
 export type { ConsoleStackFrame } from './output';
+export type { CooperateAction } from './output';
+export type { CooperateParams } from './input';
 export type { DebugAction } from './output';
 export type { DebugActivity } from './output';
 export type { DebugAnalysis } from './output';

@@ -47,6 +47,11 @@ export type KeyModifier = "alt" | "ctrl" | "meta" | "shift";
 export type ConsoleEntryKind = "console" | "exception" | "log";
 /**
  * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "CooperateAction".
+ */
+export type CooperateAction = "enable" | "status" | "sync" | "wait";
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
  * via the `definition` "DebugAction".
  */
 export type DebugAction =
@@ -557,6 +562,8 @@ export interface ProtocolTypes {
   ConsoleParams: ConsoleParams;
   ConsoleResult: ConsoleResult;
   ConsoleStackFrame: ConsoleStackFrame;
+  CooperateAction: CooperateAction;
+  CooperateParams: CooperateParams;
   DebugAction: DebugAction;
   DebugActivity: DebugActivity;
   DebugAnalysis: DebugAnalysis;
@@ -1004,6 +1011,17 @@ export interface ConsoleResult {
   next_since: number;
   tab_id: number;
   truncated: boolean;
+}
+/**
+ * This interface was referenced by `ProtocolTypes`'s JSON-Schema
+ * via the `definition` "CooperateParams".
+ */
+export interface CooperateParams {
+  action: CooperateAction;
+  max_tokens?: number;
+  session_id: string;
+  tab_id?: number;
+  timeout_ms?: number;
 }
 /**
  * Daemon-owned execution status. Waiting observes completion; it never resends a command.

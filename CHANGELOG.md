@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Starting from 0.2.0, CLI / Extension / DSH Plugin share the same version number.
 
+## [Unreleased]
+
+### Fixed
+
+- CLI: argument parsing failures now honor `--json`, returning an
+  `invalid_params` error on stdout with `data.reason: "cli_parse_error"`
+  instead of leaving stdout empty. A misplaced `--session` / `--tab-id` now
+  explains that it belongs after a supporting subcommand, replacing the
+  misleading `--version` suggestion and usage line
+  ([#387](https://github.com/Tencent/BrowserSkill/issues/387)).
+
 ## [0.3.3] - 2026-10-14
 
 ### Changed
@@ -55,6 +66,11 @@ Starting from 0.2.0, CLI / Extension / DSH Plugin share the same version number.
   background-execution lease resends the override and waits for a rendered frame; the
   input is sent only once the page reports `visible`, and otherwise still fails before
   dispatch.
+- Extension: an agent session no longer keeps the browser's GPU and CPU busy while the
+  agent is idle ([#391](https://github.com/Tencent/BrowserSkill/issues/391)). The control
+  glow is painted once and pulses only its opacity, twice, instead of repainting the
+  viewport every frame, and stays still under reduced motion. Observation disables
+  Chrome's Accessibility domain again once it has read the accessibility trees.
 - Fill editable controls and editor paragraphs through their editing host while
   preserving the target paragraph's scope; reject noneditable targets and use a
   consistent line model for reading editor text.

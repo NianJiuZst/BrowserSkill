@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CdpDebuggerApi, ChromiumCdp } from "@/browser-driver/chromium-cdp";
+import { CooperationController } from "@/cooperation/controller";
 import { SessionManager } from "@/session-manager/manager";
 import type { ConnectionStateHandler, FrameHandler, Transport } from "@/transport/transport";
 import type {
@@ -258,24 +259,46 @@ describe("ToolDispatcher", () => {
     dispatcher.stop();
   });
 
-  it("routes tool.session_stop and replies with empty result", async () => {
+  it.each([
+    false,
+    true,
+  ])("stops the session and releases cooperation with Chrome available: %s", async (chromeAvailable) => {
+    vi.stubGlobal(
+      "chrome",
+      chromeAvailable
+        ? { tabs: { remove: vi.fn(async () => {}), query: vi.fn(async () => []) } }
+        : undefined,
+    );
     const { transport, sent, deliver } = fakeTransport();
     const sessions = new SessionManager({
       agentWindow: {
-        create: vi.fn(async () => ({ windowId: 4242, initialTabIds: [] })),
+        create: vi.fn(async () => ({ windowId: 4242, initialTabIds: [7] })),
         remove: vi.fn(async () => {}),
-        ensureActiveTab: vi.fn(async () => 1),
+        ensureActiveTab: vi.fn(async () => 7),
       },
     });
     await sessions.start("aa11");
-    const dispatcher = new ToolDispatcher({ transport, sessions });
+    const cooperation = new CooperationController({
+      sessions,
+      readFrames: async () => new Map(),
+      resumeFrames: async () => {},
+      changed: vi.fn(),
+    });
+    cooperation.startSession("aa11");
+    expect(cooperation.hasSession("aa11")).toBe(true);
+    const release = vi.spyOn(cooperation, "release");
+    const dispatcher = new ToolDispatcher({ transport, sessions, cooperation });
     dispatcher.start();
 
     deliver(makeRequest("tool.session_stop", { session_id: "aa11" }));
-    await flushMicrotasks();
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
     expect(sessions.has("aa11")).toBe(false);
+    expect(release).toHaveBeenCalledExactlyOnceWith("aa11");
+    expect(cooperation.hasSession("aa11")).toBe(false);
+    expect(cooperation.enabled(7)).toBe(false);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toEqual({ id: "r-1", result: {} });
+    dispatcher.stop();
   });
 
   it.each([
@@ -683,6 +706,7 @@ describe("ToolDispatcher", () => {
       }
       if (method === "Runtime.evaluate") {
         const expression = (params as { expression?: string }).expression ?? "";
+        if (expression === "document.visibilityState") return { result: { value: "visible" } } as T;
         if (expression.includes('return "absent"')) {
           return { result: { value: "clear" } } as T;
         }
@@ -768,7 +792,7 @@ describe("ToolDispatcher", () => {
     const remove = vi.fn(async () => {});
     const sessions = new SessionManager({
       agentWindow: {
-        create: vi.fn(async () => ({ windowId: 4242, initialTabIds: [] })),
+        create: vi.fn(async () => ({ windowId: 4242, initialTabIds: [7] })),
         remove,
         ensureActiveTab: vi.fn(async () => 1),
       },
@@ -793,7 +817,20 @@ describe("ToolDispatcher", () => {
       setUserAgentOverride: vi.fn(async () => {}),
       setTouchEmulationEnabled: vi.fn(async () => {}),
     };
-    const dispatcher = new ToolDispatcher({ transport, sessions, cdp: cdp as TestDispatcherCdp });
+    const cooperation = new CooperationController({
+      sessions,
+      readFrames: async () => new Map(),
+      resumeFrames: async () => {},
+      changed: vi.fn(),
+    });
+    cooperation.startSession("aa11");
+    const release = vi.spyOn(cooperation, "release");
+    const dispatcher = new ToolDispatcher({
+      transport,
+      sessions,
+      cdp: cdp as TestDispatcherCdp,
+      cooperation,
+    });
     dispatcher.start();
 
     deliver(makeRequest("tool.session_stop", { session_id: "aa11" }));
@@ -810,6 +847,9 @@ describe("ToolDispatcher", () => {
     });
     expect(sessions.has("aa11")).toBe(true);
     expect(remove).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(cooperation.hasSession("aa11")).toBe(true);
+    expect(cooperation.enabled(7)).toBe(true);
   });
 
   it("returns not_found when stopping an unknown session", async () => {

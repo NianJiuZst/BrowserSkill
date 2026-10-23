@@ -29,6 +29,7 @@ Reusable trace and documentation filenames are compatibility aliases, not a seco
 | Concern | Authoritative location | Enforcement |
 | --- | --- | --- |
 | Wire names, payload pairs, owner, browser effect | `src/method.rs` | One macro generates the Rust enum, exhaustive methods and export metadata |
+| Optional features and peer requirements | `src/compatibility.rs` and method feature lists | Shared CLI/daemon preflight, status diagnostics and generated extension metadata |
 | Wire fields and constraints | Rust structs/enums under `src/tools/` and `src/system.rs` | Schemars produces schemas for both deserialization and serialization |
 | Debug action owner and effect | `src/tools/debug.rs` | The CLI parser and generated extension metadata consume the same actions |
 | Extension implementations | `apps/extension/src/tools/dispatcher.ts` | `ToolHandlerMap` requires every extension method with its own parameter/result types |
@@ -43,6 +44,8 @@ JSON Schema cannot establish those facts about a running browser.
 Daemon-local session lifecycle payloads deliberately remain private to the daemon. Their catalog
 entries use arbitrary JSON and are not advertised as validated extension contracts. Extension
 payloads, handshake metadata, cancellation and error codes are included in the export.
+`tool.cooperate` has typed parameters but retains its existing arbitrary-JSON response;
+that result schema does not validate the cooperation workflow's response fields.
 
 ## Receiving and sending are different contracts
 
@@ -89,3 +92,6 @@ Generation checks prove source synchronization, not compatibility with every pre
 binary or successful browser effects. Existing Rust and extension suites, targeted contract probes,
 and browser tests must verify those separate boundaries. New diagnostics or repro material should
 remain outside the source tree.
+
+See [version compatibility](../../docs/protocol-compatibility.md) for mixed-version behavior,
+component-specific update guidance, and the workflow for declaring a new optional feature.

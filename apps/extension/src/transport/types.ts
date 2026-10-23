@@ -19,6 +19,7 @@ export type TabScopeFilter = TabScope;
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "version_skew";
 
 export type RpcErrorReason =
+  | "cooperation_sync_required"
   | "extract_params_invalid"
   | "extract_target_stale"
   | "extract_target_ambiguous"

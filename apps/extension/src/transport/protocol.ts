@@ -14,11 +14,10 @@ export type ToolRequest<M extends ExtensionToolMethod = ExtensionToolMethod> = {
   params: ParamsOf<M>;
 };
 
-export type ToolHandlerMap = {
+export type ToolHandlerMap<Context> = {
   [M in ExtensionToolMethod]: (
     params: ParamsOf<M>,
-    signal: AbortSignal,
-    onInputSent?: (tabId: number) => void,
+    context: Context,
   ) => Promise<ResultOf<M> | RpcError>;
 };
 

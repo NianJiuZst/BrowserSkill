@@ -64,7 +64,12 @@ if (
 ) {
   throw new Error("Empty or duplicate method catalog");
 }
+const featureNames = new Set(catalog.feature_requirements.map((entry) => entry.feature));
+if (featureNames.size !== catalog.feature_requirements.length)
+  throw new Error("Duplicate feature requirement");
 for (const method of catalog.methods) {
+  if (!Array.isArray(method.features) || method.features.some((name) => !featureNames.has(name)))
+    throw new Error(`Missing or unknown feature requirements for ${method.method}`);
   for (const name of [method.params, method.result]) {
     if (!(name in definitions)) throw new Error(`Missing contract ${method.method}: ${name}`);
   }
@@ -307,6 +312,8 @@ const methodSource =
   Object.entries(catalog.constants)
     .map(([name, value]) => `export const ${name} = ${JSON.stringify(value)};\n`)
     .join("") +
+  `export const featureRequirements = ${JSON.stringify(catalog.feature_requirements, null, 2)} as const;\n` +
+  `export type FeatureName = typeof featureRequirements[number]["feature"];\n` +
   `export const debugActions = ${JSON.stringify(catalog.debug_actions, null, 2)} as const;\n` +
   `export const methods = ${JSON.stringify(catalog.methods, null, 2)} as const;\n` +
   `export interface ToolMap {\n${methods.map((method) => `  ${JSON.stringify(method.method)}: { params: Types.${method.params}; result: Types.${method.result} };`).join("\n")}\n}\n` +
@@ -328,6 +335,9 @@ const outputs = new Map([
       {
         source: "bsk-protocol",
         fingerprint,
+        protocol_version: catalog.protocol_version,
+        min_compatible_protocol: catalog.min_compatible_protocol,
+        feature_requirements: catalog.feature_requirements,
         methods: methods.map((m) => m.method),
         contracts: names,
       },

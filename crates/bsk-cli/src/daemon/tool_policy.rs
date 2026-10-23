@@ -68,7 +68,8 @@ pub fn execution_policy(method: &Method) -> ExecutionPolicy {
             cancel_at_deadline: true,
             ..ORDINARY
         },
-        AuditRequest
+        ToolCooperate
+        | AuditRequest
         | SystemHandshake
         | SystemPing
         | SystemStatus

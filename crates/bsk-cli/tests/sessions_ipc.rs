@@ -2231,3 +2231,82 @@ mod recoverable_starts {
         daemon.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn shared_session_survives_idle_then_releases_protection_over_websocket() {
+    let (handle, _sock) = spawn_daemon_with_session_idle(Duration::from_millis(150)).await;
+    let mut ws = connect_ext(handle.ws_addr()).await;
+    let _ = handshake_as_ext(&mut ws).await;
+    let state = handle.state();
+    let id = bsk::daemon::sessions::SessionId("live".into());
+    let browser = bsk::daemon::browsers::BrowserId(TEST_EXT_ID.into());
+    state.sessions.insert(bsk::daemon::sessions::Session {
+        interaction: None,
+        id: id.clone(),
+        browser_id: browser.clone(),
+        agent_window_id: Some(7),
+        created_at_ms: 0,
+    });
+    state.tool_queues.spawn(id.clone());
+    let activity = |protected: bool| {
+        Message::Text(serde_json::json!({
+        "event":"session.activity", "payload":{"session_id":"live", "idle_protected":protected}
+    }).to_string())
+    };
+    ws.send(activity(true)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    // Tool completion must not discard protection, nor can another browser clear it.
+    state.sessions.touch(&id);
+    state.sessions.update_activity(
+        &id,
+        &bsk::daemon::browsers::BrowserId("foreign".into()),
+        false,
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(450), ws.next())
+            .await
+            .is_err(),
+        "shared session was reaped while awaiting a person"
+    );
+    assert!(state.sessions.get(&id).is_some());
+    ws.send(activity(false)).await.unwrap();
+    let message = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = message else {
+        panic!("expected stop request")
+    };
+    let request: RequestFrame = serde_json::from_str(&text).unwrap();
+    assert_eq!(request.method, Method::ToolSessionStop);
+    ws.send(Message::Text(
+        serde_json::to_string(&ResponseFrame {
+            id: request.id,
+            body: ResponseBody::Ok(serde_json::to_value(SessionStopResult::default()).unwrap()),
+        })
+        .unwrap(),
+    ))
+    .await
+    .unwrap();
+    wait_for_no_sessions(&state).await;
+    // Reuse of an identifier must not inherit its old lifetime protection.
+    state.sessions.insert(bsk::daemon::sessions::Session {
+        interaction: None,
+        id: id.clone(),
+        browser_id: browser,
+        agent_window_id: Some(8),
+        created_at_ms: 0,
+    });
+    assert!(
+        state
+            .sessions
+            .idle_ids_at(
+                Duration::from_secs(1),
+                std::time::Instant::now() + Duration::from_secs(2)
+            )
+            .contains(&id)
+    );
+    state.sessions.remove(&id);
+    handle.shutdown().await;
+}

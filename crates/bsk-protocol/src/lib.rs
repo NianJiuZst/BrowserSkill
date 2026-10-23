@@ -2,6 +2,7 @@
 
 pub mod cancel;
 pub mod catalog;
+pub mod compatibility;
 pub mod error;
 pub mod frame;
 pub mod method;

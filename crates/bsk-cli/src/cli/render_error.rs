@@ -223,6 +223,22 @@ pub fn info_for_error(code: ErrorCode, data: Option<&serde_json::Value>) -> Rend
         return base;
     };
     match (code, reason) {
+        (ErrorCode::Unsupported, "unsupported_feature") => RenderInfo {
+            summary: "a connected component does not support the requested feature",
+            hint: match data
+                .and_then(|data| data.get("component"))
+                .and_then(|value| value.as_str())
+            {
+                Some("daemon") => Some(bsk_protocol::compatibility::Peer::Daemon.upgrade_hint()),
+                Some("extension") => {
+                    Some(bsk_protocol::compatibility::Peer::Extension.upgrade_hint())
+                }
+                _ => Some(
+                    "Run `bsk status --json` for feature availability; update the component named in this error before retrying this feature",
+                ),
+            },
+            ..base
+        },
         (_, "user_denied") => RenderInfo {
             summary: "the user denied the tab borrow",
             hint: Some("do not repeat the same authorization request"),
@@ -265,6 +281,13 @@ pub fn info_for_error(code: ErrorCode, data: Option<&serde_json::Value>) -> Rend
             summary: "the browser did not become ready for native input",
             hint: Some(
                 "no click, key press or wheel input was sent; observe the page again before retrying",
+            ),
+            ..base
+        },
+        (_, "cooperation_sync_required") => RenderInfo {
+            summary: "shared page control or observation changed",
+            hint: Some(
+                "use `bsk cooperate wait --session SID`, then `bsk cooperate sync --session SID`; replan toward the assigned goal and check existing effects before another action",
             ),
             ..base
         },

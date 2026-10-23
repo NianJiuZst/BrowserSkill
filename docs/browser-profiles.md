@@ -88,6 +88,11 @@ Use the verified popup instance ID in the plugin's session tool:
 bsk_session({ action: "start", browser: "<verified-instance-id>" })
 ```
 
+For an incognito Agent Window, add `incognito: true` to that call. The extension
+must have **Allow in incognito** enabled, and the plugin, CLI, daemon and extension
+must support protocol 1.4 or later; a missing permission or an older peer returns an
+error instead of retrying as a normal window.
+
 **Copy instructions** includes this tool call alongside the CLI command.
 Use the DeepSeek Harness call instead of running a separate CLI session. The plugin
 manages its own sessions. Supply the same selector on every new session for the task, even if

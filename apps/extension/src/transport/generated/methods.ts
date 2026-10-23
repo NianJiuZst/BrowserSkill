@@ -5,6 +5,38 @@ export const MIN_COMPATIBLE_PROTOCOL = "1.0";
 export const TRACE_VERSION_V2 = 2;
 export const TRACE_VERSION_V3 = 3;
 export const VOM_FORMAT_VERSION = 1;
+export const featureRequirements = [
+  {
+    "daemon": "1.4",
+    "extension": "1.4",
+    "feature": "incognito_sessions",
+    "operation": "session start --incognito",
+    "when": {
+      "field": "incognito",
+      "kind": "true"
+    }
+  },
+  {
+    "daemon": "1.2",
+    "extension": "1.2",
+    "feature": "borrow_confirmation_timeout",
+    "operation": "tab borrow --timeout",
+    "when": {
+      "field": "confirmation_timeout_ms",
+      "kind": "present"
+    }
+  },
+  {
+    "daemon": "1.3",
+    "extension": "1.0",
+    "feature": "interaction_policy",
+    "operation": "request-help",
+    "when": {
+      "kind": "always"
+    }
+  }
+] as const;
+export type FeatureName = typeof featureRequirements[number]["feature"];
 export const debugActions = [
   {
     "action": "performance",
@@ -130,6 +162,15 @@ export const debugActions = [
 export const methods = [
   {
     "effect": "control_plane",
+    "features": [],
+    "method": "tool.cooperate",
+    "owner": "extension",
+    "params": "CooperateParams",
+    "result": "AnyValue"
+  },
+  {
+    "effect": "control_plane",
+    "features": [],
     "method": "audit.request",
     "owner": "daemon",
     "params": "AnyValue",
@@ -137,6 +178,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "system.handshake",
     "owner": "daemon",
     "params": "HandshakeRequest",
@@ -144,6 +186,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "system.ping",
     "owner": "daemon",
     "params": "PingParams",
@@ -151,6 +194,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "system.status",
     "owner": "daemon",
     "params": "StatusParams",
@@ -158,6 +202,9 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [
+      "incognito_sessions"
+    ],
     "method": "session.start",
     "owner": "daemon",
     "params": "AnyValue",
@@ -165,6 +212,9 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [
+      "incognito_sessions"
+    ],
     "method": "session.start_tracked",
     "owner": "daemon",
     "params": "AnyValue",
@@ -172,6 +222,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "session.request",
     "owner": "daemon",
     "params": "AnyValue",
@@ -179,6 +230,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "session.stop",
     "owner": "daemon",
     "params": "AnyValue",
@@ -186,6 +238,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "session.stop_all",
     "owner": "daemon",
     "params": "AnyValue",
@@ -193,6 +246,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "session.list",
     "owner": "daemon",
     "params": "AnyValue",
@@ -200,6 +254,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "browser.list",
     "owner": "daemon",
     "params": "BrowserListParams",
@@ -207,6 +262,9 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [
+      "incognito_sessions"
+    ],
     "method": "tool.session_start",
     "owner": "extension",
     "params": "SessionStartParams",
@@ -214,6 +272,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "tool.session_stop",
     "owner": "extension",
     "params": "SessionStopParams",
@@ -221,6 +280,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.window_resize",
     "owner": "extension",
     "params": "WindowResizeParams",
@@ -228,6 +288,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.emulate",
     "owner": "extension",
     "params": "EmulateParams",
@@ -235,6 +296,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.tab_list",
     "owner": "extension",
     "params": "TabListParams",
@@ -242,6 +304,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.tab_create",
     "owner": "extension",
     "params": "TabCreateParams",
@@ -249,6 +312,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.tab_close",
     "owner": "extension",
     "params": "TabCloseParams",
@@ -256,6 +320,9 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [
+      "borrow_confirmation_timeout"
+    ],
     "method": "tool.tab_borrow",
     "owner": "extension",
     "params": "TabBorrowParams",
@@ -263,6 +330,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.tab_return",
     "owner": "extension",
     "params": "TabReturnParams",
@@ -270,6 +338,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.tab_select",
     "owner": "extension",
     "params": "TabSelectParams",
@@ -277,6 +346,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.navigate",
     "owner": "extension",
     "params": "NavigateParams",
@@ -284,6 +354,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.navigate_back",
     "owner": "extension",
     "params": "NavigateBackParams",
@@ -291,6 +362,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.navigate_forward",
     "owner": "extension",
     "params": "NavigateForwardParams",
@@ -298,6 +370,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.reload",
     "owner": "extension",
     "params": "ReloadParams",
@@ -305,6 +378,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.click",
     "owner": "extension",
     "params": "ClickParams",
@@ -312,6 +386,7 @@ export const methods = [
   },
   {
     "effect": "transient_input",
+    "features": [],
     "method": "tool.hover",
     "owner": "extension",
     "params": "HoverParams",
@@ -319,6 +394,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.wheel",
     "owner": "extension",
     "params": "WheelParams",
@@ -326,6 +402,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.scroll_to",
     "owner": "extension",
     "params": "ScrollToParams",
@@ -333,6 +410,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.focus",
     "owner": "extension",
     "params": "FocusParams",
@@ -340,6 +418,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.blur",
     "owner": "extension",
     "params": "BlurParams",
@@ -347,6 +426,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.fill",
     "owner": "extension",
     "params": "FillParams",
@@ -354,6 +434,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.press",
     "owner": "extension",
     "params": "PressParams",
@@ -361,6 +442,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.select",
     "owner": "extension",
     "params": "SelectParams",
@@ -368,6 +450,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.upload",
     "owner": "extension",
     "params": "UploadParams",
@@ -375,6 +458,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.download",
     "owner": "extension",
     "params": "DownloadParams",
@@ -382,6 +466,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.snapshot",
     "owner": "extension",
     "params": "SnapshotParams",
@@ -389,6 +474,7 @@ export const methods = [
   },
   {
     "effect": "transient_input",
+    "features": [],
     "method": "tool.observe",
     "owner": "extension",
     "params": "ObserveParams",
@@ -396,6 +482,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.get_html",
     "owner": "extension",
     "params": "GetHtmlParams",
@@ -403,6 +490,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.screenshot",
     "owner": "extension",
     "params": "ScreenshotParams",
@@ -410,6 +498,7 @@ export const methods = [
   },
   {
     "effect": "transient_input",
+    "features": [],
     "method": "tool.screenshot_full_page",
     "owner": "extension",
     "params": "ScreenshotFullPageParams",
@@ -417,6 +506,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.screenshot_read",
     "owner": "extension",
     "params": "ScreenshotReadParams",
@@ -424,6 +514,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "tool.screenshot_release",
     "owner": "extension",
     "params": "ScreenshotReleaseParams",
@@ -431,6 +522,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.console",
     "owner": "extension",
     "params": "ConsoleParams",
@@ -438,6 +530,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.extract",
     "owner": "extension",
     "params": "ExtractParams",
@@ -445,6 +538,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.wait_for_element",
     "owner": "extension",
     "params": "WaitForElementParams",
@@ -452,6 +546,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "tool.video",
     "owner": "extension",
     "params": "VideoParams",
@@ -459,6 +554,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "tool.debug",
     "owner": "extension",
     "params": "DebugParams",
@@ -466,6 +562,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.network",
     "owner": "extension",
     "params": "NetworkParams",
@@ -473,6 +570,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.evaluate",
     "owner": "extension",
     "params": "EvaluateParams",
@@ -480,6 +578,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.wait_for_navigation",
     "owner": "extension",
     "params": "WaitForNavigationParams",
@@ -487,6 +586,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.wait_ms",
     "owner": "daemon",
     "params": "WaitMsParams",
@@ -494,6 +594,9 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [
+      "interaction_policy"
+    ],
     "method": "tool.request_help",
     "owner": "extension",
     "params": "RequestHelpParams",
@@ -501,6 +604,7 @@ export const methods = [
   },
   {
     "effect": "browser_mutation",
+    "features": [],
     "method": "tool.record_start",
     "owner": "extension",
     "params": "RecordStartParams",
@@ -508,6 +612,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.record_stop",
     "owner": "extension",
     "params": "RecordStopParams",
@@ -515,6 +620,7 @@ export const methods = [
   },
   {
     "effect": "passive_read",
+    "features": [],
     "method": "tool.record_await",
     "owner": "extension",
     "params": "RecordAwaitParams",
@@ -522,6 +628,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "transfer.begin",
     "owner": "daemon",
     "params": "AnyValue",
@@ -529,6 +636,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "transfer.chunk",
     "owner": "daemon",
     "params": "AnyValue",
@@ -536,6 +644,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "transfer.finish",
     "owner": "daemon",
     "params": "AnyValue",
@@ -543,6 +652,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "transfer.read",
     "owner": "daemon",
     "params": "AnyValue",
@@ -550,6 +660,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "transfer.release",
     "owner": "daemon",
     "params": "AnyValue",
@@ -557,6 +668,7 @@ export const methods = [
   },
   {
     "effect": "control_plane",
+    "features": [],
     "method": "cancel",
     "owner": "shared",
     "params": "CancelParams",
@@ -564,6 +676,7 @@ export const methods = [
   }
 ] as const;
 export interface ToolMap {
+  "tool.cooperate": { params: Types.CooperateParams; result: Types.AnyValue };
   "tool.session_start": { params: Types.SessionStartParams; result: Types.SessionStartResult };
   "tool.session_stop": { params: Types.SessionStopParams; result: Types.SessionStopOutcome };
   "tool.window_resize": { params: Types.WindowResizeParams; result: Types.WindowResizeResult };

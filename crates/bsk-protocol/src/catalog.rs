@@ -25,6 +25,7 @@ pub struct MethodDescriptor {
     pub method: &'static str,
     pub owner: MethodOwner,
     pub effect: MethodEffect,
+    pub features: &'static [crate::compatibility::Feature],
     pub params: String,
     pub result: String,
 }
@@ -34,12 +35,14 @@ impl MethodDescriptor {
         method: &'static str,
         owner: MethodOwner,
         effect: MethodEffect,
+        features: &'static [crate::compatibility::Feature],
         generator: &mut SchemaGenerator,
     ) -> Self {
         Self {
             method,
             owner,
             effect,
+            features,
             params: register::<P>(generator),
             result: register::<R>(generator),
         }
@@ -103,6 +106,7 @@ pub fn export() -> Value {
         "protocol_version": PROTOCOL_VERSION,
         "min_compatible_protocol": MIN_COMPATIBLE_PROTOCOL,
         "methods": methods,
+        "feature_requirements": crate::compatibility::Feature::ALL.iter().map(|f| f.requirement()).collect::<Vec<_>>(),
         "constants": {
             "TRACE_VERSION_V2": crate::tools::TRACE_VERSION_V2,
             "TRACE_VERSION_V3": crate::tools::TRACE_VERSION_V3,

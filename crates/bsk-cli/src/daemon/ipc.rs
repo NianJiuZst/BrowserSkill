@@ -285,6 +285,7 @@ pub fn full_handler(status: DaemonStatus, state: Arc<DaemonState>) -> RpcHandler
                 | Method::ToolNetwork
                 | Method::ToolSnapshot
                 | Method::ToolObserve
+                | Method::ToolCooperate
                 | Method::ToolGetHtml
                 | Method::ToolExtract
                 | Method::ToolNavigate
@@ -368,7 +369,9 @@ async fn handle_video(state: &Arc<DaemonState>, rpc_id: RpcId, params: Value) ->
             params: Some(params),
         }) {
             Ok(receiver) => receiver,
-            Err(SendError::Terminated(error)) => return ResponseBody::Err(error),
+            Err(SendError::Terminated(error) | SendError::UnsupportedFeature(error)) => {
+                return ResponseBody::Err(error);
+            }
             Err(SendError::SinkClosed) => {
                 return ResponseBody::Err(invalid_params("Recording browser disconnected"));
             }
@@ -503,7 +506,11 @@ async fn handle_tool_dispatch(
             Err(error) => ResponseBody::Err(error.into_rpc()),
         };
     }
-    let audit_id = params.get("_audit_id").cloned();
+    // Transfer staging normalizes typed params; retain the caller's observation binding.
+    let metadata: Vec<_> = ["_audit_id", "context_id", "depends_on"]
+        .into_iter()
+        .filter_map(|key| params.get(key).cloned().map(|value| (key, value)))
+        .collect();
     let mut params = params;
     if method == Method::ToolTabBorrow {
         // Old CLI clients can still send this field. Never forward their
@@ -516,25 +523,6 @@ async fn handle_tool_dispatch(
         }
         if let Some(object) = params.as_object_mut() {
             object.remove("confirm");
-        }
-        if params
-            .get("confirmation_timeout_ms")
-            .is_some_and(|v| !v.is_null())
-            && let Some(session) = state.sessions.get(&session_id)
-            && let Some(browser) = state.browsers.get(&session.browser_id)
-            && !bsk_protocol::tools::supports_borrow_confirmation_timeout(
-                &browser.extension_protocol_version,
-            )
-        {
-            return ResponseBody::Err(RpcError {
-                code: ErrorCode::Unsupported,
-                message: "Custom tab-borrow confirmation waits require extension protocol 1.2; update the extension or omit --timeout to use its default wait".into(),
-                data: Some(serde_json::json!({
-                    "reason": "unsupported_feature", "operation": "tab borrow --timeout",
-                    "component": "extension", "required_protocol": bsk_protocol::tools::BORROW_CONFIRMATION_TIMEOUT_PROTOCOL,
-                    "actual_protocol": browser.extension_protocol_version,
-                })),
-            });
         }
     }
     let mut download_transfer_id: Option<String> = None;
@@ -572,15 +560,17 @@ async fn handle_tool_dispatch(
         download_transfer_id = Some(staging.transfer_id);
         params = serde_json::to_value(download).unwrap_or(Value::Null);
     }
-    if let Some(audit_id) = audit_id
-        && let Some(object) = params.as_object_mut()
-    {
-        object.insert("_audit_id".into(), audit_id);
+    if let Some(object) = params.as_object_mut() {
+        for (key, value) in metadata {
+            object.insert(key.into(), value);
+        }
     }
     let entry = inflight_guard.entry();
     // `record_stop` must reach the extension while `record_await` holds the
     // serial busy lock — finishing the recording unblocks await.
-    let outcome = if method == Method::ToolRecordStop {
+    let independent_control = method == Method::ToolCooperate
+        && params.get("action").and_then(Value::as_str) != Some("enable");
+    let outcome = if method == Method::ToolRecordStop || independent_control {
         state
             .tool_queues
             .dispatch_unlocked(&session_id, method.clone(), params, timeout, Some(entry))
@@ -903,6 +893,17 @@ fn tool_dispatch_timeout(params: &Value) -> Result<Duration, RpcError> {
 }
 
 fn tool_dispatch_transport_timeout(method: &Method, params: &Value) -> Result<Duration, RpcError> {
+    if *method == Method::ToolCooperate {
+        let parsed: bsk_protocol::tools::CooperateParams =
+            serde_json::from_value(params.clone())
+                .map_err(|error| invalid_params(error.to_string()))?;
+        if parsed.timeout_ms.is_some_and(|ms| ms > 25_000) {
+            return Err(invalid_params("cooperation wait is bounded to 25000ms"));
+        }
+        // The renderer owns the wait deadline. Leave room for collection and its reply,
+        // including the zero-duration status check; sync uses the ordinary read budget.
+        return Ok(DEFAULT_TOOL_TIMEOUT);
+    }
     let policy = super::tool_policy::execution_policy(method);
     if policy.deadline == super::tool_policy::Deadline::BorrowConfirmation {
         let ms = params
@@ -2023,6 +2024,25 @@ mod tests {
 
         let err = tool_dispatch_timeout(&params).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn cooperation_wait_deadline_leaves_time_for_the_renderer_reply() {
+        for wait_ms in [0, 900, 25_000] {
+            let params =
+                serde_json::json!({"session_id":"s1", "action":"wait", "timeout_ms":wait_ms});
+            assert!(
+                tool_dispatch_transport_timeout(&Method::ToolCooperate, &params).unwrap()
+                    > Duration::from_millis(wait_ms)
+            );
+        }
+        assert!(
+            tool_dispatch_transport_timeout(
+                &Method::ToolCooperate,
+                &serde_json::json!({"session_id":"s1", "action":"wait", "timeout_ms":25_001})
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

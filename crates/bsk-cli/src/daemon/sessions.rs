@@ -72,9 +72,23 @@ pub struct SessionRegistry {
     inner: Mutex<HashMap<SessionId, Session>>,
     /// Operational metadata kept outside the public `Session` wire/domain
     /// shape so idle enforcement does not break external struct users.
-    last_activity: Mutex<HashMap<SessionId, Instant>>,
+    last_activity: Mutex<HashMap<SessionId, SessionActivity>>,
     /// Managed creates whose original extension operation has not settled.
     starting: Mutex<HashSet<SessionId>>,
+}
+
+#[derive(Debug)]
+struct SessionActivity {
+    last_seen: Instant,
+    idle_protected: bool,
+}
+impl Default for SessionActivity {
+    fn default() -> Self {
+        Self {
+            last_seen: Instant::now(),
+            idle_protected: false,
+        }
+    }
 }
 
 impl SessionRegistry {
@@ -121,7 +135,7 @@ impl SessionRegistry {
         self.last_activity
             .lock()
             .expect("session activity registry poisoned")
-            .insert(session_id, Instant::now());
+            .insert(session_id, SessionActivity::default());
     }
 
     /// Reserve a fresh, collision-free [`SessionId`] under the registry
@@ -163,7 +177,7 @@ impl SessionRegistry {
             self.last_activity
                 .lock()
                 .expect("session activity registry poisoned")
-                .insert(candidate.clone(), Instant::now());
+                .insert(candidate.clone(), SessionActivity::default());
             return Some(candidate);
         }
         None
@@ -246,19 +260,33 @@ impl SessionRegistry {
 
     /// Record accepted or completed tool activity for a live session.
     pub fn touch(&self, id: &SessionId) -> bool {
-        if !self
-            .inner
-            .lock()
-            .expect("session registry poisoned")
-            .contains_key(id)
-        {
+        let sessions = self.inner.lock().expect("session registry poisoned");
+        if !sessions.contains_key(id) {
             return false;
         }
         self.last_activity
             .lock()
             .expect("session activity registry poisoned")
-            .insert(id.clone(), Instant::now());
+            .entry(id.clone())
+            .or_default()
+            .last_seen = Instant::now();
         true
+    }
+
+    /// Only the owning browser can retain a session while a shared page is live.
+    /// Ending collaboration starts a fresh idle interval; normal teardown still applies.
+    pub fn update_activity(&self, id: &SessionId, browser: &BrowserId, idle_protected: bool) {
+        let sessions = self.inner.lock().expect("session registry poisoned");
+        if !sessions.get(id).is_some_and(|s| &s.browser_id == browser) {
+            return;
+        }
+        let mut activity = self
+            .last_activity
+            .lock()
+            .expect("session activity registry poisoned");
+        let entry = activity.entry(id.clone()).or_default();
+        entry.idle_protected = idle_protected;
+        entry.last_seen = Instant::now();
     }
 
     /// Return sessions whose last tool activity is at least `idle_for`
@@ -274,9 +302,10 @@ impl SessionRegistry {
             .values()
             .filter(|session| {
                 !starting.contains(&session.id)
-                    && activity
-                        .get(&session.id)
-                        .is_some_and(|last| now.saturating_duration_since(*last) >= idle_for)
+                    && activity.get(&session.id).is_some_and(|last| {
+                        !last.idle_protected
+                            && now.saturating_duration_since(last.last_seen) >= idle_for
+                    })
             })
             .map(|session| session.id.clone())
             .collect()
@@ -554,23 +583,13 @@ pub(crate) async fn start_session_recoverable(
     if client.is_unresponsive() {
         return Err(StartSessionError::ExtensionUnresponsive);
     }
-    if window.incognito
-        && !bsk_protocol::tools::supports_incognito_sessions(&client.extension_protocol_version)
-    {
-        return Err(StartSessionError::ExtensionError(RpcError {
-            code: ErrorCode::Unsupported,
-            message: format!(
-                "Incognito sessions require extension protocol {} (connected: {}); update the BrowserSkill extension and retry",
-                bsk_protocol::tools::INCOGNITO_SESSION_PROTOCOL,
-                client.extension_protocol_version,
-            ),
-            data: Some(serde_json::json!({
-                "reason": "unsupported_feature", "operation": "session start --incognito",
-                "component": "extension",
-                "required_protocol": bsk_protocol::tools::INCOGNITO_SESSION_PROTOCOL,
-                "actual_protocol": client.extension_protocol_version,
-            })),
-        }));
+    if window.incognito {
+        bsk_protocol::compatibility::Feature::IncognitoSessions
+            .require(
+                bsk_protocol::compatibility::Peer::Extension,
+                &client.extension_protocol_version,
+            )
+            .map_err(StartSessionError::ExtensionError)?;
     }
     let session_id = sessions
         .reserve_id(client.id.clone(), SESSION_ID_MAX_RESERVE_ATTEMPTS, now_ms)
@@ -606,7 +625,8 @@ pub(crate) async fn start_session_recoverable(
         Err(err) => {
             sessions.cancel_reservation(&session_id);
             return Err(match err {
-                super::browsers::SendError::Terminated(cause) => {
+                super::browsers::SendError::Terminated(cause)
+                | super::browsers::SendError::UnsupportedFeature(cause) => {
                     StartSessionError::ExtensionError(cause)
                 }
                 super::browsers::SendError::SinkClosed => StartSessionError::TransportClosed,
@@ -886,7 +906,10 @@ async fn rollback_extension_session(
     };
     let waiter = match client.dispatch(request) {
         Ok(waiter) => waiter,
-        Err(super::browsers::SendError::Terminated(cause)) => {
+        Err(
+            super::browsers::SendError::Terminated(cause)
+            | super::browsers::SendError::UnsupportedFeature(cause),
+        ) => {
             return Err(format!("rollback was not queued: {}", cause.message));
         }
         Err(super::browsers::SendError::SinkClosed) => {

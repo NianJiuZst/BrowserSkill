@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{MethodDescriptor, MethodOwner};
+use crate::compatibility::Feature;
 use crate::system::*;
 use crate::tools::*;
 use crate::{CancelParams, CancelResult};
@@ -26,9 +27,10 @@ pub enum MethodEffect {
 }
 
 /// The method catalog is the only list of wire methods and their payloads.
-/// Adding a method requires an owner, an effect classification and both payload types.
+/// Adding a method requires an owner, effect classification, both payload types
+/// and an explicit list of feature requirements.
 macro_rules! methods {
-    ($($variant:ident => ($wire:literal, $owner:ident, $effect:ident, $params:ty, $result:ty)),* $(,)?) => {
+    ($($variant:ident => ($wire:literal, $owner:ident, $effect:ident, $params:ty, $result:ty, [$($feature:ident),*])),* $(,)?) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
         pub enum Method {
             $(#[serde(rename = $wire)] $variant,)*
@@ -64,10 +66,14 @@ macro_rules! methods {
                 match self { $(Self::$variant => MethodEffect::$effect,)* }
             }
 
+            pub const fn features(&self) -> &'static [Feature] {
+                match self { $(Self::$variant => &[$(Feature::$feature),*],)* }
+            }
+
             pub fn describe(&self, generator: &mut schemars::SchemaGenerator) -> MethodDescriptor {
                 match self {
                     $(Self::$variant => MethodDescriptor::new::<$params, $result>(
-                        $wire, MethodOwner::$owner, MethodEffect::$effect, generator,
+                        $wire, MethodOwner::$owner, MethodEffect::$effect, self.features(), generator,
                     ),)*
                 }
             }
@@ -76,68 +82,69 @@ macro_rules! methods {
 }
 
 methods! {
-    AuditRequest => ("audit.request", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    SystemHandshake => ("system.handshake", Daemon, ControlPlane, HandshakeRequest, HandshakeResponse),
-    SystemPing => ("system.ping", Daemon, ControlPlane, PingParams, PingResult),
-    SystemStatus => ("system.status", Daemon, ControlPlane, StatusParams, StatusResult),
-    SessionStart => ("session.start", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    SessionStartTracked => ("session.start_tracked", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    SessionRequest => ("session.request", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    SessionStop => ("session.stop", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    SessionStopAll => ("session.stop_all", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    SessionList => ("session.list", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    BrowserList => ("browser.list", Daemon, ControlPlane, BrowserListParams, serde_json::Value),
-    ToolSessionStart => ("tool.session_start", Extension, ControlPlane, SessionStartParams, SessionStartResult),
-    ToolSessionStop => ("tool.session_stop", Extension, ControlPlane, SessionStopParams, SessionStopOutcome),
-    ToolWindowResize => ("tool.window_resize", Extension, BrowserMutation, WindowResizeParams, WindowResizeResult),
-    ToolEmulate => ("tool.emulate", Extension, BrowserMutation, EmulateParams, EmulateResult),
-    ToolTabList => ("tool.tab_list", Extension, PassiveRead, TabListParams, TabListResult),
-    ToolTabCreate => ("tool.tab_create", Extension, BrowserMutation, TabCreateParams, TabCreateResult),
-    ToolTabClose => ("tool.tab_close", Extension, BrowserMutation, TabCloseParams, TabCloseResult),
-    ToolTabBorrow => ("tool.tab_borrow", Extension, BrowserMutation, TabBorrowParams, TabBorrowResult),
-    ToolTabReturn => ("tool.tab_return", Extension, BrowserMutation, TabReturnParams, TabReturnResult),
-    ToolTabSelect => ("tool.tab_select", Extension, BrowserMutation, TabSelectParams, TabSelectResult),
-    ToolNavigate => ("tool.navigate", Extension, BrowserMutation, NavigateParams, NavigateResult),
-    ToolNavigateBack => ("tool.navigate_back", Extension, BrowserMutation, NavigateBackParams, NavigateBackResult),
-    ToolNavigateForward => ("tool.navigate_forward", Extension, BrowserMutation, NavigateForwardParams, NavigateForwardResult),
-    ToolReload => ("tool.reload", Extension, BrowserMutation, ReloadParams, ReloadResult),
-    ToolClick => ("tool.click", Extension, BrowserMutation, ClickParams, ClickResult),
-    ToolHover => ("tool.hover", Extension, TransientInput, HoverParams, HoverResult),
-    ToolWheel => ("tool.wheel", Extension, BrowserMutation, WheelParams, WheelResult),
-    ToolScrollTo => ("tool.scroll_to", Extension, BrowserMutation, ScrollToParams, ScrollToResult),
-    ToolFocus => ("tool.focus", Extension, BrowserMutation, FocusParams, FocusResult),
-    ToolBlur => ("tool.blur", Extension, BrowserMutation, BlurParams, BlurResult),
-    ToolFill => ("tool.fill", Extension, BrowserMutation, FillParams, FillResult),
-    ToolPress => ("tool.press", Extension, BrowserMutation, PressParams, PressResult),
-    ToolSelect => ("tool.select", Extension, BrowserMutation, SelectParams, SelectResult),
-    ToolUpload => ("tool.upload", Extension, BrowserMutation, UploadParams, UploadResult),
-    ToolDownload => ("tool.download", Extension, BrowserMutation, DownloadParams, DownloadResult),
-    ToolSnapshot => ("tool.snapshot", Extension, PassiveRead, SnapshotParams, SnapshotResult),
-    ToolObserve => ("tool.observe", Extension, TransientInput, ObserveParams, ObserveResult),
-    ToolGetHtml => ("tool.get_html", Extension, PassiveRead, GetHtmlParams, GetHtmlResult),
-    ToolScreenshot => ("tool.screenshot", Extension, PassiveRead, ScreenshotParams, ScreenshotResult),
-    ToolScreenshotFullPage => ("tool.screenshot_full_page", Extension, TransientInput, ScreenshotFullPageParams, ScreenshotFullPageResult),
-    ToolScreenshotRead => ("tool.screenshot_read", Extension, PassiveRead, ScreenshotReadParams, ScreenshotReadResult),
-    ToolScreenshotRelease => ("tool.screenshot_release", Extension, ControlPlane, ScreenshotReleaseParams, ScreenshotReleaseResult),
-    ToolConsole => ("tool.console", Extension, PassiveRead, ConsoleParams, ConsoleResult),
-    ToolExtract => ("tool.extract", Extension, PassiveRead, ExtractParams, ExtractResult),
-    ToolWaitForElement => ("tool.wait_for_element", Extension, PassiveRead, WaitForElementParams, WaitForElementResult),
-    ToolVideo => ("tool.video", Extension, ControlPlane, VideoParams, VideoResult),
-    ToolDebug => ("tool.debug", Extension, ControlPlane, DebugParams, DebugResult),
-    ToolNetwork => ("tool.network", Extension, PassiveRead, NetworkParams, NetworkResult),
-    ToolEvaluate => ("tool.evaluate", Extension, BrowserMutation, EvaluateParams, EvaluateResult),
-    ToolWaitForNavigation => ("tool.wait_for_navigation", Extension, PassiveRead, WaitForNavigationParams, WaitForNavigationResult),
-    ToolWaitMs => ("tool.wait_ms", Daemon, PassiveRead, WaitMsParams, WaitMsResult),
-    ToolRequestHelp => ("tool.request_help", Extension, PassiveRead, RequestHelpParams, RequestHelpResult),
-    ToolRecordStart => ("tool.record_start", Extension, BrowserMutation, RecordStartParams, RecordStartResult),
-    ToolRecordStop => ("tool.record_stop", Extension, PassiveRead, RecordStopParams, RecordStopResult),
-    ToolRecordAwait => ("tool.record_await", Extension, PassiveRead, RecordAwaitParams, RecordAwaitResult),
-    TransferBegin => ("transfer.begin", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    TransferChunk => ("transfer.chunk", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    TransferFinish => ("transfer.finish", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    TransferRead => ("transfer.read", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    TransferRelease => ("transfer.release", Daemon, ControlPlane, serde_json::Value, serde_json::Value),
-    Cancel => ("cancel", Shared, ControlPlane, CancelParams, CancelResult),
+    ToolCooperate => ("tool.cooperate", Extension, ControlPlane, CooperateParams, serde_json::Value, []),
+    AuditRequest => ("audit.request", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    SystemHandshake => ("system.handshake", Daemon, ControlPlane, HandshakeRequest, HandshakeResponse, []),
+    SystemPing => ("system.ping", Daemon, ControlPlane, PingParams, PingResult, []),
+    SystemStatus => ("system.status", Daemon, ControlPlane, StatusParams, StatusResult, []),
+    SessionStart => ("session.start", Daemon, ControlPlane, serde_json::Value, serde_json::Value, [IncognitoSessions]),
+    SessionStartTracked => ("session.start_tracked", Daemon, ControlPlane, serde_json::Value, serde_json::Value, [IncognitoSessions]),
+    SessionRequest => ("session.request", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    SessionStop => ("session.stop", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    SessionStopAll => ("session.stop_all", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    SessionList => ("session.list", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    BrowserList => ("browser.list", Daemon, ControlPlane, BrowserListParams, serde_json::Value, []),
+    ToolSessionStart => ("tool.session_start", Extension, ControlPlane, SessionStartParams, SessionStartResult, [IncognitoSessions]),
+    ToolSessionStop => ("tool.session_stop", Extension, ControlPlane, SessionStopParams, SessionStopOutcome, []),
+    ToolWindowResize => ("tool.window_resize", Extension, BrowserMutation, WindowResizeParams, WindowResizeResult, []),
+    ToolEmulate => ("tool.emulate", Extension, BrowserMutation, EmulateParams, EmulateResult, []),
+    ToolTabList => ("tool.tab_list", Extension, PassiveRead, TabListParams, TabListResult, []),
+    ToolTabCreate => ("tool.tab_create", Extension, BrowserMutation, TabCreateParams, TabCreateResult, []),
+    ToolTabClose => ("tool.tab_close", Extension, BrowserMutation, TabCloseParams, TabCloseResult, []),
+    ToolTabBorrow => ("tool.tab_borrow", Extension, BrowserMutation, TabBorrowParams, TabBorrowResult, [BorrowConfirmationTimeout]),
+    ToolTabReturn => ("tool.tab_return", Extension, BrowserMutation, TabReturnParams, TabReturnResult, []),
+    ToolTabSelect => ("tool.tab_select", Extension, BrowserMutation, TabSelectParams, TabSelectResult, []),
+    ToolNavigate => ("tool.navigate", Extension, BrowserMutation, NavigateParams, NavigateResult, []),
+    ToolNavigateBack => ("tool.navigate_back", Extension, BrowserMutation, NavigateBackParams, NavigateBackResult, []),
+    ToolNavigateForward => ("tool.navigate_forward", Extension, BrowserMutation, NavigateForwardParams, NavigateForwardResult, []),
+    ToolReload => ("tool.reload", Extension, BrowserMutation, ReloadParams, ReloadResult, []),
+    ToolClick => ("tool.click", Extension, BrowserMutation, ClickParams, ClickResult, []),
+    ToolHover => ("tool.hover", Extension, TransientInput, HoverParams, HoverResult, []),
+    ToolWheel => ("tool.wheel", Extension, BrowserMutation, WheelParams, WheelResult, []),
+    ToolScrollTo => ("tool.scroll_to", Extension, BrowserMutation, ScrollToParams, ScrollToResult, []),
+    ToolFocus => ("tool.focus", Extension, BrowserMutation, FocusParams, FocusResult, []),
+    ToolBlur => ("tool.blur", Extension, BrowserMutation, BlurParams, BlurResult, []),
+    ToolFill => ("tool.fill", Extension, BrowserMutation, FillParams, FillResult, []),
+    ToolPress => ("tool.press", Extension, BrowserMutation, PressParams, PressResult, []),
+    ToolSelect => ("tool.select", Extension, BrowserMutation, SelectParams, SelectResult, []),
+    ToolUpload => ("tool.upload", Extension, BrowserMutation, UploadParams, UploadResult, []),
+    ToolDownload => ("tool.download", Extension, BrowserMutation, DownloadParams, DownloadResult, []),
+    ToolSnapshot => ("tool.snapshot", Extension, PassiveRead, SnapshotParams, SnapshotResult, []),
+    ToolObserve => ("tool.observe", Extension, TransientInput, ObserveParams, ObserveResult, []),
+    ToolGetHtml => ("tool.get_html", Extension, PassiveRead, GetHtmlParams, GetHtmlResult, []),
+    ToolScreenshot => ("tool.screenshot", Extension, PassiveRead, ScreenshotParams, ScreenshotResult, []),
+    ToolScreenshotFullPage => ("tool.screenshot_full_page", Extension, TransientInput, ScreenshotFullPageParams, ScreenshotFullPageResult, []),
+    ToolScreenshotRead => ("tool.screenshot_read", Extension, PassiveRead, ScreenshotReadParams, ScreenshotReadResult, []),
+    ToolScreenshotRelease => ("tool.screenshot_release", Extension, ControlPlane, ScreenshotReleaseParams, ScreenshotReleaseResult, []),
+    ToolConsole => ("tool.console", Extension, PassiveRead, ConsoleParams, ConsoleResult, []),
+    ToolExtract => ("tool.extract", Extension, PassiveRead, ExtractParams, ExtractResult, []),
+    ToolWaitForElement => ("tool.wait_for_element", Extension, PassiveRead, WaitForElementParams, WaitForElementResult, []),
+    ToolVideo => ("tool.video", Extension, ControlPlane, VideoParams, VideoResult, []),
+    ToolDebug => ("tool.debug", Extension, ControlPlane, DebugParams, DebugResult, []),
+    ToolNetwork => ("tool.network", Extension, PassiveRead, NetworkParams, NetworkResult, []),
+    ToolEvaluate => ("tool.evaluate", Extension, BrowserMutation, EvaluateParams, EvaluateResult, []),
+    ToolWaitForNavigation => ("tool.wait_for_navigation", Extension, PassiveRead, WaitForNavigationParams, WaitForNavigationResult, []),
+    ToolWaitMs => ("tool.wait_ms", Daemon, PassiveRead, WaitMsParams, WaitMsResult, []),
+    ToolRequestHelp => ("tool.request_help", Extension, PassiveRead, RequestHelpParams, RequestHelpResult, [InteractionPolicy]),
+    ToolRecordStart => ("tool.record_start", Extension, BrowserMutation, RecordStartParams, RecordStartResult, []),
+    ToolRecordStop => ("tool.record_stop", Extension, PassiveRead, RecordStopParams, RecordStopResult, []),
+    ToolRecordAwait => ("tool.record_await", Extension, PassiveRead, RecordAwaitParams, RecordAwaitResult, []),
+    TransferBegin => ("transfer.begin", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    TransferChunk => ("transfer.chunk", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    TransferFinish => ("transfer.finish", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    TransferRead => ("transfer.read", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    TransferRelease => ("transfer.release", Daemon, ControlPlane, serde_json::Value, serde_json::Value, []),
+    Cancel => ("cancel", Shared, ControlPlane, CancelParams, CancelResult, []),
 }
 
 impl Method {

@@ -1,7 +1,41 @@
 {
   "source": "bsk-protocol",
-  "fingerprint": "d7c63c271223630b84cd285d4b9abe7eab145194e8ab0972aa28178773acb753",
+  "fingerprint": "84655b6c1dcba444915f8efdf19b4669f83637c5fa13a225532a204d83b992c0",
+  "protocol_version": "1.4",
+  "min_compatible_protocol": "1.0",
+  "feature_requirements": [
+    {
+      "daemon": "1.4",
+      "extension": "1.4",
+      "feature": "incognito_sessions",
+      "operation": "session start --incognito",
+      "when": {
+        "field": "incognito",
+        "kind": "true"
+      }
+    },
+    {
+      "daemon": "1.2",
+      "extension": "1.2",
+      "feature": "borrow_confirmation_timeout",
+      "operation": "tab borrow --timeout",
+      "when": {
+        "field": "confirmation_timeout_ms",
+        "kind": "present"
+      }
+    },
+    {
+      "daemon": "1.3",
+      "extension": "1.0",
+      "feature": "interaction_policy",
+      "operation": "request-help",
+      "when": {
+        "kind": "always"
+      }
+    }
+  ],
   "methods": [
+    "tool.cooperate",
     "tool.session_start",
     "tool.session_stop",
     "tool.window_resize",
@@ -64,6 +98,8 @@
     "ConsoleParams",
     "ConsoleResult",
     "ConsoleStackFrame",
+    "CooperateAction",
+    "CooperateParams",
     "DebugAction",
     "DebugActivity",
     "DebugAnalysis",
